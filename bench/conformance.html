@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>jrs device check</title>
+<style>
+body{font-family:system-ui,sans-serif;background:#14161a;color:#e6e6e6;margin:0;padding:16px;line-height:1.4}
+h1{font-size:20px;margin:0 0 4px}.sub{color:#9aa;margin-bottom:12px;font-size:14px}
+canvas{width:128px;height:128px;image-rendering:pixelated;border:1px solid #333;display:block;margin:8px 0}
+table{border-collapse:collapse;width:100%;font-size:14px}td{padding:6px 8px;border-top:1px solid #2a2d33;vertical-align:top}
+.pass{color:#5fd38d;font-weight:600}.fail{color:#ff6b6b;font-weight:600}.skip{color:#ccb35f}
+button{background:#2b6cff;color:#fff;border:0;border-radius:6px;padding:10px 16px;font-size:15px;margin:12px 0}
+pre{background:#0d0f12;padding:10px;border-radius:6px;font-size:12px;white-space:pre-wrap;word-break:break-all}
+.summary{font-size:18px;margin:12px 0}
+</style></head>
+<body>
+<h1>jrs device check</h1>
+<div class="sub" id="env">Starting…</div>
+<canvas id="c" width="256" height="256"></canvas>
+<div class="summary" id="summary"></div>
+<table id="results"></table>
+<button id="copy" style="display:none">Copy report</button>
+<pre id="report" style="display:none"></pre>
+<script type="module">
+import * as JRS from '../src/index.js';
+import { conformanceTests, benchmarkScene, SIZE } from './conformance-tests.js';
+
+const $ = (id) => document.getElementById(id);
+const canvas = $('c');
+const report = { userAgent: navigator.userAgent, devicePixelRatio: devicePixelRatio, date: new Date().toISOString(), tests: [], jrs: {}, three: null };
+
+function addRow(name, status, detail) {
+	const tr = document.createElement('tr');
+	tr.innerHTML = `<td>${name}</td><td class="${status}">${status.toUpperCase()}</td><td>${detail}</td>`;
+	$('results').appendChild(tr);
+}
+
+async function main() {
+	let renderer;
+	try {
+		renderer = new JRS.WebGLRenderer({ canvas, antialias: false, preserveDrawingBuffer: true });
+	} catch (e) {
+		$('env').textContent = 'WebGL2 is not available on this device/browser: ' + e.message;
+		report.error = e.message; finish(); return;
+	}
+	renderer.setPixelRatio(1); renderer.setSize(SIZE, SIZE, false);
+	const gl = renderer.getContext();
+	const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+	report.gpu = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+	report.glVersion = gl.getParameter(gl.VERSION);
+	$('env').textContent = `${report.gpu} · ${report.glVersion} · dpr ${devicePixelRatio}`;
+
+	let pass = 0, fail = 0;
+	for (const t of conformanceTests()) {
+		let r;
+		try { r = t.run(JRS, renderer); } catch (e) { r = { pass: false, detail: 'threw: ' + (e && e.message) }; }
+		const glErr = gl.getError();
+		if (glErr !== 0) { r.pass = false; r.detail += ` (GL error 0x${glErr.toString(16)})`; }
+		report.tests.push({ name: t.name, pass: r.pass, detail: r.detail });
+		addRow(t.name, r.pass ? 'pass' : 'fail', r.detail);
+		r.pass ? pass++ : fail++;
+		await new Promise(requestAnimationFrame);
+	}
+	$('summary').innerHTML = fail === 0 ? `<span class="pass">All ${pass} checks passed.</span>` : `<span class="fail">${fail} of ${pass + fail} checks failed.</span>`;
+
+	// performance
+	addRow('Benchmark (jrs)', 'skip', 'running…');
+	await new Promise(requestAnimationFrame);
+	report.jrs = benchmarkScene(JRS, renderer);
+	$('results').lastChild.innerHTML = `<td>Benchmark: 2 000 boxes, jrs</td><td class="pass">${report.jrs.staticMs} ms static / ${report.jrs.animatedMs} ms animated</td><td>${report.jrs.drawCalls} draw call(s) per frame</td>`;
+	renderer.dispose();
+
+	// optional three.js comparison from a CDN
+	try {
+		const THREE = await import('https://unpkg.com/three@0.186.1/build/three.module.js');
+		const c2 = document.createElement('canvas'); c2.width = c2.height = SIZE;
+		const r2 = new THREE.WebGLRenderer({ canvas: c2, antialias: false }); r2.setPixelRatio(1); r2.setSize(SIZE, SIZE, false);
+		report.three = benchmarkScene(THREE, r2);
+		r2.dispose();
+		addRow('Benchmark: 2 000 boxes, three.js r186', 'pass', `${report.three.staticMs} ms static / ${report.three.animatedMs} ms animated, ${report.three.drawCalls} draw calls → jrs is ${(report.three.staticMs / report.jrs.staticMs).toFixed(1)}x (static) / ${(report.three.animatedMs / report.jrs.animatedMs).toFixed(1)}x (animated) faster here`);
+	} catch (e) {
+		addRow('Benchmark: three.js comparison', 'skip', 'three.js could not be loaded from the CDN (offline?)');
+	}
+	finish();
+}
+function finish() {
+	const text = JSON.stringify(report, null, 1);
+	$('report').textContent = text; $('report').style.display = 'block';
+	$('copy').style.display = 'inline-block';
+	$('copy').onclick = () => navigator.clipboard && navigator.clipboard.writeText(text);
+	window.conformanceReport = report;
+}
+main();
+</script>
+</body></html>

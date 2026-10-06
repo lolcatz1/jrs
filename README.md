@@ -136,3 +136,13 @@ not just for existing.
 
 MIT. Geometry generators and parts of the math library are ported from three.js (MIT,
 © 2010-2026 three.js authors).
+
+## Checking a real device
+
+Open `bench/conformance.html` from any static host (GitHub Pages, `npm run bench:serve` then
+`http://<your-machine>:8765/bench/conformance.html` on the phone). It reports the device's WebGL2
+limits, runs 17 rendering checks with pixel probes (lighting, batching vs. individual draws,
+instancing, transparency, textures, fog, shadows, sprites, ShaderMaterial, render targets,
+raycasting), times a 2 000-object scene, and when a CDN is reachable runs the same scene with
+three.js for a side-by-side number. "Copy report" puts the JSON on the clipboard.
+`node bench/conformance.mjs` runs the same page in headless Chromium.
