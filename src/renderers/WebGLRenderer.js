@@ -69,6 +69,8 @@ class WebGLRenderer {
 		this.sortObjects = true;
 		/** Draw consecutive objects sharing geometry and material with one instanced draw call. */
 		this.autoBatch = true;
+		/** Smallest run of identical geometry+material that is drawn as one instanced call (shorter runs draw individually, avoiding a program switch to the instanced variant). */
+		this.autoBatchMinimum = 4;
 		this.clippingPlanes = [];
 		this.localClippingEnabled = false;
 		this.toneMapping = NoToneMapping;
@@ -347,7 +349,7 @@ class WebGLRenderer {
 		this._materialCounter = 0; this._geometryCounter = 0; this._programCounter = 0;
 		this._currentMaterial = null; this._currentSide = -1;
 		this._traceUniforms = this.debug.traceUniforms === true ? new Map() : null;
-		this._traceSwitches = 0; this._traceDraws = this.info.render.calls;
+		this._traceSwitches = 0; this._traceDraws = this.info.render.calls; this._traceSeq = this._traceUniforms !== null ? [] : null; this._traceList = 'o';
 		this._updateEnv(scene);
 
 		_projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
@@ -362,7 +364,7 @@ class WebGLRenderer {
 		if (this.lights.version !== this._lastLightsVersion) { this._lastLightsVersion = this.lights.version; this._envVersion++; }
 		this._resolvePrograms(list, scene);
 
-		if (this.info.autoReset === true && this._renderCallDepth === 1) this.info.reset();
+		if (this.info.autoReset === true && this._renderCallDepth === 1) { this.info.reset(); this._traceDraws = 0; }
 
 		// shadows (renders into other targets; restores ours)
 		this.shadowMap.render(this.lights, scene, camera);
@@ -399,7 +401,15 @@ class WebGLRenderer {
 		this._currentGeometryRecord = null;
 		if (this._traceUniforms !== null) {
 			const t = this.debug.uniformTrace;
-			t.push({ pass: t.length, target: this._currentRenderTarget === null ? 'canvas' : 'renderTarget', uniforms: Object.fromEntries(this._traceUniforms), useProgram: this._traceSwitches, draws: this.info.render.calls - this._traceDraws });
+			const seq = this._traceSeq;
+			const distinct = new Set(); for (let i = 0; i < seq.length; i++) distinct.add(seq[i].id);
+			t.push({
+				pass: t.length, target: this._currentRenderTarget === null ? 'canvas' : 'renderTarget',
+				uniforms: Object.fromEntries(this._traceUniforms), useProgram: this._traceSwitches, draws: this.info.render.calls - this._traceDraws,
+				distinctPrograms: distinct.size,
+				// one entry per useProgram: program id, list (o = opaque, t = transparent, s = shadow pass), renderOrder, material type
+				programSequence: seq.map((e) => `${e.id}${e.list}${e.renderOrder !== 0 ? '/r' + e.renderOrder : ''}:${e.material}`).join(' '),
+			});
 			if (t.length > 16) t.shift();
 			this._traceUniforms = null;
 		}
@@ -724,6 +734,7 @@ class WebGLRenderer {
 	_drawList(list, keys, n, scene, camera, shadowPass) {
 		if (n === 0) return;
 		this._currentScene = scene;
+		if (this._traceSeq !== null) this._traceList = shadowPass ? 's' : (keys === list.transparentSorted ? 't' : 'o');
 		const batcher = this.batcher;
 		batcher.begin();
 		let cmdN = 0;
@@ -742,7 +753,7 @@ class WebGLRenderer {
 			}
 			if (cmdN === this._cmdCapacity) this._growCommands();
 			this._cmdItem[cmdN] = item;
-			if (j - i >= 2) {
+			if (j - i >= this.autoBatchMinimum) {
 				batcher.ensure(j - i);
 				this._cmdOffset[cmdN] = batcher.count;
 				this._cmdCount[cmdN] = j - i;
@@ -811,7 +822,7 @@ class WebGLRenderer {
 	_setupMaterial(item, program, material, camera, frontFaceCW, side) {
 		const gl = this._gl, state = this.state;
 		const programChanged = state.useProgram(program.program);
-		if (programChanged) { this.info.render.programSwitches++; this._traceSwitches++; }
+		if (programChanged) { this.info.render.programSwitches++; this._traceSwitches++; if (this._traceSeq !== null) this._traceSeq.push({ id: program.id, list: this._traceList, renderOrder: item.object.renderOrder, material: material.type + (material.name ? '(' + material.name + ')' : '') }); }
 		const materialChanged = this._currentMaterial !== material || programChanged || this._currentSide !== side;
 		if (materialChanged) {
 			this._currentMaterial = material;

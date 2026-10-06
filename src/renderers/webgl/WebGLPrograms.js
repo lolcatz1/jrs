@@ -124,6 +124,14 @@ class WebGLProgram {
 	destroy(gl) { gl.deleteProgram(this.program); }
 }
 
+function customProgramKey(material, parameters) {
+	const defines = material.defines;
+	let d = '';
+	if (defines) { const names = Object.keys(defines).sort(); for (let i = 0; i < names.length; i++) d += names[i] + '=' + defines[names[i]] + ';'; }
+	return 'S' + parameters.key + '|' + material.type + '|' + (material.name || '') + '|' + (material.precision || '') + '|' + (material.glslVersion || '') + '|' +
+		(material.customProgramCacheKey ? material.customProgramCacheKey() : '') + '|' + d + '|' + material.vertexShader + '|' + material.fragmentShader;
+}
+
 function samplerTarget(gl, type) {
 	switch (type) {
 		case gl.SAMPLER_2D: case gl.SAMPLER_2D_SHADOW: case gl.INT_SAMPLER_2D: case gl.UNSIGNED_INT_SAMPLER_2D: return gl.TEXTURE_2D;
@@ -236,8 +244,10 @@ class WebGLPrograms {
 	acquireProgram(parameters, material) {
 		let key = parameters.key;
 		if (parameters.materialType === MATERIAL_SHADER) {
-			// custom shader: key on the material's source identity
-			key = 'S' + material.id + ':' + (material.customProgramCacheKey ? material.customProgramCacheKey() : '') + ':' + parameters.key;
+			// Custom shader: like three.js, key on what actually produces the program (sources, defines,
+			// type/name, precision, GLSL version, customProgramCacheKey, feature parameters) so material
+			// instances that share a shader share one program and one uniform cache.
+			key = customProgramKey(material, parameters);
 		}
 		let program = this.cache.get(key);
 		if (program === undefined) {

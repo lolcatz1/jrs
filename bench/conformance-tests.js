@@ -395,6 +395,23 @@ export function conformanceTests() {
 			}
 		},
 		{
+			name: 'ShaderMaterial instances with the same source share one program', run(T, renderer) {
+				const { scene, camera } = baseScene(T);
+				const vs = 'void main(){ gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }';
+				const fs = 'uniform vec3 tint; void main(){ gl_FragColor = vec4(tint, 1.0); }';
+				const before = renderer.info.programs ? renderer.info.programs.length : 0;
+				const a = new T.Mesh(new T.PlaneGeometry(1.2, 1.2), new T.ShaderMaterial({ uniforms: { tint: { value: new T.Color(1, 0, 0) } }, vertexShader: vs, fragmentShader: fs })); a.position.x = -0.8;
+				const b = new T.Mesh(new T.PlaneGeometry(1.2, 1.2), new T.ShaderMaterial({ uniforms: { tint: { value: new T.Color(0, 0, 1) } }, vertexShader: vs, fragmentShader: fs })); b.position.x = 0.8;
+				const c = new T.Mesh(new T.PlaneGeometry(1.2, 1.2), new T.ShaderMaterial({ uniforms: { tint: { value: new T.Color(0, 1, 0) } }, vertexShader: vs, fragmentShader: fs, defines: { OTHER: 1 } })); c.position.y = 1.2;
+				scene.add(a, b, c);
+				renderer.render(scene, camera); renderer.render(scene, camera);
+				const added = (renderer.info.programs ? renderer.info.programs.length : 0) - before;
+				const pa = readPixel(renderer, 128 - 44, 128), pb = readPixel(renderer, 128 + 44, 128), pc = readPixel(renderer, 128, 128 - 66);
+				const switches = renderer.info.render.programSwitches;
+				return { pass: added === 2 && near(pa, [255, 0, 0], 2) && near(pb, [0, 0, 255], 2) && near(pc, [0, 255, 0], 2) && switches === 2, detail: `programs created ${added} (expected 2: same source -> shared, different defines -> own), colours ${fmt(pa)} ${fmt(pb)} ${fmt(pc)}, program switches per frame ${switches} (expected 2)` };
+			}
+		},
+		{
 			name: 'Raycaster hit through camera', run(T, renderer) {
 				const { scene, camera } = baseScene(T);
 				const box = new T.Mesh(new T.BoxGeometry(1, 1, 1), new T.MeshBasicMaterial()); scene.add(box);

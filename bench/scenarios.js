@@ -231,18 +231,13 @@ function buildShaderClient(T, n, opts) {
 					float f = smoothstep(fogNear, fogFar, length(cameraPos - vWorld));
 					gl_FragColor = vec4(mix(c, fogColor, f), opacity);
 				}`;
-			const programs = {};
-			const material = (variant, own, transparent, batched) => {
-				const key = variant + ':' + transparent + ':' + batched;
-				if (programs[key]) return programs[key];
-				const m = new T.ShaderMaterial({
-					defines: batched ? { VARIANT: variant, BATCHED: '' } : { VARIANT: variant },
-					uniforms: { ...shared, opacity: { value: transparent ? 0.6 : 1 }, reflectance: { value: 0.2 + variant * 0.05 }, lodDistance: { value: 300 }, ffSpecular: { value: 0.5 }, diffuseSamp: { value: makeDiffuse(variant + 1) }, ...own },
-					vertexShader: vs, fragmentShader: fs, transparent, depthWrite: !transparent,
-				});
-				programs[key] = m;
-				return m;
-			};
+			// Like the client, several material INSTANCES share one shader (same source and defines,
+			// different uniform values); a renderer must still use one program for them.
+			const material = (variant, own, transparent, batched, instance) => new T.ShaderMaterial({
+				defines: batched ? { VARIANT: variant, BATCHED: '' } : { VARIANT: variant },
+				uniforms: { ...shared, opacity: { value: transparent ? 0.6 : 1 }, reflectance: { value: 0.2 + variant * 0.05 + instance * 0.1 }, lodDistance: { value: 300 }, ffSpecular: { value: 0.5 }, diffuseSamp: { value: makeDiffuse(variant + 1 + instance) }, ...own },
+				vertexShader: vs, fragmentShader: fs, transparent, depthWrite: !transparent,
+			});
 			// --- geometry with the client's custom attributes
 			const addAttributes = (g, seed) => {
 				const count = g.attributes.position.count;
@@ -276,9 +271,10 @@ function buildShaderClient(T, n, opts) {
 			];
 			let i = 0, batchedIndex = 0;
 			for (const g of groups) {
-				const mat = material(g.variant, {}, g.transparent === true, g.batched === true);
+				const mats = [material(g.variant, {}, g.transparent === true, g.batched === true, 0), material(g.variant, {}, g.transparent === true, g.batched === true, 1)];
 				const count = Math.max(1, Math.round(g.count * scale));
 				for (let k = 0; k < count; k++, i++) {
+					const mat = mats[k % 2];
 					let mesh;
 					if (g.batched) {
 						// pre-merged static geometry is already in world space; the mesh transform is identity

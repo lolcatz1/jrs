@@ -14185,6 +14185,15 @@ var WebGLProgram = class {
     gl.deleteProgram(this.program);
   }
 };
+function customProgramKey(material, parameters) {
+  const defines = material.defines;
+  let d = "";
+  if (defines) {
+    const names = Object.keys(defines).sort();
+    for (let i = 0; i < names.length; i++) d += names[i] + "=" + defines[names[i]] + ";";
+  }
+  return "S" + parameters.key + "|" + material.type + "|" + (material.name || "") + "|" + (material.precision || "") + "|" + (material.glslVersion || "") + "|" + (material.customProgramCacheKey ? material.customProgramCacheKey() : "") + "|" + d + "|" + material.vertexShader + "|" + material.fragmentShader;
+}
 function samplerTarget(gl, type) {
   switch (type) {
     case gl.SAMPLER_2D:
@@ -14332,7 +14341,7 @@ var WebGLPrograms = class {
   acquireProgram(parameters, material) {
     let key = parameters.key;
     if (parameters.materialType === MATERIAL_SHADER) {
-      key = "S" + material.id + ":" + (material.customProgramCacheKey ? material.customProgramCacheKey() : "") + ":" + parameters.key;
+      key = customProgramKey(material, parameters);
     }
     let program = this.cache.get(key);
     if (program === void 0) {
@@ -15510,6 +15519,7 @@ var WebGLRenderer = class {
     this.autoClearStencil = true;
     this.sortObjects = true;
     this.autoBatch = true;
+    this.autoBatchMinimum = 4;
     this.clippingPlanes = [];
     this.localClippingEnabled = false;
     this.toneMapping = NoToneMapping;
@@ -15910,6 +15920,8 @@ var WebGLRenderer = class {
     this._traceUniforms = this.debug.traceUniforms === true ? /* @__PURE__ */ new Map() : null;
     this._traceSwitches = 0;
     this._traceDraws = this.info.render.calls;
+    this._traceSeq = this._traceUniforms !== null ? [] : null;
+    this._traceList = "o";
     this._updateEnv(scene);
     _projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     _frustum2.setFromProjectionMatrix(_projScreenMatrix, camera.coordinateSystem, camera.reversedDepth);
@@ -15924,7 +15936,10 @@ var WebGLRenderer = class {
       this._envVersion++;
     }
     this._resolvePrograms(list, scene);
-    if (this.info.autoReset === true && this._renderCallDepth === 1) this.info.reset();
+    if (this.info.autoReset === true && this._renderCallDepth === 1) {
+      this.info.reset();
+      this._traceDraws = 0;
+    }
     this.shadowMap.render(this.lights, scene, camera);
     this.lights.fill();
     gl.bindBuffer(gl.UNIFORM_BUFFER, this._lightsBuffer);
@@ -15952,7 +15967,19 @@ var WebGLRenderer = class {
     this._currentGeometryRecord = null;
     if (this._traceUniforms !== null) {
       const t = this.debug.uniformTrace;
-      t.push({ pass: t.length, target: this._currentRenderTarget === null ? "canvas" : "renderTarget", uniforms: Object.fromEntries(this._traceUniforms), useProgram: this._traceSwitches, draws: this.info.render.calls - this._traceDraws });
+      const seq = this._traceSeq;
+      const distinct = /* @__PURE__ */ new Set();
+      for (let i = 0; i < seq.length; i++) distinct.add(seq[i].id);
+      t.push({
+        pass: t.length,
+        target: this._currentRenderTarget === null ? "canvas" : "renderTarget",
+        uniforms: Object.fromEntries(this._traceUniforms),
+        useProgram: this._traceSwitches,
+        draws: this.info.render.calls - this._traceDraws,
+        distinctPrograms: distinct.size,
+        // one entry per useProgram: program id, list (o = opaque, t = transparent, s = shadow pass), renderOrder, material type
+        programSequence: seq.map((e) => `${e.id}${e.list}${e.renderOrder !== 0 ? "/r" + e.renderOrder : ""}:${e.material}`).join(" ")
+      });
       if (t.length > 16) t.shift();
       this._traceUniforms = null;
     }
@@ -16375,6 +16402,7 @@ var WebGLRenderer = class {
   _drawList(list, keys, n, scene, camera, shadowPass) {
     if (n === 0) return;
     this._currentScene = scene;
+    if (this._traceSeq !== null) this._traceList = shadowPass ? "s" : keys === list.transparentSorted ? "t" : "o";
     const batcher = this.batcher;
     batcher.begin();
     let cmdN = 0;
@@ -16392,7 +16420,7 @@ var WebGLRenderer = class {
       }
       if (cmdN === this._cmdCapacity) this._growCommands();
       this._cmdItem[cmdN] = item;
-      if (j - i >= 2) {
+      if (j - i >= this.autoBatchMinimum) {
         batcher.ensure(j - i);
         this._cmdOffset[cmdN] = batcher.count;
         this._cmdCount[cmdN] = j - i;
@@ -16470,6 +16498,7 @@ var WebGLRenderer = class {
     if (programChanged) {
       this.info.render.programSwitches++;
       this._traceSwitches++;
+      if (this._traceSeq !== null) this._traceSeq.push({ id: program.id, list: this._traceList, renderOrder: item.object.renderOrder, material: material.type + (material.name ? "(" + material.name + ")" : "") });
     }
     const materialChanged = this._currentMaterial !== material || programChanged || this._currentSide !== side;
     if (materialChanged) {

@@ -1,8 +1,171 @@
 {
-  "date": "2026-10-06T23:02:26.246Z",
-  "frames": 5,
+  "date": "2026-10-06T23:23:35.319Z",
+  "frames": 30,
   "renderer": "headless Chromium / SwiftShader (software WebGL2)",
   "results": [
+    {
+      "scenario": "shader-client-static",
+      "n": 211,
+      "three": {
+        "lib": "three",
+        "scenario": "shader-client-static",
+        "n": 211,
+        "frames": 30,
+        "buildMs": 40.2,
+        "avgMs": 34.363,
+        "bestMs": 1.5,
+        "worstMs": 624.8,
+        "wallAvgMs": 34.363,
+        "drawCalls": 217,
+        "triangles": 86932,
+        "programs": 18,
+        "glCalls": {
+          "uniform": 478,
+          "bindTexture": 44,
+          "useProgram": 17,
+          "bindVertexArray": 643,
+          "draw": 651,
+          "bindBuffer": 0,
+          "bufferData": 0,
+          "state": 33,
+          "total": 1869
+        },
+        "glError": 0,
+        "passes": [
+          {
+            "name": "shadow RT (overrideMaterial)",
+            "uniform": 147,
+            "useProgram": 1,
+            "draw": 217,
+            "bindTexture": 0,
+            "bindVertexArray": 214,
+            "total": 586,
+            "state": 6
+          },
+          {
+            "name": "near shadow RT (overrideMaterial)",
+            "uniform": 147,
+            "useProgram": 0,
+            "draw": 217,
+            "bindTexture": 0,
+            "bindVertexArray": 214,
+            "total": 582,
+            "state": 3
+          },
+          {
+            "name": "main + stencil volumes",
+            "uniform": 184,
+            "useProgram": 16,
+            "draw": 217,
+            "bindTexture": 44,
+            "bindVertexArray": 215,
+            "total": 696,
+            "state": 20
+          }
+        ]
+      },
+      "jrs": {
+        "lib": "jrs",
+        "scenario": "shader-client-static",
+        "n": 211,
+        "frames": 30,
+        "buildMs": 45.9,
+        "avgMs": 36.497,
+        "bestMs": 1.1,
+        "worstMs": 732.1,
+        "wallAvgMs": 36.503,
+        "drawCalls": 215,
+        "triangles": 86908,
+        "programs": 15,
+        "glCalls": {
+          "uniform": 478,
+          "bindTexture": 44,
+          "useProgram": 16,
+          "bindVertexArray": 382,
+          "draw": 649,
+          "bindBuffer": 9,
+          "bufferData": 6,
+          "state": 33,
+          "total": 1620
+        },
+        "glError": 0,
+        "passes": [
+          {
+            "name": "shadow RT (overrideMaterial)",
+            "uniform": 147,
+            "useProgram": 1,
+            "draw": 217,
+            "bindTexture": 0,
+            "bindVertexArray": 95,
+            "total": 472,
+            "bindBuffer": 2,
+            "bufferData": 2,
+            "state": 7
+          },
+          {
+            "name": "near shadow RT (overrideMaterial)",
+            "uniform": 147,
+            "useProgram": 0,
+            "draw": 217,
+            "bindTexture": 0,
+            "bindVertexArray": 95,
+            "total": 467,
+            "bindBuffer": 2,
+            "bufferData": 2,
+            "state": 3
+          },
+          {
+            "name": "main + stencil volumes",
+            "uniform": 184,
+            "useProgram": 15,
+            "draw": 215,
+            "bindTexture": 44,
+            "bindVertexArray": 192,
+            "total": 675,
+            "bindBuffer": 5,
+            "bufferData": 2,
+            "state": 18
+          }
+        ],
+        "uniformTrace": [
+          {
+            "target": "renderTarget",
+            "useProgram": 1,
+            "draws": 217,
+            "uniforms": {
+              "projectionMatrix": 1,
+              "modelViewMatrix": 146
+            }
+          },
+          {
+            "target": "renderTarget",
+            "useProgram": 0,
+            "draws": 217,
+            "uniforms": {
+              "projectionMatrix": 1,
+              "modelViewMatrix": 146
+            }
+          },
+          {
+            "target": "canvas",
+            "useProgram": 15,
+            "draws": 215,
+            "uniforms": {
+              "reflectance": 42,
+              "modelMatrix": 140,
+              "opacity": 2
+            }
+          }
+        ]
+      },
+      "speedup": 0.94,
+      "wallSpeedup": 0.94,
+      "compare": {
+        "meanAbsDiff": 0.001,
+        "maxDiff": 10,
+        "fractionOver32": 0
+      }
+    },
     {
       "scenario": "shader-client",
       "n": 1313,
@@ -10,36 +173,36 @@
         "lib": "three",
         "scenario": "shader-client",
         "n": 1313,
-        "frames": 5,
-        "buildMs": 123.5,
-        "avgMs": 5.06,
-        "bestMs": 4.1,
-        "worstMs": 7,
-        "wallAvgMs": 5.06,
+        "frames": 30,
+        "buildMs": 292,
+        "avgMs": 25.507,
+        "bestMs": 4.2,
+        "worstMs": 142.5,
+        "wallAvgMs": 25.51,
         "drawCalls": 1313,
         "triangles": 540852,
         "programs": 14,
         "glCalls": {
-          "uniform": 884,
-          "bindTexture": 13,
+          "uniform": 1054,
+          "bindTexture": 171,
           "useProgram": 13,
-          "bindVertexArray": 1313,
+          "bindVertexArray": 1248,
           "draw": 1313,
           "bindBuffer": 0,
           "bufferData": 0,
           "state": 5,
-          "total": 3541
+          "total": 3804
         },
         "glError": 0,
         "passes": [
           {
             "name": "pass 0",
-            "uniform": 884,
+            "uniform": 1054,
             "useProgram": 13,
             "draw": 1313,
-            "bindTexture": 13,
-            "bindVertexArray": 1313,
-            "total": 3541,
+            "bindTexture": 171,
+            "bindVertexArray": 1248,
+            "total": 3804,
             "state": 5
           }
         ]
@@ -48,44 +211,57 @@
         "lib": "jrs",
         "scenario": "shader-client",
         "n": 1313,
-        "frames": 5,
-        "buildMs": 154.6,
-        "avgMs": 2.16,
-        "bestMs": 1.5,
-        "worstMs": 3,
-        "wallAvgMs": 2.16,
+        "frames": 30,
+        "buildMs": 135.6,
+        "avgMs": 9.67,
+        "bestMs": 2.3,
+        "worstMs": 76.4,
+        "wallAvgMs": 9.67,
         "drawCalls": 1313,
         "triangles": 540852,
-        "programs": 14,
+        "programs": 13,
         "glCalls": {
-          "uniform": 975,
-          "bindTexture": 13,
+          "uniform": 1055,
+          "bindTexture": 171,
           "useProgram": 13,
           "bindVertexArray": 763,
           "draw": 1313,
           "bindBuffer": 2,
           "bufferData": 2,
           "state": 5,
-          "total": 3086
+          "total": 3324
         },
         "glError": 0,
         "passes": [
           {
             "name": "pass 0",
-            "uniform": 975,
+            "uniform": 1055,
             "useProgram": 13,
             "draw": 1313,
-            "bindTexture": 13,
+            "bindTexture": 171,
             "bindVertexArray": 763,
-            "total": 3086,
+            "total": 3324,
             "bindBuffer": 2,
             "bufferData": 2,
             "state": 5
           }
+        ],
+        "uniformTrace": [
+          {
+            "target": "canvas",
+            "useProgram": 13,
+            "draws": 1313,
+            "uniforms": {
+              "lamp0Dir": 12,
+              "reflectance": 170,
+              "modelMatrix": 871,
+              "opacity": 2
+            }
+          }
         ]
       },
-      "speedup": 2.34,
-      "wallSpeedup": 2.34,
+      "speedup": 2.64,
+      "wallSpeedup": 2.64,
       "compare": {
         "meanAbsDiff": 0.002,
         "maxDiff": 44,
