@@ -169,7 +169,10 @@ void main() {
 		float c = cos( matParams2.w ), s = sin( matParams2.w );
 		vec2 rotated = vec2( c * aligned.x - s * aligned.y, s * aligned.x + c * aligned.y );
 		mvPosition.xy += rotated;
-		vec4 worldPosition = inverse( viewMatrix ) * mvPosition;
+		// camera right/up axes in world space are rows 0 and 1 of the view matrix
+		vec3 camRight = vec3( viewMatrix[ 0 ][ 0 ], viewMatrix[ 1 ][ 0 ], viewMatrix[ 2 ][ 0 ] );
+		vec3 camUp = vec3( viewMatrix[ 0 ][ 1 ], viewMatrix[ 1 ][ 1 ], viewMatrix[ 2 ][ 1 ] );
+		vec4 worldPosition = vec4( model[ 3 ].xyz + camRight * rotated.x + camUp * rotated.y, 1.0 );
 	#else
 		vec4 worldPosition = model * vec4( position, 1.0 );
 		vec4 mvPosition = viewMatrix * worldPosition;
@@ -500,7 +503,8 @@ void main() {
 	vec3 outgoingLight = vec3( 0.0 );
 
 	#if defined( LIGHTING_LAMBERT ) || defined( LIGHTING_PHONG ) || defined( LIGHTING_STANDARD )
-		vec3 viewDir = ( cameraPosition.w > 0.5 ) ? normalize( ( inverse( viewMatrix ) * vec4( 0.0, 0.0, 1.0, 0.0 ) ).xyz ) : normalize( cameraPosition.xyz - vWorldPosition );
+		// camera +Z axis in world space is the third row of the view matrix (no inverse needed)
+		vec3 viewDir = ( cameraPosition.w > 0.5 ) ? normalize( vec3( viewMatrix[ 0 ][ 2 ], viewMatrix[ 1 ][ 2 ], viewMatrix[ 2 ][ 2 ] ) ) : normalize( cameraPosition.xyz - vWorldPosition );
 		float roughnessFactor = matParams.x;
 		float metalnessFactor = matParams.y;
 		#ifdef USE_ROUGHNESSMAP
