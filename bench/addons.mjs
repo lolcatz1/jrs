@@ -1,0 +1,11 @@
+import { startServer } from './serve.mjs';
+import { launchBrowser } from './browser.mjs';
+const { server, port } = await startServer();
+const browser = await launchBrowser();
+const page = await browser.newPage();
+page.on('pageerror', (e) => console.log('[pageerror]', e.message));
+page.on('console', (m) => { if (m.type() === 'error' && !/404/.test(m.text())) console.log('[browser]', m.text()); });
+await page.goto(`http://127.0.0.1:${port}/bench/addons.html`);
+await page.waitForFunction(() => window.addonsResult !== undefined, null, { timeout: 60000 }).catch(() => {});
+console.log(JSON.stringify(await page.evaluate(() => window.addonsResult), null, 1));
+await browser.close(); server.close();

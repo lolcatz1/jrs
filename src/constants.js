@@ -136,6 +136,11 @@ export const LoopOnce = 2200;
 export const LoopRepeat = 2201;
 export const LoopPingPong = 2202;
 
+// Draw modes (BufferGeometryUtils.toTrianglesDrawMode)
+export const TrianglesDrawMode = 0;
+export const TriangleStripDrawMode = 1;
+export const TriangleFanDrawMode = 2;
+
 // Normal map types
 export const TangentSpaceNormalMap = 0;
 export const ObjectSpaceNormalMap = 1;

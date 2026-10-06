@@ -113,11 +113,15 @@ space, sRGB output, physically based light units):
 * **Textures & loaders:** `Texture`, `CanvasTexture`, `DataTexture`, `Data3DTexture`,
   `DataArrayTexture` (with `layerUpdates`), `CubeTexture`, `DepthTexture`, `TextureLoader`,
   `ImageLoader`, `FileLoader`, `LoadingManager`, `Cache`.
-* **Helpers:** `AxesHelper`, `GridHelper`, `BoxHelper`.
+* **Helpers & addon support:** `AxesHelper`, `GridHelper`, `BoxHelper`; `Controls` base class, draw-mode
+  constants and `InterleavedBuffer`/`InterleavedBufferAttribute` so three's `examples/jsm` addons such as
+  `OrbitControls` and `BufferGeometryUtils` import and run unchanged through an import map
+  (`"three/addons/": "<three>/examples/jsm/"`). Verified with `node bench/addons.mjs`.
 
 Not implemented (yet): environment maps / IBL on built-in materials, point-light shadows,
 skinning and morph targets, clipping planes, `Scene.background` textures, `ShaderMaterial`
-`lights: true`, `onBeforeCompile` for built-in materials, `InterleavedBufferAttribute`,
+`lights: true`, `onBeforeCompile` for built-in materials, rendering of `InterleavedBufferAttribute`
+geometry (the classes exist for API compatibility),
 post-processing, loaders beyond textures (GLTFLoader etc. live in three's `examples/`, as do
 the controls), WebGL1.
 

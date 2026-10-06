@@ -1,0 +1,35 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>jrs addons check</title>
+<script type="importmap">{ "imports": { "three": "/build/jrs.module.js", "three/addons/": "/node_modules/three/examples/jsm/" } }</script>
+</head><body><canvas id="c" width="128" height="128"></canvas>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { mergeGeometries, mergeVertices, toTrianglesDrawMode } from 'three/addons/utils/BufferGeometryUtils.js';
+const out = {};
+try {
+	const canvas = document.getElementById('c');
+	const renderer = new THREE.WebGLRenderer({ canvas });
+	const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100); camera.position.set(0, 2, 6);
+	const controls = new OrbitControls(camera, canvas);
+	controls.target.set(0, 0, 0); controls.update();
+	out.controls = { enabled: controls.enabled, hasDom: controls.domElement === canvas, isControls: controls instanceof THREE.Controls, distance: camera.position.length().toFixed(3) };
+	// simulate a drag so the event path runs
+	canvas.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1, clientX: 10, clientY: 10, button: 0, pointerType: 'mouse', bubbles: true }));
+	canvas.ownerDocument.dispatchEvent(new PointerEvent('pointermove', { pointerId: 1, clientX: 40, clientY: 10, pointerType: 'mouse', bubbles: true }));
+	canvas.ownerDocument.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, clientX: 40, clientY: 10, pointerType: 'mouse', bubbles: true }));
+	controls.update();
+	out.controls.movedX = camera.position.x.toFixed(3);
+	const merged = mergeGeometries([new THREE.BoxGeometry(1, 1, 1), new THREE.SphereGeometry(0.5, 8, 6)], true);
+	out.merged = { isBufferGeometry: merged.isBufferGeometry, vertices: merged.attributes.position.count, index: merged.index.count, groups: merged.groups.length };
+	const welded = mergeVertices(new THREE.BoxGeometry(1, 1, 1).toNonIndexed());
+	out.welded = { vertices: welded.attributes.position.count, index: welded.index.count };
+	const strip = new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0], 3));
+	out.strip = toTrianglesDrawMode(strip, THREE.TriangleStripDrawMode).index.count;
+	const scene = new THREE.Scene(); scene.add(new THREE.Mesh(merged, new THREE.MeshNormalMaterial()));
+	renderer.render(scene, camera);
+	out.rendered = renderer.info.render.calls;
+	out.interleaved = (() => { const ib = new THREE.InterleavedBuffer(new Float32Array([1, 2, 3, 4, 5, 6, 7, 8]), 4); const a = new THREE.InterleavedBufferAttribute(ib, 2, 1); return [a.count, a.getX(1), a.getY(1), a.isInterleavedBufferAttribute, ib.isInterleavedBuffer]; })();
+} catch (e) { out.error = e.message + '\n' + e.stack; }
+window.addonsResult = out;
+</script></body></html>

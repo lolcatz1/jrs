@@ -111,6 +111,9 @@ var LinearSRGBColorSpace = "srgb-linear";
 var LoopOnce = 2200;
 var LoopRepeat = 2201;
 var LoopPingPong = 2202;
+var TrianglesDrawMode = 0;
+var TriangleStripDrawMode = 1;
+var TriangleFanDrawMode = 2;
 var TangentSpaceNormalMap = 0;
 var ObjectSpaceNormalMap = 1;
 var ZeroStencilOp = 0;
@@ -22222,6 +22225,230 @@ var InstancedBufferGeometry = class extends BufferGeometry {
   }
 };
 
+// src/core/InterleavedBuffer.js
+var InterleavedBuffer = class {
+  constructor(array, stride) {
+    this.isInterleavedBuffer = true;
+    this.array = array;
+    this.stride = stride;
+    this.count = array !== void 0 ? array.length / stride : 0;
+    this.usage = StaticDrawUsage;
+    this.updateRanges = [];
+    this.version = 0;
+    this.uuid = generateUUID();
+  }
+  onUploadCallback() {
+  }
+  set needsUpdate(value) {
+    if (value === true) this.version++;
+  }
+  setUsage(value) {
+    this.usage = value;
+    return this;
+  }
+  addUpdateRange(start, count) {
+    this.updateRanges.push({ start, count });
+  }
+  clearUpdateRanges() {
+    this.updateRanges.length = 0;
+  }
+  copy(source) {
+    this.array = new source.array.constructor(source.array);
+    this.count = source.count;
+    this.stride = source.stride;
+    this.usage = source.usage;
+    return this;
+  }
+  copyAt(index1, attribute, index2) {
+    index1 *= this.stride;
+    index2 *= attribute.stride;
+    for (let i = 0, l = this.stride; i < l; i++) this.array[index1 + i] = attribute.array[index2 + i];
+    return this;
+  }
+  set(value, offset = 0) {
+    this.array.set(value, offset);
+    return this;
+  }
+  clone(data) {
+    if (data.arrayBuffers === void 0) data.arrayBuffers = {};
+    if (this.array.buffer._uuid === void 0) this.array.buffer._uuid = generateUUID();
+    if (data.arrayBuffers[this.array.buffer._uuid] === void 0) data.arrayBuffers[this.array.buffer._uuid] = this.array.slice(0).buffer;
+    const array = new this.array.constructor(data.arrayBuffers[this.array.buffer._uuid]);
+    const ib = new this.constructor(array, this.stride);
+    ib.setUsage(this.usage);
+    return ib;
+  }
+  onUpload(callback) {
+    this.onUploadCallback = callback;
+    return this;
+  }
+  toJSON(data) {
+    if (data.arrayBuffers === void 0) data.arrayBuffers = {};
+    if (this.array.buffer._uuid === void 0) this.array.buffer._uuid = generateUUID();
+    if (data.arrayBuffers[this.array.buffer._uuid] === void 0) data.arrayBuffers[this.array.buffer._uuid] = Array.from(new Uint32Array(this.array.buffer));
+    return { uuid: this.uuid, buffer: this.array.buffer._uuid, type: this.array.constructor.name, stride: this.stride };
+  }
+};
+
+// src/core/InterleavedBufferAttribute.js
+var _vector7 = /* @__PURE__ */ new Vector3();
+var InterleavedBufferAttribute = class _InterleavedBufferAttribute {
+  constructor(interleavedBuffer, itemSize, offset, normalized = false) {
+    this.isInterleavedBufferAttribute = true;
+    this.name = "";
+    this.data = interleavedBuffer;
+    this.itemSize = itemSize;
+    this.offset = offset;
+    this.normalized = normalized;
+  }
+  get count() {
+    return this.data.count;
+  }
+  get array() {
+    return this.data.array;
+  }
+  set needsUpdate(value) {
+    this.data.needsUpdate = value;
+  }
+  applyMatrix4(m) {
+    for (let i = 0, l = this.data.count; i < l; i++) {
+      _vector7.fromBufferAttribute(this, i);
+      _vector7.applyMatrix4(m);
+      this.setXYZ(i, _vector7.x, _vector7.y, _vector7.z);
+    }
+    return this;
+  }
+  applyNormalMatrix(m) {
+    for (let i = 0, l = this.count; i < l; i++) {
+      _vector7.fromBufferAttribute(this, i);
+      _vector7.applyNormalMatrix(m);
+      this.setXYZ(i, _vector7.x, _vector7.y, _vector7.z);
+    }
+    return this;
+  }
+  transformDirection(m) {
+    for (let i = 0, l = this.count; i < l; i++) {
+      _vector7.fromBufferAttribute(this, i);
+      _vector7.transformDirection(m);
+      this.setXYZ(i, _vector7.x, _vector7.y, _vector7.z);
+    }
+    return this;
+  }
+  getComponent(index, component) {
+    let v = this.array[index * this.data.stride + this.offset + component];
+    if (this.normalized) v = denormalize(v, this.array);
+    return v;
+  }
+  setComponent(index, component, value) {
+    if (this.normalized) value = normalize(value, this.array);
+    this.data.array[index * this.data.stride + this.offset + component] = value;
+    return this;
+  }
+  setX(index, x) {
+    if (this.normalized) x = normalize(x, this.array);
+    this.data.array[index * this.data.stride + this.offset] = x;
+    return this;
+  }
+  setY(index, y) {
+    if (this.normalized) y = normalize(y, this.array);
+    this.data.array[index * this.data.stride + this.offset + 1] = y;
+    return this;
+  }
+  setZ(index, z) {
+    if (this.normalized) z = normalize(z, this.array);
+    this.data.array[index * this.data.stride + this.offset + 2] = z;
+    return this;
+  }
+  setW(index, w) {
+    if (this.normalized) w = normalize(w, this.array);
+    this.data.array[index * this.data.stride + this.offset + 3] = w;
+    return this;
+  }
+  getX(index) {
+    let x = this.data.array[index * this.data.stride + this.offset];
+    if (this.normalized) x = denormalize(x, this.array);
+    return x;
+  }
+  getY(index) {
+    let y = this.data.array[index * this.data.stride + this.offset + 1];
+    if (this.normalized) y = denormalize(y, this.array);
+    return y;
+  }
+  getZ(index) {
+    let z = this.data.array[index * this.data.stride + this.offset + 2];
+    if (this.normalized) z = denormalize(z, this.array);
+    return z;
+  }
+  getW(index) {
+    let w = this.data.array[index * this.data.stride + this.offset + 3];
+    if (this.normalized) w = denormalize(w, this.array);
+    return w;
+  }
+  setXY(index, x, y) {
+    index = index * this.data.stride + this.offset;
+    if (this.normalized) {
+      x = normalize(x, this.array);
+      y = normalize(y, this.array);
+    }
+    this.data.array[index + 0] = x;
+    this.data.array[index + 1] = y;
+    return this;
+  }
+  setXYZ(index, x, y, z) {
+    index = index * this.data.stride + this.offset;
+    if (this.normalized) {
+      x = normalize(x, this.array);
+      y = normalize(y, this.array);
+      z = normalize(z, this.array);
+    }
+    this.data.array[index + 0] = x;
+    this.data.array[index + 1] = y;
+    this.data.array[index + 2] = z;
+    return this;
+  }
+  setXYZW(index, x, y, z, w) {
+    index = index * this.data.stride + this.offset;
+    if (this.normalized) {
+      x = normalize(x, this.array);
+      y = normalize(y, this.array);
+      z = normalize(z, this.array);
+      w = normalize(w, this.array);
+    }
+    this.data.array[index + 0] = x;
+    this.data.array[index + 1] = y;
+    this.data.array[index + 2] = z;
+    this.data.array[index + 3] = w;
+    return this;
+  }
+  clone(data) {
+    if (data === void 0) {
+      console.log("InterleavedBufferAttribute.clone(): Cloning an interleaved buffer attribute will de-interleave buffer data.");
+      const array = [];
+      for (let i = 0; i < this.count; i++) {
+        const index = i * this.data.stride + this.offset;
+        for (let j = 0; j < this.itemSize; j++) array.push(this.data.array[index + j]);
+      }
+      return new BufferAttribute(new this.array.constructor(array), this.itemSize, this.normalized);
+    }
+    if (data.interleavedBuffers === void 0) data.interleavedBuffers = {};
+    if (data.interleavedBuffers[this.data.uuid] === void 0) data.interleavedBuffers[this.data.uuid] = this.data.clone(data);
+    return new _InterleavedBufferAttribute(data.interleavedBuffers[this.data.uuid], this.itemSize, this.offset, this.normalized);
+  }
+  toJSON(data) {
+    if (data === void 0) {
+      const array = [];
+      for (let i = 0; i < this.count; i++) {
+        const index = i * this.data.stride + this.offset;
+        for (let j = 0; j < this.itemSize; j++) array.push(this.data.array[index + j]);
+      }
+      return { itemSize: this.itemSize, type: this.array.constructor.name, array, normalized: this.normalized };
+    }
+    if (data.interleavedBuffers === void 0) data.interleavedBuffers = {};
+    if (data.interleavedBuffers[this.data.uuid] === void 0) data.interleavedBuffers[this.data.uuid] = this.data.toJSON(data);
+    return { isInterleavedBufferAttribute: true, itemSize: this.itemSize, data: this.data.uuid, offset: this.offset, normalized: this.normalized };
+  }
+};
+
 // src/core/Raycaster.js
 var Raycaster = class {
   constructor(origin, direction, near = 0, far = Infinity) {
@@ -22352,6 +22579,30 @@ var Timer = class {
     this._delta = (this._currentTime - this._previousTime) * this._timescale;
     this._elapsed += this._delta;
     return this;
+  }
+};
+
+// src/extras/Controls.js
+var Controls = class extends EventDispatcher {
+  constructor(object, domElement = null) {
+    super();
+    this.object = object;
+    this.domElement = domElement;
+    this.enabled = true;
+    this.state = -1;
+    this.keys = {};
+    this.mouseButtons = { LEFT: null, MIDDLE: null, RIGHT: null };
+    this.touches = { ONE: null, TWO: null };
+  }
+  connect(element) {
+    if (this.domElement !== null) this.disconnect();
+    this.domElement = element;
+  }
+  disconnect() {
+  }
+  dispose() {
+  }
+  update() {
   }
 };
 
@@ -22620,6 +22871,7 @@ export {
   ConeGeometry,
   ConstantAlphaFactor,
   ConstantColorFactor,
+  Controls,
   CubeReflectionMapping,
   CubeRefractionMapping,
   CubeTexture,
@@ -22684,6 +22936,8 @@ export {
   Int32BufferAttribute,
   Int8BufferAttribute,
   IntType,
+  InterleavedBuffer,
+  InterleavedBufferAttribute,
   InvertStencilOp,
   KeepStencilOp,
   LatheGeometry,
@@ -22828,6 +23082,9 @@ export {
   TorusGeometry,
   TorusKnotGeometry,
   Triangle,
+  TriangleFanDrawMode,
+  TriangleStripDrawMode,
+  TrianglesDrawMode,
   TubeGeometry,
   UVMapping,
   Uint16BufferAttribute,
