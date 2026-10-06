@@ -9,6 +9,7 @@ export const BLOCK_LIGHTS = 1;
 export const BLOCK_MATERIAL = 2;
 
 let _programId = 0;
+const FIXED_ATTRIBUTES = { position: 0, normal: 1, uv: 2, color: 3, uv1: 4, instanceColor: 5, instanceMatrix: 8 };
 
 /**
  * A compiled program plus everything the renderer needs to drive it without
@@ -69,14 +70,18 @@ class WebGLProgram {
 		this.hasLightsBlock = bind('Lights', BLOCK_LIGHTS);
 		this.hasMaterialBlock = bind('Material', BLOCK_MATERIAL);
 
-		// attributes
+		// attributes; names outside the fixed table (custom ShaderMaterial attributes) get linker-assigned locations
 		this.attributes = {};
+		this.customAttributes = [];
 		const na = gl.getProgramParameter(program, gl.ACTIVE_ATTRIBUTES);
 		for (let i = 0; i < na; i++) {
 			const info = gl.getActiveAttrib(program, i);
 			const location = gl.getAttribLocation(program, info.name);
-			this.attributes[info.name] = { location, type: info.type, size: info.size, locationSize: info.type === gl.FLOAT_MAT4 ? 4 : (info.type === gl.FLOAT_MAT3 ? 3 : (info.type === gl.FLOAT_MAT2 ? 2 : 1)) };
+			const record = { name: info.name, location, type: info.type, size: info.size, locationSize: info.type === gl.FLOAT_MAT4 ? 4 : (info.type === gl.FLOAT_MAT3 ? 3 : (info.type === gl.FLOAT_MAT2 ? 2 : 1)) };
+			this.attributes[info.name] = record;
+			if (FIXED_ATTRIBUTES[info.name] === undefined && location >= 0) this.customAttributes.push(record);
 		}
+		this.hasCustomAttributes = this.customAttributes.length > 0;
 
 		// sampler units are fixed: assign once
 		gl.useProgram(program);
@@ -183,6 +188,7 @@ class WebGLPrograms {
 			sizeAttenuation: (materialType === MATERIAL_POINTS || materialType === MATERIAL_SPRITE) && material.sizeAttenuation === true,
 			premultipliedAlpha: material.premultipliedAlpha === true,
 			dithering: material.dithering === true,
+			vertexUv1s: hasUv1,
 			toneMapped: toneMapping !== NoToneMapping,
 			toneMapping,
 			sRGBOutput,
@@ -194,7 +200,7 @@ class WebGLPrograms {
 		key = key * 2 + (useUv ? 1 : 0); key = key * 2 + (useUv1 ? 1 : 0); key = key * 2 + (vertexColors ? 1 : 0); key = key * 2 + (p.vertexAlphas ? 1 : 0);
 		key = key * 2 + (p.instancing ? 1 : 0); key = key * 2 + (p.instancingColor ? 1 : 0); key = key * 2 + (p.flatShading ? 1 : 0); key = key * 2 + (p.doubleSided ? 1 : 0);
 		key = key * 2 + (fog ? 1 : 0); key = key * 2 + (p.alphaTest ? 1 : 0); key = key * 2 + (p.sizeAttenuation ? 1 : 0); key = key * 2 + (p.premultipliedAlpha ? 1 : 0);
-		key = key * 2 + (p.dithering ? 1 : 0); key = key * 8 + toneMapping; key = key * 2 + (sRGBOutput ? 1 : 0);
+		key = key * 2 + (p.dithering ? 1 : 0); key = key * 2 + (hasUv1 ? 1 : 0); key = key * 8 + toneMapping; key = key * 2 + (sRGBOutput ? 1 : 0);
 		key = key * 8 + numDirShadows; key = key * 8 + numSpotShadows;
 		p.key = key;
 		return p;

@@ -27,6 +27,7 @@ class WebGLBindingStates {
 		const entry = this.cache.get(geometry);
 		if (entry !== undefined) {
 			for (const key in entry.vaos) { const v = entry.vaos[key]; if (v) this.gl.deleteVertexArray(v.vao); }
+			if (entry.custom !== null) for (const r of entry.custom.values()) this.gl.deleteVertexArray(r.vao);
 			this.cache.delete(geometry);
 		}
 		for (const name in geometry.attributes) this.attributes.remove(geometry.attributes[name]);
@@ -38,11 +39,15 @@ class WebGLBindingStates {
 	 * mode: 0 plain, 1 InstancedMesh (its own instance attributes), 2 batched (renderer's instance buffer).
 	 * Returns the binding record {vao, indexType, indexBytes}.
 	 */
-	bind(geometry, mode, instancedObject, batchBuffer) {
+	/**
+	 * `program` is only needed for programs with custom (non-fixed-name) attributes; those get a
+	 * VAO per (geometry, program) instead of the shared one.
+	 */
+	bind(geometry, mode, instancedObject, batchBuffer, program = null) {
 		const gl = this.gl, attributes = this.attributes;
 		let entry = this.cache.get(geometry);
 		if (entry === undefined) {
-			entry = { vaos: [null, null, null], layoutVersion: -1, instancedFor: null, hadInstanceColor: false };
+			entry = { vaos: [null, null, null], layoutVersion: -1, instancedFor: null, hadInstanceColor: false, custom: null };
 			this.cache.set(geometry, entry);
 			geometry.addEventListener('dispose', this._onGeometryDispose);
 		}
@@ -72,13 +77,23 @@ class WebGLBindingStates {
 		if (this.state.currentArrayBuffer !== null) this.state.currentArrayBuffer = null; // buffer updates bypass the cache
 		if (rebuild) {
 			for (let i = 0; i < 3; i++) { if (entry.vaos[i] !== null) { gl.deleteVertexArray(entry.vaos[i].vao); entry.vaos[i] = null; } }
+			if (entry.custom !== null) { for (const r of entry.custom.values()) gl.deleteVertexArray(r.vao); entry.custom.clear(); }
 			entry.layoutVersion = geometry._layoutVersion;
 			if (this.state.currentVAO !== null) { gl.bindVertexArray(null); this.state.currentVAO = null; }
 		}
-		let record = entry.vaos[mode];
+		const useCustom = program !== null && program.hasCustomAttributes === true;
+		let record;
+		if (useCustom) {
+			if (entry.custom === null) entry.custom = new Map();
+			const key = program.id * 4 + mode;
+			record = entry.custom.get(key);
+			if (record === undefined) record = null;
+		} else {
+			record = entry.vaos[mode];
+		}
 		if (record === null) {
-			record = this._createVAO(geometry, mode, instancedObject, batchBuffer);
-			entry.vaos[mode] = record;
+			record = this._createVAO(geometry, mode, instancedObject, batchBuffer, useCustom ? program : null);
+			if (useCustom) entry.custom.set(program.id * 4 + mode, record); else entry.vaos[mode] = record;
 			this.state.currentVAO = record.vao; // _createVAO leaves it bound
 		} else {
 			this.state.bindVertexArray(record.vao);
@@ -95,18 +110,27 @@ class WebGLBindingStates {
 		return record;
 	}
 
-	_createVAO(geometry, mode, instancedObject, batchBuffer) {
+	_createVAO(geometry, mode, instancedObject, batchBuffer, program) {
 		const gl = this.gl, attributes = this.attributes;
 		const vao = gl.createVertexArray();
 		gl.bindVertexArray(vao);
 		this.state.currentArrayBuffer = null;
 		const geometryAttributes = geometry.attributes;
+		let maxInstancedCount = Infinity;
 		for (const name in geometryAttributes) {
-			const location = ATTRIBUTE_LOCATIONS[name];
-			if (location === undefined) continue;
 			const attribute = geometryAttributes[name];
+			let location = ATTRIBUTE_LOCATIONS[name];
+			if (location === undefined && program !== null) {
+				const custom = program.attributes[name];
+				if (custom !== undefined && custom.location >= 0) location = custom.location;
+			}
+			if (location === undefined) continue;
 			const data = attributes.get(attribute);
 			this._setupAttribute(location, attribute, data);
+			if (attribute.isInstancedBufferAttribute) {
+				gl.vertexAttribDivisor(location, attribute.meshPerAttribute);
+				maxInstancedCount = Math.min(maxInstancedCount, attribute.count * attribute.meshPerAttribute);
+			}
 		}
 		const index = geometry.index;
 		let indexType = 0, indexBytes = 0;
@@ -141,7 +165,7 @@ class WebGLBindingStates {
 			}
 		}
 		gl.bindBuffer(gl.ARRAY_BUFFER, null);
-		return { vao, indexType, indexBytes };
+		return { vao, indexType, indexBytes, maxInstancedCount };
 	}
 
 	_setupAttribute(location, attribute, data) {

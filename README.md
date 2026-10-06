@@ -87,7 +87,17 @@ space, sRGB output, physically based light units):
   `SpriteMaterial`, `ShaderMaterial`, `RawShaderMaterial`. Maps: `map`, `alphaMap`, `normalMap`,
   `emissiveMap`, `roughnessMap`, `metalnessMap`, `aoMap`, `specularMap`; vertex colours,
   `flatShading`, `wireframe`, `alphaTest`, transparency and all blending modes, `side`,
-  `depthTest/Write`, polygon offset, `alphaToCoverage`, `premultipliedAlpha`, `dithering`.
+  `depthTest/Write`, polygon offset, `alphaToCoverage`, `premultipliedAlpha`, `dithering`, and the
+  full stencil state (`stencilWrite`, `stencilFunc/Ref/FuncMask`, `stencilWriteMask`,
+  `stencilFail/ZFail/ZPass`) for stencil-shadow and masking techniques.
+* **ShaderMaterial** gets the same treatment as in three.js: the identical prefix (precision,
+  `SHADER_TYPE`/`SHADER_NAME`, your `defines`, feature defines, built-in uniforms and attributes),
+  `#include <chunk>` resolution from the complete ported `ShaderChunk` library, `UniformsLib`,
+  `#pragma unroll_loop`, GLSL 1.00 to ES 3.00 shims (`gl_FragColor`, `texture2D`, …), custom
+  vertex attributes, `InstancedBufferGeometry` / `InstancedBufferAttribute`, struct and array
+  uniforms, arrays of textures, and `sampler2D` / `sampler3D` / `sampler2DArray` / `samplerCube`
+  uniforms. Fog uniforms and `toneMappingExposure` are filled from the scene and renderer.
+  `lights: true` (scene-driven light uniforms) is not implemented.
 * **Lights:** `AmbientLight`, `HemisphereLight`, `DirectionalLight`, `PointLight`, `SpotLight`
   (`RectAreaLight` is accepted but not shaded). Shadow maps for directional and spot lights
   (`castShadow`, `receiveShadow`, `shadow.mapSize/bias/normalBias/radius/camera`).
@@ -100,13 +110,16 @@ space, sRGB output, physically based light units):
   three.js and builds 2–13x faster (pre-sized typed arrays).
 * **Math:** `Vector2/3/4`, `Matrix3/4`, `Quaternion`, `Euler`, `Color` + `ColorManagement`,
   `Box3`, `Sphere`, `Plane`, `Ray`, `Frustum`, `Triangle`, `Line3`, `Spherical`, `MathUtils`.
-* **Textures & loaders:** `Texture`, `CanvasTexture`, `DataTexture`, `DepthTexture`,
-  `TextureLoader`, `ImageLoader`, `FileLoader`, `LoadingManager`, `Cache`.
+* **Textures & loaders:** `Texture`, `CanvasTexture`, `DataTexture`, `Data3DTexture`,
+  `DataArrayTexture` (with `layerUpdates`), `CubeTexture`, `DepthTexture`, `TextureLoader`,
+  `ImageLoader`, `FileLoader`, `LoadingManager`, `Cache`.
 * **Helpers:** `AxesHelper`, `GridHelper`, `BoxHelper`.
 
-Not implemented (yet): environment maps / IBL, point-light shadows, skinning and morph
-targets, clipping planes, `Scene.background` textures, post-processing, loaders beyond
-textures (GLTFLoader etc. live in three's `examples/`, as do the controls), WebGL1.
+Not implemented (yet): environment maps / IBL on built-in materials, point-light shadows,
+skinning and morph targets, clipping planes, `Scene.background` textures, `ShaderMaterial`
+`lights: true`, `onBeforeCompile` for built-in materials, `InterleavedBufferAttribute`,
+post-processing, loaders beyond textures (GLTFLoader etc. live in three's `examples/`, as do
+the controls), WebGL1.
 
 ### Behavioural differences to know about
 
@@ -141,8 +154,8 @@ MIT. Geometry generators and parts of the math library are ported from three.js 
 
 Open `bench/conformance.html` from any static host (GitHub Pages, `npm run bench:serve` then
 `http://<your-machine>:8765/bench/conformance.html` on the phone). It reports the device's WebGL2
-limits, runs 17 rendering checks with pixel probes (lighting, batching vs. individual draws,
-instancing, transparency, textures, fog, shadows, sprites, ShaderMaterial, render targets,
-raycasting), times a 2 000-object scene, and when a CDN is reachable runs the same scene with
+limits, runs 23 rendering checks with pixel probes (lighting, batching vs. individual draws,
+instancing, transparency, 2D/3D/array/cube textures, stencil, fog, shadows, sprites,
+ShaderMaterial with chunks and custom attributes, render targets, raycasting), times a 2 000-object scene, and when a CDN is reachable runs the same scene with
 three.js for a side-by-side number. "Copy report" puts the JSON on the clipboard.
 `node bench/conformance.mjs` runs the same page in headless Chromium.

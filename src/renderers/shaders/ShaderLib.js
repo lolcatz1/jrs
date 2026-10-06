@@ -1,3 +1,8 @@
+import { ShaderChunk } from './ShaderChunk.js';
+import {
+	NoToneMapping as _NoToneMapping, LinearToneMapping, ReinhardToneMapping, CineonToneMapping, ACESFilmicToneMapping, AgXToneMapping, NeutralToneMapping,
+	SRGBColorSpace as _SRGBColorSpace
+} from '../../constants.js';
 /**
  * Shader library.
  *
@@ -723,71 +728,183 @@ export function buildBuiltinShader(p) {
 	return { vertexShader: vs, fragmentShader: prefix + fs };
 }
 
-/** Converts a GLSL 1.00 three.js-style ShaderMaterial source to GLSL ES 3.00. */
-export function buildCustomShader(material, p) {
-	const defines = [];
-	for (const name in material.defines) {
-		const v = material.defines[name];
-		if (v === false) continue;
-		defines.push(v === true || v === '' ? `#define ${name}` : `#define ${name} ${v}`);
-	}
-	if (p.instancing) defines.push('#define USE_INSTANCING');
-	if (p.vertexColors) defines.push('#define USE_COLOR');
-	if (p.fog) defines.push('#define USE_FOG');
-	const isRaw = material.isRawShaderMaterial === true;
-	const version = material.glslVersion === '300 es' || isRaw === false ? '300 es' : null;
 
-	let vs = material.vertexShader, fs = material.fragmentShader;
-	const stripIncludes = (src) => src.replace(/^[ \t]*#include +<([\w\d./]+)>/gm, (m, name) => {
-		if (!warnedIncludes.has(name)) { warnedIncludes.add(name); console.warn(`jrs: ShaderMaterial #include <${name}> is not available; the directive was removed.`); }
-		return '';
-	});
-	vs = stripIncludes(vs); fs = stripIncludes(fs);
+const toneMappingFunctions = {
+	[LinearToneMapping]: 'Linear', [ReinhardToneMapping]: 'Reinhard', [CineonToneMapping]: 'Cineon',
+	[ACESFilmicToneMapping]: 'ACESFilmic', [AgXToneMapping]: 'AgX', [NeutralToneMapping]: 'Neutral', 5: 'Custom',
+};
+const includePattern = /^[ \t]*#include +<([\w\d./]+)>/gm;
+const unrollLoopPattern = /#pragma unroll_loop_start\s+for\s*\(\s*int\s+i\s*=\s*(\d+)\s*;\s*i\s*<\s*(\d+)\s*;\s*i\s*\+\+\s*\)\s*{([\s\S]+?)}\s+#pragma unroll_loop_end/g;
+const warnedIncludes = new Set();
 
-	const standardVertexUniforms = isRaw ? '' : `
-precision ${material.precision || 'highp'} float;
-precision ${material.precision || 'highp'} int;
-#define SHADER_TYPE ${material.type}
-#define SHADER_NAME ${material.name || material.type}
-uniform mat4 modelMatrix;
-uniform mat4 modelViewMatrix;
-uniform mat4 projectionMatrix;
-uniform mat4 viewMatrix;
-uniform mat3 normalMatrix;
-uniform vec3 cameraPosition;
-uniform bool isOrthographic;
-in vec3 position;
-in vec3 normal;
-in vec2 uv;
-#ifdef USE_INSTANCING
-in mat4 instanceMatrix;
-#endif
-#ifdef USE_COLOR
-in vec3 color;
-#endif
-`;
-	const standardFragmentUniforms = isRaw ? '' : `
-precision ${material.precision || 'highp'} float;
-precision ${material.precision || 'highp'} int;
-#define SHADER_TYPE ${material.type}
-#define SHADER_NAME ${material.name || material.type}
-uniform mat4 viewMatrix;
-uniform vec3 cameraPosition;
-uniform bool isOrthographic;
-`;
-	const needsGL1Conversion = version === '300 es' && material.glslVersion !== '300 es';
-	if (needsGL1Conversion) {
-		vs = vs.replace(/\battribute\b/g, 'in').replace(/\bvarying\b/g, 'out').replace(/\btexture2D\b/g, 'texture').replace(/\btextureCube\b/g, 'texture');
-		fs = fs.replace(/\bvarying\b/g, 'in').replace(/\btexture2D\b/g, 'texture').replace(/\btextureCube\b/g, 'texture').replace(/\bgl_FragDepthEXT\b/g, 'gl_FragDepth');
-		if (fs.indexOf('gl_FragColor') !== -1) {
-			fs = 'layout(location = 0) out highp vec4 pc_fragColor;\n#define gl_FragColor pc_fragColor\n' + fs;
+function resolveIncludes(string) {
+	return string.replace(includePattern, (match, include) => {
+		const chunk = ShaderChunk[include];
+		if (chunk === undefined) {
+			if (!warnedIncludes.has(include)) { warnedIncludes.add(include); console.warn(`jrs: can not resolve #include <${include}>; the directive was removed.`); }
+			return '';
 		}
+		return resolveIncludes(chunk);
+	});
+}
+function unrollLoops(string) {
+	return string.replace(unrollLoopPattern, (match, start, end, snippet) => {
+		let out = '';
+		for (let i = parseInt(start); i < parseInt(end); i++) out += snippet.replace(/\[\s*i\s*\]/g, '[ ' + i + ' ]').replace(/UNROLLED_LOOP_INDEX/g, i);
+		return out;
+	});
+}
+const LIGHT_NUMS = ['NUM_SUN_LIGHTS', 'NUM_DIR_LIGHTS', 'NUM_SPOT_LIGHTS', 'NUM_SPOT_LIGHT_MAPS', 'NUM_SPOT_LIGHT_COORDS', 'NUM_RECT_AREA_LIGHTS', 'NUM_POINT_LIGHTS', 'NUM_HEMI_LIGHTS',
+	'NUM_SUN_LIGHT_SHADOWS', 'NUM_DIR_LIGHT_SHADOWS', 'NUM_SPOT_LIGHT_SHADOWS_WITH_MAPS', 'NUM_SPOT_LIGHT_SHADOWS', 'NUM_POINT_LIGHT_SHADOWS'];
+function replaceLightNums(string, defines) {
+	// three.js substitutes these from the scene's light counts; ShaderMaterial lighting is not
+	// driven by the scene here, so they resolve to 0 unless the material defines them.
+	for (const name of LIGHT_NUMS) {
+		const value = defines && defines[name] !== undefined ? defines[name] : 0;
+		string = string.replace(new RegExp(name + '(?![A-Z_])', 'g'), String(value));
 	}
-	const head = (version ? `#version ${version}\n` : '') + defines.join('\n') + '\n';
-	return {
-		vertexShader: head + standardVertexUniforms + vs,
-		fragmentShader: head + standardFragmentUniforms + fs,
-	};
+	return string;
+}
+function generatePrecision(precision) {
+	const kinds = ['float', 'int', 'sampler2D', 'samplerCube', 'sampler3D', 'sampler2DArray', 'sampler2DShadow', 'samplerCubeShadow', 'sampler2DArrayShadow', 'isampler2D', 'isampler3D', 'isamplerCube', 'isampler2DArray', 'usampler2D', 'usampler3D', 'usamplerCube', 'usampler2DArray'];
+	let out = kinds.map((k) => `precision ${precision} ${k};`).join('\n');
+	out += precision === 'highp' ? '\n#define HIGH_PRECISION' : (precision === 'mediump' ? '\n#define MEDIUM_PRECISION' : '\n#define LOW_PRECISION');
+	return out;
+}
+function generateDefines(defines) {
+	const chunks = [];
+	for (const name in defines) {
+		const value = defines[name];
+		if (value === false) continue;
+		chunks.push('#define ' + name + ' ' + value);
+	}
+	return chunks.join('\n');
+}
+const filterEmptyLine = (string) => string !== '';
+
+/**
+ * Builds a ShaderMaterial / RawShaderMaterial program the way three.js's WebGLProgram does:
+ * same prefix (precision, SHADER_TYPE/NAME, custom defines, feature defines, built-in uniforms
+ * and attributes), #include <chunk> resolution from the ported ShaderChunk library,
+ * #pragma unroll_loop support, light-count substitution and GLSL 1.00 -> ES 3.00 shims.
+ */
+export function buildCustomShader(material, p) {
+	const isRaw = material.isRawShaderMaterial === true;
+	const glsl3 = material.glslVersion === '300 es';
+	const precision = material.precision || 'highp';
+	const customDefines = generateDefines(material.defines || {});
+	const shaderName = material.name || material.type;
+	const toneMapping = p.toneMapping | 0;
+	const colorSpaceFn = p.sRGBOutput ? 'sRGBTransferOETF' : 'LinearTransferOETF';
+
+	let prefixVertex, prefixFragment;
+	if (isRaw) {
+		prefixVertex = [customDefines].filter(filterEmptyLine).join('\n');
+		prefixFragment = [customDefines].filter(filterEmptyLine).join('\n');
+	} else {
+		prefixVertex = [
+			generatePrecision(precision),
+			'#define SHADER_TYPE ' + material.type,
+			'#define SHADER_NAME ' + shaderName,
+			customDefines,
+			p.instancing ? '#define USE_INSTANCING' : '',
+			p.instancingColor ? '#define USE_INSTANCING_COLOR' : '',
+			p.fog ? '#define USE_FOG' : '',
+			p.fogExp2 ? '#define FOG_EXP2' : '',
+			p.vertexColors ? '#define USE_COLOR' : '',
+			p.vertexAlphas ? '#define USE_COLOR_ALPHA' : '',
+			p.vertexUv1s ? '#define USE_UV1' : '',
+			p.flatShading ? '#define FLAT_SHADED' : '',
+			p.doubleSided ? '#define DOUBLE_SIDED' : '',
+			p.sizeAttenuation ? '#define USE_SIZEATTENUATION' : '',
+			'uniform mat4 modelMatrix;',
+			'uniform mat4 modelViewMatrix;',
+			'uniform mat4 projectionMatrix;',
+			'uniform mat4 viewMatrix;',
+			'uniform mat3 normalMatrix;',
+			'uniform vec3 cameraPosition;',
+			'uniform bool isOrthographic;',
+			'#ifdef USE_INSTANCING',
+			'	attribute mat4 instanceMatrix;',
+			'#endif',
+			'#ifdef USE_INSTANCING_COLOR',
+			'	attribute vec3 instanceColor;',
+			'#endif',
+			'attribute vec3 position;',
+			'attribute vec3 normal;',
+			'attribute vec2 uv;',
+			'#ifdef USE_UV1',
+			'	attribute vec2 uv1;',
+			'#endif',
+			'#ifdef USE_TANGENT',
+			'	attribute vec4 tangent;',
+			'#endif',
+			'#if defined( USE_COLOR_ALPHA )',
+			'	attribute vec4 color;',
+			'#elif defined( USE_COLOR )',
+			'	attribute vec3 color;',
+			'#endif',
+			'#ifdef USE_SKINNING',
+			'	attribute vec4 skinIndex;',
+			'	attribute vec4 skinWeight;',
+			'#endif',
+			'\n'
+		].filter(filterEmptyLine).join('\n');
+		const encodingMatrix = 'mat3( 1.0000, 0.0000, 0.0000, 0.0000, 1.0000, 0.0000, 0.0000, 0.0000, 1.0000 )';
+		prefixFragment = [
+			generatePrecision(precision),
+			'#define SHADER_TYPE ' + material.type,
+			'#define SHADER_NAME ' + shaderName,
+			customDefines,
+			p.fog ? '#define USE_FOG' : '',
+			p.fogExp2 ? '#define FOG_EXP2' : '',
+			p.vertexColors ? '#define USE_COLOR' : '',
+			p.vertexAlphas ? '#define USE_COLOR_ALPHA' : '',
+			p.vertexUv1s ? '#define USE_UV1' : '',
+			p.flatShading ? '#define FLAT_SHADED' : '',
+			p.doubleSided ? '#define DOUBLE_SIDED' : '',
+			p.premultipliedAlpha ? '#define PREMULTIPLIED_ALPHA' : '',
+			'uniform mat4 viewMatrix;',
+			'uniform vec3 cameraPosition;',
+			'uniform bool isOrthographic;',
+			(toneMapping !== _NoToneMapping) ? '#define TONE_MAPPING' : '',
+			(toneMapping !== _NoToneMapping) ? ShaderChunk['tonemapping_pars_fragment'] : '',
+			(toneMapping !== _NoToneMapping) ? `vec3 toneMapping( vec3 color ) { return ${toneMappingFunctions[toneMapping] || 'Linear'}ToneMapping( color ); }` : '',
+			p.dithering ? '#define DITHERING' : '',
+			material.transparent === false ? '#define OPAQUE' : '',
+			ShaderChunk['colorspace_pars_fragment'],
+			`vec4 linearToOutputTexel( vec4 value ) {\n	return ${colorSpaceFn}( vec4( value.rgb * ${encodingMatrix}, value.a ) );\n}`,
+			'\n'
+		].filter(filterEmptyLine).join('\n');
+	}
+
+	let vertexShader = material.vertexShader, fragmentShader = material.fragmentShader;
+	vertexShader = resolveIncludes(vertexShader); vertexShader = replaceLightNums(vertexShader, material.defines);
+	fragmentShader = resolveIncludes(fragmentShader); fragmentShader = replaceLightNums(fragmentShader, material.defines);
+	vertexShader = unrollLoops(vertexShader); fragmentShader = unrollLoops(fragmentShader);
+
+	// Always GLSL ES 3.00 output. Sources written for GLSL 1.00 get the same shims three.js applies.
+	const versionString = '#version 300 es\n';
+	if (!glsl3 || !isRaw) {
+		prefixVertex = ['precision mediump sampler2DArray;', '#define attribute in', '#define varying out', '#define texture2D texture'].join('\n') + '\n' + prefixVertex;
+		prefixFragment = [
+			'precision mediump sampler2DArray;',
+			'#define varying in',
+			glsl3 ? '' : 'layout(location = 0) out highp vec4 pc_fragColor;',
+			glsl3 ? '' : '#define gl_FragColor pc_fragColor',
+			'#define gl_FragDepthEXT gl_FragDepth',
+			'#define texture2D texture',
+			'#define textureCube texture',
+			'#define texture2DProj textureProj',
+			'#define texture2DLodEXT textureLod',
+			'#define texture2DProjLodEXT textureProjLod',
+			'#define textureCubeLodEXT textureLod',
+			'#define texture2DGradEXT textureGrad',
+			'#define texture2DProjGradEXT textureProjGrad',
+			'#define textureCubeGradEXT textureGrad'
+		].filter(filterEmptyLine).join('\n') + '\n' + prefixFragment;
+	}
+	return { vertexShader: versionString + prefixVertex + vertexShader, fragmentShader: versionString + prefixFragment + fragmentShader };
 }
 
-const warnedIncludes = new Set();
+

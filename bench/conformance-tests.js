@@ -231,6 +231,122 @@ export function conformanceTests() {
 				return { pass: buf[1] > 240 && buf[0] < 10, detail: `render target centre ${fmt(Array.from(buf))}` };
 			}
 		},
+
+		{
+			name: 'Stencil state per material (mask and test)', run(T, renderer) {
+				const { scene, camera } = baseScene(T);
+				// pass 1: write stencil = 1 where a small quad is, without touching colour
+				const marker = new T.Mesh(new T.PlaneGeometry(1, 1), new T.MeshBasicMaterial({ colorWrite: false, depthWrite: false, stencilWrite: true, stencilFunc: T.AlwaysStencilFunc, stencilRef: 1, stencilZPass: T.ReplaceStencilOp, stencilZFail: T.ReplaceStencilOp, stencilFail: T.ReplaceStencilOp }));
+				marker.renderOrder = 0; scene.add(marker);
+				// pass 2: big green quad drawn only where stencil == 1
+				const fill = new T.Mesh(new T.PlaneGeometry(4, 4), new T.MeshBasicMaterial({ color: 0x00ff00, stencilWrite: true, stencilFunc: T.EqualStencilFunc, stencilRef: 1, stencilFuncMask: 0xff, stencilWriteMask: 0, stencilZPass: T.KeepStencilOp }));
+				fill.renderOrder = 1; fill.position.z = 0.1; scene.add(fill);
+				renderer.clear(true, true, true);
+				renderer.render(scene, camera);
+				const inside = readPixel(renderer, 128, 128), outside = readPixel(renderer, 40, 40);
+				return { pass: near(inside, [0, 255, 0], 3) && near(outside, [0, 0, 64], 2), detail: `inside marker ${fmt(inside)} (green), outside ${fmt(outside)} (background). Needs a renderer created with { stencil: true }.` };
+			}
+		},
+		{
+			name: 'Data3DTexture sampled through sampler3D', run(T, renderer) {
+				const { scene, camera } = baseScene(T);
+				const size = 4, data = new Uint8Array(size * size * size * 4);
+				for (let z = 0; z < size; z++) for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+					const i = (z * size * size + y * size + x) * 4;
+					data[i] = x * 85; data[i + 1] = y * 85; data[i + 2] = z * 85; data[i + 3] = 255;
+				}
+				const tex = new T.Data3DTexture(data, size, size, size);
+				tex.format = T.RGBAFormat; tex.type = T.UnsignedByteType; tex.needsUpdate = true;
+				const mat = new T.ShaderMaterial({
+					uniforms: { grid: { value: tex }, slice: { value: 0.875 } },
+					vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+					fragmentShader: 'precision highp sampler3D; uniform sampler3D grid; uniform float slice; varying vec2 vUv; void main(){ gl_FragColor = texture(grid, vec3(vUv, slice)); }',
+				});
+				scene.add(new T.Mesh(new T.PlaneGeometry(3, 3), mat));
+				renderer.render(scene, camera);
+				// the 3-unit plane spans pixels 46..210; probe the corner cells and one inner cell
+				const bl = readPixel(renderer, 50, 205), tr = readPixel(renderer, 205, 50), inner = readPixel(renderer, 90, 166);
+				// nearest filtering, slice z=3: cell (0,0) -> [0,0,255]; cell (3,3) -> [255,255,255]; cell (1,1) -> [85,85,255]
+				return { pass: near(bl, [0, 0, 255], 3) && near(tr, [255, 255, 255], 3) && near(inner, [85, 85, 255], 3), detail: `cells ${fmt(bl)} ${fmt(inner)} ${fmt(tr)} expected [0,0,255] [85,85,255] [255,255,255]` };
+			}
+		},
+		{
+			name: 'DataArrayTexture sampled through sampler2DArray', run(T, renderer) {
+				const { scene, camera } = baseScene(T);
+				const w = 2, h = 2, layers = 3, data = new Uint8Array(w * h * layers * 4);
+				const colors = [[255, 0, 0], [0, 255, 0], [0, 0, 255]];
+				for (let l = 0; l < layers; l++) for (let i = 0; i < w * h; i++) { const o = (l * w * h + i) * 4; data[o] = colors[l][0]; data[o + 1] = colors[l][1]; data[o + 2] = colors[l][2]; data[o + 3] = 255; }
+				const tex = new T.DataArrayTexture(data, w, h, layers); tex.format = T.RGBAFormat; tex.type = T.UnsignedByteType; tex.needsUpdate = true;
+				const mat = new T.ShaderMaterial({
+					uniforms: { atlas: { value: tex }, layer: { value: 2 } },
+					vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+					fragmentShader: 'precision highp sampler2DArray; uniform sampler2DArray atlas; uniform int layer; varying vec2 vUv; void main(){ gl_FragColor = texture(atlas, vec3(vUv, float(layer))); }',
+				});
+				scene.add(new T.Mesh(new T.PlaneGeometry(3, 3), mat));
+				renderer.render(scene, camera);
+				const c = readPixel(renderer, 128, 128);
+				// update a single layer and re-render
+				for (let i = 0; i < w * h; i++) { const o = (2 * w * h + i) * 4; data[o] = 255; data[o + 1] = 255; data[o + 2] = 0; }
+				tex.addLayerUpdate(2); tex.needsUpdate = true;
+				renderer.render(scene, camera);
+				const c2 = readPixel(renderer, 128, 128);
+				return { pass: near(c, [0, 0, 255], 3) && near(c2, [255, 255, 0], 3), detail: `layer 2 ${fmt(c)} expected [0,0,255]; after layer update ${fmt(c2)} expected [255,255,0]` };
+			}
+		},
+		{
+			name: 'CubeTexture sampled through samplerCube', run(T, renderer) {
+				const { scene, camera } = baseScene(T);
+				const faces = [[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 0], [0, 255, 255], [255, 0, 255]].map((c) => ({ data: new Uint8Array([c[0], c[1], c[2], 255]), width: 1, height: 1 }));
+				const tex = new T.CubeTexture(faces); tex.magFilter = T.NearestFilter; tex.minFilter = T.NearestFilter; tex.generateMipmaps = false; tex.needsUpdate = true;
+				const mat = new T.ShaderMaterial({
+					uniforms: { env: { value: tex } },
+					vertexShader: 'varying vec3 vDir; void main(){ vDir = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+					fragmentShader: 'uniform samplerCube env; varying vec3 vDir; void main(){ gl_FragColor = textureCube(env, normalize(vDir)); }',
+				});
+				scene.add(new T.Mesh(new T.BoxGeometry(2, 2, 2), mat));
+				renderer.render(scene, camera);
+				const c = readPixel(renderer, 128, 128); // +Z face -> cyan
+				return { pass: near(c, [0, 255, 255], 3), detail: `front face ${fmt(c)} expected [0,255,255] (+Z)` };
+			}
+		},
+		{
+			name: 'ShaderMaterial with #include chunks, fog uniforms and struct array uniforms', run(T, renderer) {
+				const { scene, camera } = baseScene(T);
+				scene.fog = new T.Fog(0x000040, 1, 20);
+				const mat = new T.ShaderMaterial({
+					fog: true,
+					uniforms: T.UniformsUtils.merge([T.UniformsLib.fog, { lights2: { value: [{ color: new T.Color(1, 0, 0), weight: 0.25 }, { color: new T.Color(0, 1, 0), weight: 0.75 }] }, scales: { value: [0.5, 2.0] } }]),
+					vertexShader: '#include <common>\n#include <fog_pars_vertex>\nvoid main(){ vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); gl_Position = projectionMatrix * mvPosition;\n#include <fog_vertex>\n}',
+					fragmentShader: '#include <common>\n#include <fog_pars_fragment>\nstruct L { vec3 color; float weight; }; uniform L lights2[2]; uniform float scales[2];\nvoid main(){ vec3 c = vec3(0.0); for (int i = 0; i < 2; i++) c += lights2[i].color * lights2[i].weight * scales[i]; gl_FragColor = vec4(saturate(c), 1.0);\n#include <fog_fragment>\n}',
+				});
+				scene.add(new T.Mesh(new T.PlaneGeometry(3, 3), mat));
+				renderer.render(scene, camera);
+				const c = readPixel(renderer, 128, 128);
+				// colour = (0.125, 1.5 -> 1, 0), fog factor smoothstep(1, 20, 5) = 0.114 toward the scene fog colour,
+				// which stays linear (0.0144 blue) because the shader does not include <colorspace_fragment>, as in three.js
+				return { pass: near(c, [27, 226, 1], 4), detail: `centre ${fmt(c)} expected [27,226,1] (scene fog colour applied, struct/array uniforms summed)` };
+			}
+		},
+		{
+			name: 'Custom vertex attributes and InstancedBufferGeometry', run(T, renderer) {
+				const { scene, camera } = baseScene(T);
+				const geo = new T.InstancedBufferGeometry();
+				geo.setAttribute('position', new T.Float32BufferAttribute([-0.4, -0.4, 0, 0.4, -0.4, 0, 0.4, 0.4, 0, -0.4, 0.4, 0], 3));
+				geo.setIndex([0, 1, 2, 0, 2, 3]);
+				geo.setAttribute('offset', new T.InstancedBufferAttribute(new Float32Array([-1.2, 0, 0, 0, 0, 0, 1.2, 0, 0]), 3));
+				geo.setAttribute('tint', new T.InstancedBufferAttribute(new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]), 3));
+				geo.setAttribute('scaleFactor', new T.InstancedBufferAttribute(new Float32Array([1, 1.5, 1]), 1));
+				geo.instanceCount = 3;
+				const mat = new T.ShaderMaterial({
+					vertexShader: 'attribute vec3 offset; attribute vec3 tint; attribute float scaleFactor; varying vec3 vTint; void main(){ vTint = tint; gl_Position = projectionMatrix * modelViewMatrix * vec4(position * scaleFactor + offset, 1.0); }',
+					fragmentShader: 'varying vec3 vTint; void main(){ gl_FragColor = vec4(vTint, 1.0); }',
+				});
+				scene.add(new T.Mesh(geo, mat));
+				renderer.render(scene, camera);
+				const l = readPixel(renderer, 128 - 54, 128), m = readPixel(renderer, 128, 128), r = readPixel(renderer, 128 + 54, 128);
+				return { pass: near(l, [255, 0, 0], 3) && near(m, [0, 255, 0], 3) && near(r, [0, 0, 255], 3) && renderer.info.render.calls === 1, detail: `instances ${fmt(l)} ${fmt(m)} ${fmt(r)}, calls ${renderer.info.render.calls}` };
+			}
+		},
 		{
 			name: 'Raycaster hit through camera', run(T, renderer) {
 				const { scene, camera } = baseScene(T);

@@ -35,7 +35,7 @@ function addRow(name, status, detail) {
 async function main() {
 	let renderer;
 	try {
-		renderer = new JRS.WebGLRenderer({ canvas, antialias: false, preserveDrawingBuffer: true });
+		renderer = new JRS.WebGLRenderer({ canvas, antialias: false, preserveDrawingBuffer: true, stencil: true });
 	} catch (e) {
 		$('env').textContent = 'WebGL2 is not available on this device/browser: ' + e.message;
 		report.error = e.message; finish(); return;

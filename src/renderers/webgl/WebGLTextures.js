@@ -161,6 +161,7 @@ class WebGLTextures {
 		const gl = this.gl;
 		gl.texParameteri(target, gl.TEXTURE_WRAP_S, this.wrapToGL[texture.wrapS]);
 		gl.texParameteri(target, gl.TEXTURE_WRAP_T, this.wrapToGL[texture.wrapT]);
+		if (target === gl.TEXTURE_3D || target === gl.TEXTURE_2D_ARRAY) gl.texParameteri(target, gl.TEXTURE_WRAP_R, this.wrapToGL[texture.wrapR !== undefined ? texture.wrapR : texture.wrapS]);
 		gl.texParameteri(target, gl.TEXTURE_MAG_FILTER, this.filterToGL[texture.magFilter]);
 		gl.texParameteri(target, gl.TEXTURE_MIN_FILTER, this.filterToGL[texture.minFilter]);
 		if (texture.compareFunction) {
@@ -252,6 +253,87 @@ class WebGLTextures {
 		if (texture.onUpdate) texture.onUpdate(texture);
 	}
 
+	/** Binds a Data3DTexture to `slot`, uploading on version change. */
+	setTexture3D(texture, slot) { this._setTextureLayered(texture, slot, this.gl.TEXTURE_3D); }
+	/** Binds a DataArrayTexture to `slot`, uploading on version change (honours layerUpdates). */
+	setTexture2DArray(texture, slot) { this._setTextureLayered(texture, slot, this.gl.TEXTURE_2D_ARRAY); }
+	_setTextureLayered(texture, slot, target) {
+		const gl = this.gl, state = this.state;
+		const p = this.get(texture);
+		if (p.webglTexture === undefined) {
+			p.webglTexture = gl.createTexture();
+			this.info.memory.textures++;
+			texture.addEventListener('dispose', this._onTextureDispose);
+		}
+		state.bindTexture(target, p.webglTexture, slot);
+		if (p.version === texture.version || texture.image === null) return;
+		const image = texture.image;
+		gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+		gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, texture.premultiplyAlpha);
+		gl.pixelStorei(gl.UNPACK_ALIGNMENT, texture.unpackAlignment);
+		const glFormat = this.glFormat(texture.format), glType = this.glType(texture.type);
+		const glInternalFormat = this.glInternalFormat(texture.internalFormat, glFormat, glType, texture.colorSpace);
+		this._setTextureParameters(target, texture);
+		const useMipmaps = this._textureNeedsMipmaps(texture);
+		const levels = useMipmaps ? Math.floor(Math.log2(Math.max(image.width, image.height, target === gl.TEXTURE_3D ? image.depth : 1))) + 1 : 1;
+		if (p.allocated !== true || p.width !== image.width || p.height !== image.height || p.depth !== image.depth || p.levels !== levels) {
+			if (p.allocated === true) { gl.deleteTexture(p.webglTexture); p.webglTexture = gl.createTexture(); state.bindTexture(target, p.webglTexture, slot); this._setTextureParameters(target, texture); }
+			gl.texStorage3D(target, levels, glInternalFormat, image.width, image.height, image.depth);
+			p.allocated = true; p.width = image.width; p.height = image.height; p.depth = image.depth; p.levels = levels;
+			p.fullUploadNeeded = true;
+		}
+		if (image.data !== undefined && image.data !== null) {
+			const layerUpdates = texture.layerUpdates;
+			if (target === gl.TEXTURE_2D_ARRAY && layerUpdates !== undefined && layerUpdates.size > 0 && p.fullUploadNeeded !== true) {
+				const layerBytes = getByteLength(image.width, image.height, texture.format, texture.type);
+				for (const layerIndex of layerUpdates) {
+					const layerData = image.data.subarray(layerIndex * layerBytes / image.data.BYTES_PER_ELEMENT, (layerIndex + 1) * layerBytes / image.data.BYTES_PER_ELEMENT);
+					gl.texSubImage3D(target, 0, 0, 0, layerIndex, image.width, image.height, 1, glFormat, glType, layerData);
+				}
+				texture.clearLayerUpdates();
+			} else {
+				gl.texSubImage3D(target, 0, 0, 0, 0, image.width, image.height, image.depth, glFormat, glType, image.data);
+			}
+			p.fullUploadNeeded = false;
+		}
+		if (useMipmaps) gl.generateMipmap(target);
+		p.version = texture.version;
+		if (texture.onUpdate) texture.onUpdate(texture);
+	}
+	/** Binds a CubeTexture (six images or six DataTexture-like objects) to `slot`. */
+	setTextureCube(texture, slot) {
+		const gl = this.gl, state = this.state;
+		const p = this.get(texture);
+		if (p.webglTexture === undefined) {
+			p.webglTexture = gl.createTexture();
+			this.info.memory.textures++;
+			texture.addEventListener('dispose', this._onTextureDispose);
+		}
+		state.bindTexture(gl.TEXTURE_CUBE_MAP, p.webglTexture, slot);
+		const images = texture.image;
+		if (p.version === texture.version || !Array.isArray(images) || images.length < 6) return;
+		for (let i = 0; i < 6; i++) { const im = images[i]; if (!im || (im.complete === false)) return; }
+		gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, texture.flipY);
+		gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, texture.premultiplyAlpha);
+		gl.pixelStorei(gl.UNPACK_ALIGNMENT, texture.unpackAlignment);
+		gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+		const glFormat = this.glFormat(texture.format), glType = this.glType(texture.type);
+		const glInternalFormat = this.glInternalFormat(texture.internalFormat, glFormat, glType, texture.colorSpace);
+		this._setTextureParameters(gl.TEXTURE_CUBE_MAP, texture);
+		for (let i = 0; i < 6; i++) {
+			const im = images[i];
+			if (im.isDataTexture || (im.data !== undefined && im.width !== undefined)) {
+				const d = im.isDataTexture ? im.image : im;
+				gl.texImage2D(gl.TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, glInternalFormat, d.width, d.height, 0, glFormat, glType, d.data);
+			} else {
+				gl.texImage2D(gl.TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, glInternalFormat, glFormat, glType, im);
+			}
+		}
+		if (this._textureNeedsMipmaps(texture)) gl.generateMipmap(gl.TEXTURE_CUBE_MAP);
+		p.version = texture.version;
+		if (texture.onUpdate) texture.onUpdate(texture);
+	}
+
 	/** Sets up (once) and binds a render target's framebuffer. */
 	setupRenderTarget(renderTarget) {
 		const gl = this.gl, state = this.state;
@@ -329,3 +411,15 @@ class WebGLTextures {
 }
 
 export { WebGLTextures };
+
+function getByteLength(width, height, format, type) {
+	const typeBytes = (type === FloatType || type === UnsignedIntType || type === IntType) ? 4 : ((type === HalfFloatType || type === UnsignedShortType || type === ShortType) ? 2 : 1);
+	let components = 4;
+	switch (format) {
+		case RedFormat: case RedIntegerFormat: case AlphaFormat: case LuminanceFormat: case DepthFormat: components = 1; break;
+		case RGFormat: case RGIntegerFormat: case LuminanceAlphaFormat: components = 2; break;
+		case RGBFormat: components = 3; break;
+		default: components = 4;
+	}
+	return width * height * components * typeBytes;
+}

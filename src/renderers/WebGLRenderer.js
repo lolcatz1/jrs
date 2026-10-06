@@ -243,7 +243,7 @@ class WebGLRenderer {
 		let bits = 0;
 		if (color) bits |= gl.COLOR_BUFFER_BIT;
 		if (depth) { bits |= gl.DEPTH_BUFFER_BIT; this.state.setDepthMask(true); }
-		if (stencil) { bits |= gl.STENCIL_BUFFER_BIT; gl.stencilMask(0xffffffff); }
+		if (stencil) { bits |= gl.STENCIL_BUFFER_BIT; this.state.setStencilMask(0xffffffff); }
 		gl.clear(bits);
 	}
 	clearColor() { this.clear(true, false, false); }
@@ -816,9 +816,11 @@ class WebGLRenderer {
 		if (program.spriteCenterLocation !== null) gl.uniform2f(program.spriteCenterLocation, object.center.x, object.center.y);
 		// geometry
 		const mode = object.isInstancedMesh ? 1 : 0;
-		const record = this.bindingStates.bind(geometry, mode, object, null);
-		const instanceCount = object.isInstancedMesh ? Math.min(object.count, object.instanceMatrix.count) : 1;
-		this._draw(record, geometry, group, this._drawMode(object, material), instanceCount, object.isInstancedMesh);
+		const record = this.bindingStates.bind(geometry, mode, object, null, program);
+		let instanceCount = 1, instanced = false;
+		if (object.isInstancedMesh) { instanceCount = Math.min(object.count, object.instanceMatrix.count); instanced = true; }
+		else if (geometry.isInstancedBufferGeometry) { instanceCount = Math.min(geometry.instanceCount, record.maxInstancedCount); instanced = true; }
+		this._draw(record, geometry, group, this._drawMode(object, material), instanceCount, instanced);
 		if (object.onAfterRender !== defaultOnAfterRender) object.onAfterRender(this, scene, camera, geometry, material, group);
 	}
 
@@ -831,7 +833,7 @@ class WebGLRenderer {
 		this._setupMaterial(item, program, material, camera, false, shadowPass ? shadowSideOf(material) : material.side);
 		if (material.wireframe === true) geometry = this._wireframeGeometry(geometry);
 		if (program.modelMatrixLocation !== null) gl.uniformMatrix4fv(program.modelMatrixLocation, false, IDENTITY);
-		const record = this.bindingStates.bind(geometry, 2, null, this.batcher.buffer);
+		const record = this.bindingStates.bind(geometry, 2, null, this.batcher.buffer, program);
 		this.bindingStates.setBatchOffset(this.batcher.buffer, instanceOffset * 64);
 		this._draw(record, geometry, null, this._drawMode(object, material), instanceCount, true);
 		this.info.render.batches++;
@@ -874,18 +876,37 @@ class WebGLRenderer {
 	_uploadShaderMaterialUniforms(program, material, camera, programChanged) {
 		const gl = this._gl;
 		const uniforms = material.uniforms;
-		let textureUnit = 0; // custom programs don't use the fixed unit table
-		for (const name in uniforms) {
-			const u = program.uniforms[name];
-			if (u === undefined) continue;
-			const value = uniforms[name].value;
-			textureUnit = setUniformValue(gl, this, u, value, textureUnit);
-		}
+		this._textureUnit = 0; // custom programs don't use the fixed unit table
+		for (const name in uniforms) this._uploadUniform(program, name, uniforms[name].value);
 		const pu = program.uniforms;
 		if (pu.projectionMatrix) gl.uniformMatrix4fv(pu.projectionMatrix.location, false, camera.projectionMatrix.elements);
 		if (pu.viewMatrix) gl.uniformMatrix4fv(pu.viewMatrix.location, false, camera.matrixWorldInverse.elements);
 		if (pu.cameraPosition) { const e = camera.matrixWorld.elements; gl.uniform3f(pu.cameraPosition.location, e[12], e[13], e[14]); }
 		if (pu.isOrthographic) gl.uniform1i(pu.isOrthographic.location, camera.isOrthographicCamera ? 1 : 0);
+		if (pu.toneMappingExposure && uniforms.toneMappingExposure === undefined) gl.uniform1f(pu.toneMappingExposure.location, this.toneMappingExposure);
+		const fog = this._currentScene ? this._currentScene.fog : null;
+		if (fog && material.fog === true) {
+			if (pu.fogColor) gl.uniform3f(pu.fogColor.location, fog.color.r, fog.color.g, fog.color.b);
+			if (fog.isFog) { if (pu.fogNear) gl.uniform1f(pu.fogNear.location, fog.near); if (pu.fogFar) gl.uniform1f(pu.fogFar.location, fog.far); }
+			else if (pu.fogDensity) gl.uniform1f(pu.fogDensity.location, fog.density);
+		}
+	}
+	/** Uploads one uniform value; recurses into structs ({...}) and arrays of structs like three.js. */
+	_uploadUniform(program, name, value) {
+		const u = program.uniforms[name];
+		if (u !== undefined) { this._textureUnit = setUniformValue(this._gl, this, u, value, this._textureUnit); return; }
+		if (value === null || value === undefined) return;
+		if (Array.isArray(value)) {
+			if (value.length > 0 && typeof value[0] === 'object' && value[0] !== null && !isLeafValue(value[0])) {
+				for (let i = 0; i < value.length; i++) this._uploadUniform(program, name + '[' + i + ']', value[i]);
+			} else if (value.length > 0 && isLeafValue(value[0])) {
+				// array of vectors / colours / matrices -> flatten into the [0]-stripped array uniform
+				const arr = program.uniforms[name];
+				if (arr !== undefined) this._textureUnit = setUniformValue(this._gl, this, arr, value, this._textureUnit);
+			}
+		} else if (typeof value === 'object' && !isLeafValue(value)) {
+			for (const key in value) this._uploadUniform(program, name + '.' + key, value[key]);
+		}
 	}
 	_uploadObjectUniformsForShaderMaterial(program, object, camera) {
 		const gl = this._gl, pu = program.uniforms;
@@ -925,30 +946,59 @@ function computeNormalMatrix(s, o) {
 	s[m + 6] = i2; s[m + 7] = i5; s[m + 8] = i8;
 }
 
+function isLeafValue(v) {
+	return v.isVector2 || v.isVector3 || v.isVector4 || v.isColor || v.isMatrix3 || v.isMatrix4 || v.isQuaternion || v.isTexture || ArrayBuffer.isView(v);
+}
+function flattenArray(value, stride) {
+	if (ArrayBuffer.isView(value)) return value;
+	if (typeof value[0] === 'number') return value;
+	const out = new Float32Array(value.length * stride);
+	for (let i = 0; i < value.length; i++) {
+		const v = value[i];
+		if (v.isColor) { out[i * stride] = v.r; out[i * stride + 1] = v.g; out[i * stride + 2] = v.b; }
+		else if (v.elements) out.set(v.elements, i * stride);
+		else v.toArray(out, i * stride);
+	}
+	return out;
+}
+function bindTextureUniform(renderer, u, value, unit) {
+	const gl = renderer._gl;
+	if (!value || !value.isTexture) return;
+	if (u.type === gl.SAMPLER_3D) renderer.textures.setTexture3D(value, unit);
+	else if (u.type === gl.SAMPLER_2D_ARRAY) renderer.textures.setTexture2DArray(value, unit);
+	else if (u.type === gl.SAMPLER_CUBE || u.type === gl.SAMPLER_CUBE_SHADOW) renderer.textures.setTextureCube(value, unit);
+	else renderer.textures.setTexture2D(value, unit);
+}
 function setUniformValue(gl, renderer, u, value, textureUnit) {
 	const loc = u.location;
+	if (value === null || value === undefined) return textureUnit;
 	switch (u.type) {
-		case gl.FLOAT: if (u.size > 1) gl.uniform1fv(loc, value); else gl.uniform1f(loc, value); break;
-		case gl.INT: case gl.BOOL: if (u.size > 1) gl.uniform1iv(loc, value); else gl.uniform1i(loc, value); break;
-		case gl.UNSIGNED_INT: gl.uniform1ui(loc, value); break;
-		case gl.FLOAT_VEC2: if (value.isVector2) gl.uniform2f(loc, value.x, value.y); else gl.uniform2fv(loc, value); break;
+		case gl.FLOAT: if (u.size > 1 || Array.isArray(value) || ArrayBuffer.isView(value)) gl.uniform1fv(loc, value); else gl.uniform1f(loc, value); break;
+		case gl.INT: case gl.BOOL: if (u.size > 1 || Array.isArray(value) || ArrayBuffer.isView(value)) gl.uniform1iv(loc, value); else gl.uniform1i(loc, value ? (typeof value === 'boolean' ? 1 : value) : 0); break;
+		case gl.UNSIGNED_INT: if (u.size > 1) gl.uniform1uiv(loc, value); else gl.uniform1ui(loc, value); break;
+		case gl.FLOAT_VEC2: if (value.isVector2) gl.uniform2f(loc, value.x, value.y); else gl.uniform2fv(loc, flattenArray(value, 2)); break;
 		case gl.FLOAT_VEC3:
 			if (value.isVector3) gl.uniform3f(loc, value.x, value.y, value.z);
 			else if (value.isColor) gl.uniform3f(loc, value.r, value.g, value.b);
-			else gl.uniform3fv(loc, value);
+			else gl.uniform3fv(loc, flattenArray(value, 3));
 			break;
 		case gl.FLOAT_VEC4:
-			if (value.isVector4 || value.isQuaternion) gl.uniform4f(loc, value.x, value.y, value.z, value.w); else gl.uniform4fv(loc, value);
+			if (value.isVector4 || value.isQuaternion) gl.uniform4f(loc, value.x, value.y, value.z, value.w); else gl.uniform4fv(loc, flattenArray(value, 4));
 			break;
 		case gl.INT_VEC2: case gl.BOOL_VEC2: if (value.isVector2) gl.uniform2i(loc, value.x, value.y); else gl.uniform2iv(loc, value); break;
 		case gl.INT_VEC3: case gl.BOOL_VEC3: if (value.isVector3) gl.uniform3i(loc, value.x, value.y, value.z); else gl.uniform3iv(loc, value); break;
 		case gl.INT_VEC4: case gl.BOOL_VEC4: if (value.isVector4) gl.uniform4i(loc, value.x, value.y, value.z, value.w); else gl.uniform4iv(loc, value); break;
-		case gl.FLOAT_MAT2: gl.uniformMatrix2fv(loc, false, value.elements || value); break;
-		case gl.FLOAT_MAT3: gl.uniformMatrix3fv(loc, false, value.elements || value); break;
-		case gl.FLOAT_MAT4: gl.uniformMatrix4fv(loc, false, value.elements || value); break;
-		case gl.SAMPLER_2D: case gl.SAMPLER_2D_SHADOW:
-			if (value && value.isTexture) {
-				renderer.textures.setTexture2D(value, textureUnit);
+		case gl.FLOAT_MAT2: gl.uniformMatrix2fv(loc, false, value.elements || flattenArray(value, 4)); break;
+		case gl.FLOAT_MAT3: gl.uniformMatrix3fv(loc, false, value.elements || flattenArray(value, 9)); break;
+		case gl.FLOAT_MAT4: gl.uniformMatrix4fv(loc, false, value.elements || flattenArray(value, 16)); break;
+		case gl.SAMPLER_2D: case gl.SAMPLER_2D_SHADOW: case gl.SAMPLER_3D: case gl.SAMPLER_2D_ARRAY: case gl.SAMPLER_CUBE: case gl.SAMPLER_CUBE_SHADOW:
+		case gl.INT_SAMPLER_2D: case gl.UNSIGNED_INT_SAMPLER_2D: case gl.INT_SAMPLER_3D: case gl.UNSIGNED_INT_SAMPLER_3D: case gl.INT_SAMPLER_2D_ARRAY: case gl.UNSIGNED_INT_SAMPLER_2D_ARRAY:
+			if (Array.isArray(value)) {
+				const units = new Int32Array(value.length);
+				for (let i = 0; i < value.length; i++) { units[i] = textureUnit; bindTextureUniform(renderer, u, value[i], textureUnit); textureUnit++; }
+				gl.uniform1iv(loc, units);
+			} else if (value.isTexture) {
+				bindTextureUniform(renderer, u, value, textureUnit);
 				gl.uniform1i(loc, textureUnit);
 				textureUnit++;
 			}

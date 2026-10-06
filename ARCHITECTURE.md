@@ -141,7 +141,16 @@ mid-point split, and traversed with an explicit `Int32Array` stack. three.js tes
 triangle. Call `geometry.computeBoundsTree()` to build eagerly, `disposeBoundsTree()` to
 drop it; it is invalidated automatically when `position` or the index change.
 
-## 9. Shadow maps (`src/renderers/webgl/WebGLShadowMap.js`)
+## 9. Stencil, 3D / array textures, custom shaders
+
+Stencil state (`stencilWrite`, func/ref/masks, ops) is applied per material through the
+state cache like depth and blend state, so stencil shadow volumes and masking work as in
+three.js. `Data3DTexture`, `DataArrayTexture` (with per-layer updates) and `CubeTexture`
+upload through `texStorage3D`/`texSubImage3D` and `texImage2D` per face, and bind to
+`sampler3D`, `sampler2DArray` and `samplerCube` uniforms of `ShaderMaterial`s. Programs
+with custom attribute names get a VAO per (geometry, program) instead of the shared one.
+
+## 10. Shadow maps (`src/renderers/webgl/WebGLShadowMap.js`)
 
 Directional and spot lights render depth-only framebuffers (`DepthTexture` with hardware
 compare). The main pass samples them through `sampler2DShadow` with 3x3 PCF. Shadow casters
@@ -154,6 +163,9 @@ are one draw call in the shadow pass too.
   (the class exists; it renders as `MeshStandardMaterial`).
 * Point-light shadows (cube maps), VSM, `Scene.background` textures, skinning,
   morph targets, clipping planes, WebGL1.
-* three.js `#include <chunk>` shader chunks inside `ShaderMaterial`; the standard
-  built-in uniforms and attributes are provided and GLSL 1.00 sources are converted
-  to GLSL ES 3.00 like three.js does.
+* `ShaderMaterial` with `lights: true`: three.js fills light uniforms from the scene in
+  view space; here lighting data lives in the `Lights` block, which custom shaders do not
+  see. Everything else about `ShaderMaterial` (prefix, chunks, `UniformsLib`, GLSL 1.00
+  shims, custom attributes, 3D/array/cube samplers) matches three.js.
+* `onBeforeCompile` on built-in materials: the built-in shaders are not assembled from
+  three.js chunks, so chunk-replacement hooks have nothing to hook into.

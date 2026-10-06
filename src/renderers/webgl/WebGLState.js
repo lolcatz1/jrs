@@ -34,6 +34,9 @@ class WebGLState {
 		this.currentPolygonOffsetFactor = null; this.currentPolygonOffsetUnits = null;
 		this.currentDepthMask = null; this.currentDepthFunc = null; this.currentDepthTest = null;
 		this.currentColorMask = null;
+		this.currentStencilTest = null; this.currentStencilMask = null;
+		this.currentStencilFunc = null; this.currentStencilRef = null; this.currentStencilFuncMask = null;
+		this.currentStencilFail = null; this.currentStencilZFail = null; this.currentStencilZPass = null;
 		this.currentClearColor = new Vector4(0, 0, 0, 0);
 		this.currentClearDepth = null; this.currentClearStencil = null;
 		this.currentViewport = new Vector4(-1, -1, -1, -1);
@@ -171,6 +174,34 @@ class WebGLState {
 		this.setColorMask(material.colorWrite);
 		this.setPolygonOffset(material.polygonOffset, material.polygonOffsetFactor, material.polygonOffsetUnits);
 		material.alphaToCoverage === true ? this.enable(gl.SAMPLE_ALPHA_TO_COVERAGE) : this.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
+		// stencil (constants are the GL enums, as in three.js)
+		const stencilWrite = material.stencilWrite;
+		this.setStencilTest(stencilWrite);
+		if (stencilWrite) {
+			this.setStencilMask(material.stencilWriteMask);
+			this.setStencilFunc(material.stencilFunc, material.stencilRef, material.stencilFuncMask);
+			this.setStencilOp(material.stencilFail, material.stencilZFail, material.stencilZPass);
+		}
+	}
+	setStencilTest(stencilTest) {
+		if (this.currentStencilTest === stencilTest) return;
+		if (stencilTest) this.enable(this.gl.STENCIL_TEST); else this.disable(this.gl.STENCIL_TEST);
+		this.currentStencilTest = stencilTest;
+	}
+	setStencilMask(mask) {
+		if (this.currentStencilMask !== mask) { this.gl.stencilMask(mask); this.currentStencilMask = mask; }
+	}
+	setStencilFunc(func, ref, mask) {
+		if (this.currentStencilFunc !== func || this.currentStencilRef !== ref || this.currentStencilFuncMask !== mask) {
+			this.gl.stencilFunc(func, ref, mask);
+			this.currentStencilFunc = func; this.currentStencilRef = ref; this.currentStencilFuncMask = mask;
+		}
+	}
+	setStencilOp(fail, zfail, zpass) {
+		if (this.currentStencilFail !== fail || this.currentStencilZFail !== zfail || this.currentStencilZPass !== zpass) {
+			this.gl.stencilOp(fail, zfail, zpass);
+			this.currentStencilFail = fail; this.currentStencilZFail = zfail; this.currentStencilZPass = zpass;
+		}
 	}
 
 	setFlipSided(flipSided) {
@@ -288,6 +319,7 @@ class WebGLState {
 		gl.colorMask(true, true, true, true); gl.clearColor(0, 0, 0, 0);
 		gl.depthMask(true); gl.depthFunc(gl.LESS); gl.clearDepth(1);
 		gl.cullFace(gl.BACK); gl.frontFace(gl.CCW); gl.polygonOffset(0, 0);
+		gl.stencilMask(0xffffffff); gl.stencilFunc(gl.ALWAYS, 0, 0xffffffff); gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);
 		gl.activeTexture(gl.TEXTURE0); gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.useProgram(null); gl.lineWidth(1);
 		gl.bindVertexArray(null);
 		this.enabledCapabilities = {};
@@ -301,6 +333,8 @@ class WebGLState {
 		this.currentFlipSided = null; this.currentCullFace = null; this.currentLineWidth = null;
 		this.currentPolygonOffsetFactor = null; this.currentPolygonOffsetUnits = null;
 		this.currentDepthMask = null; this.currentDepthFunc = null; this.currentDepthTest = null; this.currentColorMask = null;
+		this.currentStencilTest = null; this.currentStencilMask = null; this.currentStencilFunc = null; this.currentStencilRef = null;
+		this.currentStencilFuncMask = null; this.currentStencilFail = null; this.currentStencilZFail = null; this.currentStencilZPass = null;
 		this.currentClearColor.set(0, 0, 0, 0); this.currentClearDepth = null; this.currentClearStencil = null;
 		this.currentViewport.set(-1, -1, -1, -1); this.currentScissor.set(-1, -1, -1, -1); this.currentScissorTest = null;
 	}

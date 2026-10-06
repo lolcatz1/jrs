@@ -1,6 +1,6 @@
 {
-  "date": "2026-10-06T18:28:09.430Z",
-  "frames": 60,
+  "date": "2026-10-06T19:51:19.653Z",
+  "frames": 40,
   "renderer": "headless Chromium / SwiftShader (software WebGL2)",
   "results": [
     {
@@ -10,12 +10,12 @@
         "lib": "three",
         "scenario": "shared-static",
         "n": 10000,
-        "frames": 60,
-        "buildMs": 80.5,
-        "avgMs": 27.167,
-        "bestMs": 14.2,
-        "worstMs": 474.2,
-        "wallAvgMs": 27.172,
+        "frames": 40,
+        "buildMs": 81.7,
+        "avgMs": 54.387,
+        "bestMs": 14.6,
+        "worstMs": 747,
+        "wallAvgMs": 54.398,
         "drawCalls": 10000,
         "triangles": 120000,
         "programs": 1
@@ -24,62 +24,18 @@
         "lib": "jrs",
         "scenario": "shared-static",
         "n": 10000,
-        "frames": 60,
-        "buildMs": 69.1,
-        "avgMs": 3.743,
-        "bestMs": 3.1,
-        "worstMs": 8,
-        "wallAvgMs": 3.747,
+        "frames": 40,
+        "buildMs": 71.9,
+        "avgMs": 4.273,
+        "bestMs": 3.8,
+        "worstMs": 5.5,
+        "wallAvgMs": 4.277,
         "drawCalls": 1,
         "triangles": 120000,
         "programs": 2
       },
-      "speedup": 7.26,
-      "wallSpeedup": 7.25,
-      "compare": {
-        "meanAbsDiff": 0.347,
-        "maxDiff": 8,
-        "fractionOver32": 0
-      }
-    },
-    {
-      "scenario": "shared-animated",
-      "n": 10000,
-      "three": {
-        "lib": "three",
-        "scenario": "shared-animated",
-        "n": 10000,
-        "frames": 60,
-        "buildMs": 71,
-        "avgMs": 19.627,
-        "bestMs": 12.8,
-        "worstMs": 102,
-        "wallAvgMs": 19.632,
-        "drawCalls": 10000,
-        "triangles": 120000,
-        "programs": 1
-      },
-      "jrs": {
-        "lib": "jrs",
-        "scenario": "shared-animated",
-        "n": 10000,
-        "frames": 60,
-        "buildMs": 80.7,
-        "avgMs": 5.545,
-        "bestMs": 4.7,
-        "worstMs": 9.5,
-        "wallAvgMs": 5.553,
-        "drawCalls": 1,
-        "triangles": 120000,
-        "programs": 2
-      },
-      "speedup": 3.54,
-      "wallSpeedup": 3.54,
-      "compare": {
-        "meanAbsDiff": 0.346,
-        "maxDiff": 9,
-        "fractionOver32": 0
-      }
+      "speedup": 12.73,
+      "wallSpeedup": 12.72
     },
     {
       "scenario": "many-materials",
@@ -88,12 +44,12 @@
         "lib": "three",
         "scenario": "many-materials",
         "n": 5000,
-        "frames": 60,
-        "buildMs": 39.6,
-        "avgMs": 12.413,
-        "bestMs": 8.6,
-        "worstMs": 80.5,
-        "wallAvgMs": 12.423,
+        "frames": 40,
+        "buildMs": 71.8,
+        "avgMs": 13.952,
+        "bestMs": 9.8,
+        "worstMs": 33.4,
+        "wallAvgMs": 13.955,
         "drawCalls": 5000,
         "triangles": 333380,
         "programs": 1
@@ -102,23 +58,18 @@
         "lib": "jrs",
         "scenario": "many-materials",
         "n": 5000,
-        "frames": 60,
-        "buildMs": 38.6,
-        "avgMs": 3.288,
-        "bestMs": 2.6,
-        "worstMs": 4.2,
-        "wallAvgMs": 3.292,
+        "frames": 40,
+        "buildMs": 60.7,
+        "avgMs": 3.25,
+        "bestMs": 2.7,
+        "worstMs": 5,
+        "wallAvgMs": 3.25,
         "drawCalls": 600,
         "triangles": 333380,
         "programs": 2
       },
-      "speedup": 3.78,
-      "wallSpeedup": 3.77,
-      "compare": {
-        "meanAbsDiff": 0,
-        "maxDiff": 0,
-        "fractionOver32": 0
-      }
+      "speedup": 4.29,
+      "wallSpeedup": 4.29
     },
     {
       "scenario": "unique-geometries",
@@ -127,12 +78,12 @@
         "lib": "three",
         "scenario": "unique-geometries",
         "n": 2000,
-        "frames": 60,
-        "buildMs": 66.4,
-        "avgMs": 6.218,
-        "bestMs": 3.9,
-        "worstMs": 35.7,
-        "wallAvgMs": 6.223,
+        "frames": 40,
+        "buildMs": 72.9,
+        "avgMs": 7.15,
+        "bestMs": 4.3,
+        "worstMs": 42.9,
+        "wallAvgMs": 7.152,
         "drawCalls": 2000,
         "triangles": 32000,
         "programs": 1
@@ -141,140 +92,18 @@
         "lib": "jrs",
         "scenario": "unique-geometries",
         "n": 2000,
-        "frames": 60,
-        "buildMs": 45.7,
-        "avgMs": 3.307,
-        "bestMs": 2.1,
-        "worstMs": 14.5,
-        "wallAvgMs": 3.308,
+        "frames": 40,
+        "buildMs": 52.6,
+        "avgMs": 4.917,
+        "bestMs": 3.1,
+        "worstMs": 8.4,
+        "wallAvgMs": 4.923,
         "drawCalls": 2000,
         "triangles": 32000,
         "programs": 1
       },
-      "speedup": 1.88,
-      "wallSpeedup": 1.88,
-      "compare": {
-        "meanAbsDiff": 0,
-        "maxDiff": 0,
-        "fractionOver32": 0
-      }
-    },
-    {
-      "scenario": "hierarchy-animated",
-      "n": 8000,
-      "three": {
-        "lib": "three",
-        "scenario": "hierarchy-animated",
-        "n": 8000,
-        "frames": 60,
-        "buildMs": 50.2,
-        "avgMs": 25.245,
-        "bestMs": 18.3,
-        "worstMs": 32.5,
-        "wallAvgMs": 25.252,
-        "drawCalls": 8000,
-        "triangles": 96000,
-        "programs": 1
-      },
-      "jrs": {
-        "lib": "jrs",
-        "scenario": "hierarchy-animated",
-        "n": 8000,
-        "frames": 60,
-        "buildMs": 68.4,
-        "avgMs": 4.087,
-        "bestMs": 3.5,
-        "worstMs": 8.6,
-        "wallAvgMs": 4.088,
-        "drawCalls": 1,
-        "triangles": 96000,
-        "programs": 2
-      },
-      "speedup": 6.18,
-      "wallSpeedup": 6.18,
-      "compare": {
-        "meanAbsDiff": 0,
-        "maxDiff": 0,
-        "fractionOver32": 0
-      }
-    },
-    {
-      "scenario": "instanced-100k",
-      "n": 100000,
-      "three": {
-        "lib": "three",
-        "scenario": "instanced-100k",
-        "n": 100000,
-        "frames": 60,
-        "buildMs": 32,
-        "avgMs": 0.053,
-        "bestMs": 0,
-        "worstMs": 0.4,
-        "wallAvgMs": 0.055,
-        "drawCalls": 1,
-        "triangles": 1200000,
-        "programs": 1
-      },
-      "jrs": {
-        "lib": "jrs",
-        "scenario": "instanced-100k",
-        "n": 100000,
-        "frames": 60,
-        "buildMs": 25.4,
-        "avgMs": 0.055,
-        "bestMs": 0,
-        "worstMs": 0.5,
-        "wallAvgMs": 0.055,
-        "drawCalls": 1,
-        "triangles": 1200000,
-        "programs": 1
-      },
-      "speedup": 0.96,
-      "wallSpeedup": 1,
-      "compare": {
-        "meanAbsDiff": 0,
-        "maxDiff": 0,
-        "fractionOver32": 0
-      }
-    },
-    {
-      "scenario": "shadows",
-      "n": 2000,
-      "three": {
-        "lib": "three",
-        "scenario": "shadows",
-        "n": 2000,
-        "frames": 60,
-        "buildMs": 17.9,
-        "avgMs": 71.025,
-        "bestMs": 7,
-        "worstMs": 281.5,
-        "wallAvgMs": 71.028,
-        "drawCalls": 4001,
-        "triangles": 48002,
-        "programs": 2
-      },
-      "jrs": {
-        "lib": "jrs",
-        "scenario": "shadows",
-        "n": 2000,
-        "frames": 60,
-        "buildMs": 26.5,
-        "avgMs": 1.28,
-        "bestMs": 0.9,
-        "worstMs": 2.8,
-        "wallAvgMs": 1.282,
-        "drawCalls": 3,
-        "triangles": 48002,
-        "programs": 4
-      },
-      "speedup": 55.49,
-      "wallSpeedup": 55.4,
-      "compare": {
-        "meanAbsDiff": 0.134,
-        "maxDiff": 33,
-        "fractionOver32": 0
-      }
+      "speedup": 1.45,
+      "wallSpeedup": 1.45
     }
   ]
 }
