@@ -1,4 +1,5 @@
 node_modules/
-bench/results/*.json
+bench/results/*.png
+bench/results/full-run.log
 *.log
 .DS_Store

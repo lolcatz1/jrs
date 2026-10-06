@@ -54,7 +54,17 @@ Details, with the reasoning behind each choice, are in [ARCHITECTURE.md](./ARCHI
 gap for draw-call-bound scenes and narrows it for fill-bound ones). Average JS time per frame
 over 60 frames after 10 warm-up frames, 320x240:
 
-BENCHMARK_TABLE
+| Scenario | Objects | three.js r186 | jrs | Speed-up | Draw calls (three → jrs) | Pixel diff (mean / max, 0–255) |
+|---|---:|---:|---:|---:|---|---|
+| shared-static: one geometry + one material, static | 10,000 | 27.17 ms | 3.74 ms | **7.26x** | 10000 → 1 | 0.347 / 8 |
+| shared-animated: same, every object rotating | 10,000 | 19.63 ms | 5.54 ms | **3.54x** | 10000 → 1 | 0.346 / 9 |
+| many-materials: 3 geometries x 200 Phong materials, point + hemisphere light | 5,000 | 12.41 ms | 3.29 ms | **3.78x** | 5000 → 600 | 0 / 0 |
+| unique-geometries: a distinct geometry per mesh (no batching possible) | 2,000 | 6.22 ms | 3.31 ms | **1.88x** | 2000 → 2000 | 0 / 0 |
+| hierarchy-animated: 200 chains of 40 nested objects, roots rotating | 8,000 | 25.25 ms | 4.09 ms | **6.18x** | 8000 → 1 | 0 / 0 |
+| instanced-100k: one InstancedMesh, 100 000 instances | 100,000 | 0.05 ms | 0.06 ms | **0.96x** | 1 → 1 | 0 / 0 |
+| shadows: 2 000 casters/receivers, 1024² directional shadow map | 2,000 | 71.03 ms | 1.28 ms | **55.49x** | 4001 → 3 | 0.134 / 33 |
+
+The instanced scenario is a single draw call in both libraries; it measures only the fixed per-frame cost. Full data: `bench/results/latest.json`.
 
 `npm run bench -- --compare` additionally renders each scene with both libraries and reports
 the mean absolute pixel difference, writing both images to `bench/results/`. Lambert / Phong /
