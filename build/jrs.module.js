@@ -5778,6 +5778,37 @@ var WebGLTextures = class {
       [AlwaysStencilFunc]: gl.ALWAYS
     };
   }
+  /** Binds an empty placeholder texture of the sampler's target so a program with an unset sampler stays valid. */
+  bindEmpty(u, unit) {
+    const gl = this.gl;
+    if (this._empty === void 0) this._empty = {};
+    const key = u.isShadowSampler ? "shadow" + u.target : String(u.target);
+    let tex = this._empty[key];
+    if (tex === void 0) {
+      tex = gl.createTexture();
+      this.state.bindTexture(u.target, tex, unit);
+      const zero = new Uint8Array(4);
+      if (u.target === gl.TEXTURE_2D) {
+        if (u.isShadowSampler) {
+          gl.texStorage2D(gl.TEXTURE_2D, 1, gl.DEPTH_COMPONENT16, 1, 1);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_MODE, gl.COMPARE_REF_TO_TEXTURE);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_FUNC, gl.LEQUAL);
+        } else {
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, zero);
+        }
+      } else if (u.target === gl.TEXTURE_3D || u.target === gl.TEXTURE_2D_ARRAY) {
+        gl.texStorage3D(u.target, 1, gl.RGBA8, 1, 1, 1);
+        gl.texSubImage3D(u.target, 0, 0, 0, 0, 1, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, zero);
+      } else if (u.target === gl.TEXTURE_CUBE_MAP) {
+        for (let i = 0; i < 6; i++) gl.texImage2D(gl.TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, zero);
+      }
+      gl.texParameteri(u.target, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(u.target, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      this._empty[key] = tex;
+      return;
+    }
+    this.state.bindTexture(u.target, tex, unit);
+  }
   get(obj) {
     let p = this.properties.get(obj);
     if (p === void 0) {
@@ -6139,8 +6170,10 @@ var WebGLTextures = class {
       p.framebuffer = gl.createFramebuffer();
       state.bindFramebuffer(p.framebuffer);
       if (renderTarget.depthOnly !== true) {
-        tp.webglTexture = gl.createTexture();
-        this.info.memory.textures++;
+        if (tp.webglTexture === void 0) {
+          tp.webglTexture = gl.createTexture();
+          this.info.memory.textures++;
+        }
         state.bindTexture(gl.TEXTURE_2D, tp.webglTexture, 0);
         this._setTextureParameters(gl.TEXTURE_2D, texture);
         const glFormat = this.glFormat(texture.format), glType = this.glType(texture.type);
@@ -6155,8 +6188,13 @@ var WebGLTextures = class {
       if (renderTarget.depthTexture) {
         const dt = renderTarget.depthTexture;
         const dp = this.get(dt);
-        dp.webglTexture = gl.createTexture();
-        this.info.memory.textures++;
+        if (dp.webglTexture === void 0) {
+          dp.webglTexture = gl.createTexture();
+          this.info.memory.textures++;
+        } else {
+          gl.deleteTexture(dp.webglTexture);
+          dp.webglTexture = gl.createTexture();
+        }
         dt.isRenderTargetTexture = true;
         state.bindTexture(gl.TEXTURE_2D, dp.webglTexture, 0);
         this._setTextureParameters(gl.TEXTURE_2D, dt);
@@ -14103,21 +14141,33 @@ var WebGLProgram = class {
       if (FIXED_ATTRIBUTES[info.name] === void 0 && location >= 0) this.customAttributes.push(record);
     }
     this.hasCustomAttributes = this.customAttributes.length > 0;
+    const isCustom = parameters.materialType === MATERIAL_SHADER;
+    this.samplerUniforms = [];
+    let nextUnit = 0;
     gl.useProgram(program);
     for (const name in this.uniforms) {
       const u = this.uniforms[name];
-      if (u.type === gl.SAMPLER_2D || u.type === gl.SAMPLER_2D_SHADOW || u.type === gl.SAMPLER_CUBE) {
-        if (u.size > 1) {
-          const base = TEXTURE_UNITS[name + "0"];
-          if (base !== void 0) {
-            const units = new Int32Array(u.size);
-            for (let k = 0; k < u.size; k++) units[k] = base + k;
-            gl.uniform1iv(u.location, units);
-          }
-        } else if (TEXTURE_UNITS[name] !== void 0) {
-          gl.uniform1i(u.location, TEXTURE_UNITS[name]);
-        }
+      const target = samplerTarget(gl, u.type);
+      if (target === 0) continue;
+      u.target = target;
+      u.isShadowSampler = u.type === gl.SAMPLER_2D_SHADOW || u.type === gl.SAMPLER_CUBE_SHADOW || u.type === gl.SAMPLER_2D_ARRAY_SHADOW;
+      u.boundStamp = -1;
+      let unit;
+      if (!isCustom && (TEXTURE_UNITS[name] !== void 0 || TEXTURE_UNITS[name + "0"] !== void 0)) {
+        unit = u.size > 1 ? TEXTURE_UNITS[name + "0"] : TEXTURE_UNITS[name];
+      } else {
+        unit = nextUnit;
+        nextUnit += u.size;
       }
+      u.unit = unit;
+      if (u.size > 1) {
+        const units = new Int32Array(u.size);
+        for (let k = 0; k < u.size; k++) units[k] = unit + k;
+        gl.uniform1iv(u.location, units);
+      } else {
+        gl.uniform1i(u.location, unit);
+      }
+      this.samplerUniforms.push(u);
     }
     this.materialVersion = -1;
     this.materialId = -1;
@@ -14126,6 +14176,31 @@ var WebGLProgram = class {
     gl.deleteProgram(this.program);
   }
 };
+function samplerTarget(gl, type) {
+  switch (type) {
+    case gl.SAMPLER_2D:
+    case gl.SAMPLER_2D_SHADOW:
+    case gl.INT_SAMPLER_2D:
+    case gl.UNSIGNED_INT_SAMPLER_2D:
+      return gl.TEXTURE_2D;
+    case gl.SAMPLER_3D:
+    case gl.INT_SAMPLER_3D:
+    case gl.UNSIGNED_INT_SAMPLER_3D:
+      return gl.TEXTURE_3D;
+    case gl.SAMPLER_2D_ARRAY:
+    case gl.SAMPLER_2D_ARRAY_SHADOW:
+    case gl.INT_SAMPLER_2D_ARRAY:
+    case gl.UNSIGNED_INT_SAMPLER_2D_ARRAY:
+      return gl.TEXTURE_2D_ARRAY;
+    case gl.SAMPLER_CUBE:
+    case gl.SAMPLER_CUBE_SHADOW:
+    case gl.INT_SAMPLER_CUBE:
+    case gl.UNSIGNED_INT_SAMPLER_CUBE:
+      return gl.TEXTURE_CUBE_MAP;
+    default:
+      return 0;
+  }
+}
 function compileShader(gl, type, source) {
   const shader = gl.createShader(type);
   gl.shaderSource(shader, source);
@@ -15416,6 +15491,7 @@ var WebGLRenderer = class {
     this._envVersion = 0;
     this._lastEnvKey = "";
     this._lastLightsVersion = -1;
+    this._samplerStamp = 0;
     this._currentScene = null;
     this._currentSide = -1;
     this._materialCounter = 0;
@@ -16403,8 +16479,13 @@ var WebGLRenderer = class {
   _uploadShaderMaterialUniforms(program, material, camera, programChanged) {
     const gl = this._gl;
     const uniforms = material.uniforms;
-    this._textureUnit = 0;
+    this._samplerStamp++;
     for (const name in uniforms) this._uploadUniform(program, name, uniforms[name].value);
+    const samplers = program.samplerUniforms;
+    for (let i = 0; i < samplers.length; i++) {
+      const u = samplers[i];
+      if (u.boundStamp !== this._samplerStamp) for (let k = 0; k < u.size; k++) this.textures.bindEmpty(u, u.unit + k);
+    }
     const pu = program.uniforms;
     if (pu.projectionMatrix) gl.uniformMatrix4fv(pu.projectionMatrix.location, false, camera.projectionMatrix.elements);
     if (pu.viewMatrix) gl.uniformMatrix4fv(pu.viewMatrix.location, false, camera.matrixWorldInverse.elements);
@@ -16427,7 +16508,7 @@ var WebGLRenderer = class {
   _uploadUniform(program, name, value) {
     const u = program.uniforms[name];
     if (u !== void 0) {
-      this._textureUnit = setUniformValue(this._gl, this, u, value, this._textureUnit);
+      setUniformValue(this._gl, this, u, value);
       return;
     }
     if (value === null || value === void 0) return;
@@ -16436,7 +16517,7 @@ var WebGLRenderer = class {
         for (let i = 0; i < value.length; i++) this._uploadUniform(program, name + "[" + i + "]", value[i]);
       } else if (value.length > 0 && isLeafValue(value[0])) {
         const arr = program.uniforms[name];
-        if (arr !== void 0) this._textureUnit = setUniformValue(this._gl, this, arr, value, this._textureUnit);
+        if (arr !== void 0) setUniformValue(this._gl, this, arr, value);
       }
     } else if (typeof value === "object" && !isLeafValue(value)) {
       for (const key in value) this._uploadUniform(program, name + "." + key, value[key]);
@@ -16509,9 +16590,9 @@ function bindTextureUniform(renderer, u, value, unit) {
   else if (u.type === gl.SAMPLER_CUBE || u.type === gl.SAMPLER_CUBE_SHADOW) renderer.textures.setTextureCube(value, unit);
   else renderer.textures.setTexture2D(value, unit);
 }
-function setUniformValue(gl, renderer, u, value, textureUnit) {
+function setUniformValue(gl, renderer, u, value) {
   const loc = u.location;
-  if (value === null || value === void 0) return textureUnit;
+  if (value === null || value === void 0) return;
   switch (u.type) {
     case gl.FLOAT:
       if (u.size > 1 || Array.isArray(value) || ArrayBuffer.isView(value)) gl.uniform1fv(loc, value);
@@ -16575,24 +16656,22 @@ function setUniformValue(gl, renderer, u, value, textureUnit) {
     case gl.UNSIGNED_INT_SAMPLER_3D:
     case gl.INT_SAMPLER_2D_ARRAY:
     case gl.UNSIGNED_INT_SAMPLER_2D_ARRAY:
+      u.boundStamp = renderer._samplerStamp;
       if (Array.isArray(value)) {
-        const units = new Int32Array(value.length);
-        for (let i = 0; i < value.length; i++) {
-          units[i] = textureUnit;
-          bindTextureUniform(renderer, u, value[i], textureUnit);
-          textureUnit++;
+        for (let i = 0; i < u.size; i++) {
+          const t = value[i];
+          if (t && t.isTexture) bindTextureUniform(renderer, u, t, u.unit + i);
+          else renderer.textures.bindEmpty(u, u.unit + i);
         }
-        gl.uniform1iv(loc, units);
       } else if (value.isTexture) {
-        bindTextureUniform(renderer, u, value, textureUnit);
-        gl.uniform1i(loc, textureUnit);
-        textureUnit++;
+        bindTextureUniform(renderer, u, value, u.unit);
+      } else {
+        renderer.textures.bindEmpty(u, u.unit);
       }
       break;
     default:
       break;
   }
-  return textureUnit;
 }
 function createCanvasElement() {
   const canvas = document.createElementNS("http://www.w3.org/1999/xhtml", "canvas");

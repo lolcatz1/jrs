@@ -95,6 +95,7 @@ class WebGLRenderer {
 		this._envVersion = 0;
 		this._lastEnvKey = '';
 		this._lastLightsVersion = -1;
+		this._samplerStamp = 0;
 		this._currentScene = null;
 		this._currentSide = -1;
 		this._materialCounter = 0; this._geometryCounter = 0;
@@ -876,8 +877,17 @@ class WebGLRenderer {
 	_uploadShaderMaterialUniforms(program, material, camera, programChanged) {
 		const gl = this._gl;
 		const uniforms = material.uniforms;
-		this._textureUnit = 0; // custom programs don't use the fixed unit table
+		// Values are read from the uniform objects now (not snapshotted), so textures assigned
+		// later to uniform objects shared between materials are picked up.
+		this._samplerStamp++;
 		for (const name in uniforms) this._uploadUniform(program, name, uniforms[name].value);
+		// every sampler the program declares but this material left null gets an empty texture
+		// of the right target on its own unit (mixed sampler types on one unit is INVALID_OPERATION)
+		const samplers = program.samplerUniforms;
+		for (let i = 0; i < samplers.length; i++) {
+			const u = samplers[i];
+			if (u.boundStamp !== this._samplerStamp) for (let k = 0; k < u.size; k++) this.textures.bindEmpty(u, u.unit + k);
+		}
 		const pu = program.uniforms;
 		if (pu.projectionMatrix) gl.uniformMatrix4fv(pu.projectionMatrix.location, false, camera.projectionMatrix.elements);
 		if (pu.viewMatrix) gl.uniformMatrix4fv(pu.viewMatrix.location, false, camera.matrixWorldInverse.elements);
@@ -894,7 +904,7 @@ class WebGLRenderer {
 	/** Uploads one uniform value; recurses into structs ({...}) and arrays of structs like three.js. */
 	_uploadUniform(program, name, value) {
 		const u = program.uniforms[name];
-		if (u !== undefined) { this._textureUnit = setUniformValue(this._gl, this, u, value, this._textureUnit); return; }
+		if (u !== undefined) { setUniformValue(this._gl, this, u, value); return; }
 		if (value === null || value === undefined) return;
 		if (Array.isArray(value)) {
 			if (value.length > 0 && typeof value[0] === 'object' && value[0] !== null && !isLeafValue(value[0])) {
@@ -902,7 +912,7 @@ class WebGLRenderer {
 			} else if (value.length > 0 && isLeafValue(value[0])) {
 				// array of vectors / colours / matrices -> flatten into the [0]-stripped array uniform
 				const arr = program.uniforms[name];
-				if (arr !== undefined) this._textureUnit = setUniformValue(this._gl, this, arr, value, this._textureUnit);
+				if (arr !== undefined) setUniformValue(this._gl, this, arr, value);
 			}
 		} else if (typeof value === 'object' && !isLeafValue(value)) {
 			for (const key in value) this._uploadUniform(program, name + '.' + key, value[key]);
@@ -969,9 +979,9 @@ function bindTextureUniform(renderer, u, value, unit) {
 	else if (u.type === gl.SAMPLER_CUBE || u.type === gl.SAMPLER_CUBE_SHADOW) renderer.textures.setTextureCube(value, unit);
 	else renderer.textures.setTexture2D(value, unit);
 }
-function setUniformValue(gl, renderer, u, value, textureUnit) {
+function setUniformValue(gl, renderer, u, value) {
 	const loc = u.location;
-	if (value === null || value === undefined) return textureUnit;
+	if (value === null || value === undefined) return;
 	switch (u.type) {
 		case gl.FLOAT: if (u.size > 1 || Array.isArray(value) || ArrayBuffer.isView(value)) gl.uniform1fv(loc, value); else gl.uniform1f(loc, value); break;
 		case gl.INT: case gl.BOOL: if (u.size > 1 || Array.isArray(value) || ArrayBuffer.isView(value)) gl.uniform1iv(loc, value); else gl.uniform1i(loc, value ? (typeof value === 'boolean' ? 1 : value) : 0); break;
@@ -993,19 +1003,21 @@ function setUniformValue(gl, renderer, u, value, textureUnit) {
 		case gl.FLOAT_MAT4: gl.uniformMatrix4fv(loc, false, value.elements || flattenArray(value, 16)); break;
 		case gl.SAMPLER_2D: case gl.SAMPLER_2D_SHADOW: case gl.SAMPLER_3D: case gl.SAMPLER_2D_ARRAY: case gl.SAMPLER_CUBE: case gl.SAMPLER_CUBE_SHADOW:
 		case gl.INT_SAMPLER_2D: case gl.UNSIGNED_INT_SAMPLER_2D: case gl.INT_SAMPLER_3D: case gl.UNSIGNED_INT_SAMPLER_3D: case gl.INT_SAMPLER_2D_ARRAY: case gl.UNSIGNED_INT_SAMPLER_2D_ARRAY:
+			// units were assigned at link time (u.unit .. u.unit + size - 1); bind textures, placeholders for gaps
+			u.boundStamp = renderer._samplerStamp;
 			if (Array.isArray(value)) {
-				const units = new Int32Array(value.length);
-				for (let i = 0; i < value.length; i++) { units[i] = textureUnit; bindTextureUniform(renderer, u, value[i], textureUnit); textureUnit++; }
-				gl.uniform1iv(loc, units);
+				for (let i = 0; i < u.size; i++) {
+					const t = value[i];
+					if (t && t.isTexture) bindTextureUniform(renderer, u, t, u.unit + i); else renderer.textures.bindEmpty(u, u.unit + i);
+				}
 			} else if (value.isTexture) {
-				bindTextureUniform(renderer, u, value, textureUnit);
-				gl.uniform1i(loc, textureUnit);
-				textureUnit++;
+				bindTextureUniform(renderer, u, value, u.unit);
+			} else {
+				renderer.textures.bindEmpty(u, u.unit);
 			}
 			break;
 		default: break;
 	}
-	return textureUnit;
 }
 
 function createCanvasElement() {

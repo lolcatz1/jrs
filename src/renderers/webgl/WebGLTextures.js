@@ -35,6 +35,38 @@ class WebGLTextures {
 		};
 	}
 
+	/** Binds an empty placeholder texture of the sampler's target so a program with an unset sampler stays valid. */
+	bindEmpty(u, unit) {
+		const gl = this.gl;
+		if (this._empty === undefined) this._empty = {};
+		const key = u.isShadowSampler ? 'shadow' + u.target : String(u.target);
+		let tex = this._empty[key];
+		if (tex === undefined) {
+			tex = gl.createTexture();
+			this.state.bindTexture(u.target, tex, unit);
+			const zero = new Uint8Array(4);
+			if (u.target === gl.TEXTURE_2D) {
+				if (u.isShadowSampler) {
+					gl.texStorage2D(gl.TEXTURE_2D, 1, gl.DEPTH_COMPONENT16, 1, 1);
+					gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_MODE, gl.COMPARE_REF_TO_TEXTURE);
+					gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_FUNC, gl.LEQUAL);
+				} else {
+					gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, zero);
+				}
+			} else if (u.target === gl.TEXTURE_3D || u.target === gl.TEXTURE_2D_ARRAY) {
+				gl.texStorage3D(u.target, 1, gl.RGBA8, 1, 1, 1);
+				gl.texSubImage3D(u.target, 0, 0, 0, 0, 1, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, zero);
+			} else if (u.target === gl.TEXTURE_CUBE_MAP) {
+				for (let i = 0; i < 6; i++) gl.texImage2D(gl.TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, zero);
+			}
+			gl.texParameteri(u.target, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+			gl.texParameteri(u.target, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+			this._empty[key] = tex;
+			return;
+		}
+		this.state.bindTexture(u.target, tex, unit);
+	}
+
 	get(obj) {
 		let p = this.properties.get(obj);
 		if (p === undefined) { p = {}; this.properties.set(obj, p); }
@@ -345,10 +377,9 @@ class WebGLTextures {
 			texture.isRenderTargetTexture = true;
 			p.framebuffer = gl.createFramebuffer();
 			state.bindFramebuffer(p.framebuffer);
-			// color
+			// color (reuse a texture object created earlier by a sampler binding of this texture)
 			if (renderTarget.depthOnly !== true) {
-				tp.webglTexture = gl.createTexture();
-				this.info.memory.textures++;
+				if (tp.webglTexture === undefined) { tp.webglTexture = gl.createTexture(); this.info.memory.textures++; }
 				state.bindTexture(gl.TEXTURE_2D, tp.webglTexture, 0);
 				this._setTextureParameters(gl.TEXTURE_2D, texture);
 				const glFormat = this.glFormat(texture.format), glType = this.glType(texture.type);
@@ -364,8 +395,8 @@ class WebGLTextures {
 			if (renderTarget.depthTexture) {
 				const dt = renderTarget.depthTexture;
 				const dp = this.get(dt);
-				dp.webglTexture = gl.createTexture();
-				this.info.memory.textures++;
+				if (dp.webglTexture === undefined) { dp.webglTexture = gl.createTexture(); this.info.memory.textures++; }
+				else { gl.deleteTexture(dp.webglTexture); dp.webglTexture = gl.createTexture(); } // immutable storage: fresh object
 				dt.isRenderTargetTexture = true;
 				state.bindTexture(gl.TEXTURE_2D, dp.webglTexture, 0);
 				this._setTextureParameters(gl.TEXTURE_2D, dt);

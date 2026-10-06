@@ -83,28 +83,51 @@ class WebGLProgram {
 		}
 		this.hasCustomAttributes = this.customAttributes.length > 0;
 
-		// sampler units are fixed: assign once
+		// Texture units are assigned once per program at link time and never change:
+		// built-in programs use the fixed table, custom (ShaderMaterial) programs number their
+		// samplers sequentially. Every active sampler gets its own unit(s) whether or not a
+		// texture is ever assigned to it, so a program is always valid to draw with.
+		const isCustom = parameters.materialType === MATERIAL_SHADER;
+		this.samplerUniforms = [];
+		let nextUnit = 0;
 		gl.useProgram(program);
 		for (const name in this.uniforms) {
 			const u = this.uniforms[name];
-			if (u.type === gl.SAMPLER_2D || u.type === gl.SAMPLER_2D_SHADOW || u.type === gl.SAMPLER_CUBE) {
-				if (u.size > 1) {
-					// sampler arrays (shadow maps)
-					const base = TEXTURE_UNITS[name + '0'];
-					if (base !== undefined) {
-						const units = new Int32Array(u.size);
-						for (let k = 0; k < u.size; k++) units[k] = base + k;
-						gl.uniform1iv(u.location, units);
-					}
-				} else if (TEXTURE_UNITS[name] !== undefined) {
-					gl.uniform1i(u.location, TEXTURE_UNITS[name]);
-				}
+			const target = samplerTarget(gl, u.type);
+			if (target === 0) continue;
+			u.target = target;
+			u.isShadowSampler = u.type === gl.SAMPLER_2D_SHADOW || u.type === gl.SAMPLER_CUBE_SHADOW || u.type === gl.SAMPLER_2D_ARRAY_SHADOW;
+			u.boundStamp = -1;
+			let unit;
+			if (!isCustom && (TEXTURE_UNITS[name] !== undefined || TEXTURE_UNITS[name + '0'] !== undefined)) {
+				unit = u.size > 1 ? TEXTURE_UNITS[name + '0'] : TEXTURE_UNITS[name];
+			} else {
+				unit = nextUnit; nextUnit += u.size;
 			}
+			u.unit = unit;
+			if (u.size > 1) {
+				const units = new Int32Array(u.size);
+				for (let k = 0; k < u.size; k++) units[k] = unit + k;
+				gl.uniform1iv(u.location, units);
+			} else {
+				gl.uniform1i(u.location, unit);
+			}
+			this.samplerUniforms.push(u);
 		}
 		this.materialVersion = -1; // last material version whose non-block uniforms were set (ShaderMaterial)
 		this.materialId = -1;
 	}
 	destroy(gl) { gl.deleteProgram(this.program); }
+}
+
+function samplerTarget(gl, type) {
+	switch (type) {
+		case gl.SAMPLER_2D: case gl.SAMPLER_2D_SHADOW: case gl.INT_SAMPLER_2D: case gl.UNSIGNED_INT_SAMPLER_2D: return gl.TEXTURE_2D;
+		case gl.SAMPLER_3D: case gl.INT_SAMPLER_3D: case gl.UNSIGNED_INT_SAMPLER_3D: return gl.TEXTURE_3D;
+		case gl.SAMPLER_2D_ARRAY: case gl.SAMPLER_2D_ARRAY_SHADOW: case gl.INT_SAMPLER_2D_ARRAY: case gl.UNSIGNED_INT_SAMPLER_2D_ARRAY: return gl.TEXTURE_2D_ARRAY;
+		case gl.SAMPLER_CUBE: case gl.SAMPLER_CUBE_SHADOW: case gl.INT_SAMPLER_CUBE: case gl.UNSIGNED_INT_SAMPLER_CUBE: return gl.TEXTURE_CUBE_MAP;
+		default: return 0;
+	}
 }
 
 function compileShader(gl, type, source) {

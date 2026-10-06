@@ -347,6 +347,53 @@ export function conformanceTests() {
 				return { pass: near(l, [255, 0, 0], 3) && near(m, [0, 255, 0], 3) && near(r, [0, 0, 255], 3) && renderer.info.render.calls === 1, detail: `instances ${fmt(l)} ${fmt(m)} ${fmt(r)}, calls ${renderer.info.render.calls}` };
 			}
 		},
+
+		{
+			name: 'Shared null sampler uniforms (2D/3D/array/cube) assigned after creation', run(T, renderer) {
+				const gl = renderer.getContext();
+				const { scene, camera } = baseScene(T);
+				// one shared uniforms object, spread into two materials like a material factory would
+				const shared = { a: { value: null }, b: { value: null }, c: { value: null }, d: { value: null } };
+				const vs = 'varying vec2 vUv; varying vec3 vDir; void main(){ vUv = uv; vDir = vec3(uv * 2.0 - 1.0, 1.0); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }';
+				const fs = 'precision highp sampler3D; precision highp sampler2DArray; uniform sampler2D a; uniform sampler3D b; uniform sampler2DArray c; uniform samplerCube d; varying vec2 vUv; varying vec3 vDir;\n' +
+					'void main(){ if (vUv.y > 0.5) { gl_FragColor = vUv.x < 0.5 ? texture2D(a, vUv) : vec4(texture(b, vec3(vUv, 0.5)).r, 0.0, 0.0, 1.0); } else { gl_FragColor = vUv.x < 0.5 ? texture(c, vec3(vUv, 1.0)) : textureCube(d, vDir); } }';
+				const m1 = new T.ShaderMaterial({ uniforms: { ...shared }, vertexShader: vs, fragmentShader: fs });
+				const m2 = new T.ShaderMaterial({ uniforms: { ...shared, extra: { value: 1 } }, vertexShader: vs, fragmentShader: fs });
+				const q1 = new T.Mesh(new T.PlaneGeometry(1.4, 1.4), m1); q1.position.x = -0.8;
+				const q2 = new T.Mesh(new T.PlaneGeometry(1.4, 1.4), m2); q2.position.x = 0.8;
+				scene.add(q1, q2);
+				gl.getError();
+				renderer.render(scene, camera); // all samplers null: placeholders must keep the program valid
+				const errNull = gl.getError();
+				const nullPx = readPixel(renderer, 128 - 44 - 20, 128 - 20);
+				// now assign textures by mutating the shared uniform objects (never touching the materials)
+				const rt = new T.WebGLRenderTarget(8, 8);
+				const rtScene = new T.Scene(); rtScene.background = new T.Color(0xff8000);
+				renderer.setRenderTarget(rt); renderer.render(rtScene, camera); renderer.setRenderTarget(null);
+				shared.a.value = rt.texture;
+				const vol = new Uint8Array(8 * 8 * 8).fill(128);
+				const b = new T.Data3DTexture(vol, 8, 8, 8); b.format = T.RedFormat; b.type = T.UnsignedByteType;
+				b.wrapS = b.wrapT = b.wrapR = T.RepeatWrapping; b.minFilter = T.LinearMipmapLinearFilter; b.magFilter = T.LinearFilter; b.generateMipmaps = true; b.needsUpdate = true;
+				shared.b.value = b;
+				const layers = new Uint8Array(2 * 2 * 2 * 4); for (let i = 0; i < 4; i++) { layers[i * 4 + 1] = 255; layers[i * 4 + 3] = 255; layers[16 + i * 4 + 2] = 255; layers[16 + i * 4 + 3] = 255; }
+				const c = new T.DataArrayTexture(layers, 2, 2, 2); c.format = T.RGBAFormat; c.type = T.UnsignedByteType; c.needsUpdate = true;
+				shared.c.value = c;
+				const faces = [[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 0], [255, 0, 255], [0, 255, 255]].map((col) => ({ data: new Uint8Array([col[0], col[1], col[2], 255]), width: 1, height: 1 }));
+				const d = new T.CubeTexture(faces); d.magFilter = d.minFilter = T.NearestFilter; d.generateMipmaps = false; d.needsUpdate = true;
+				shared.d.value = d;
+				renderer.render(scene, camera);
+				const errAfter = gl.getError();
+				const probe = (cx) => ({ a: readPixel(renderer, cx - 20, 128 - 20), b: readPixel(renderer, cx + 20, 128 - 20), c: readPixel(renderer, cx - 20, 128 + 20), d: readPixel(renderer, cx + 20, 128 + 20) });
+				const p1 = probe(128 - 44), p2 = probe(128 + 44);
+				const okOne = (p) => near(p.a, [255, 55, 0], 3) /* render target stores the 0xff8000 clear colour linearly: 0x80 -> 55 */ && near(p.b, [128, 0, 0], 3) && near(p.c, [0, 0, 255], 3) && near(p.d, [255, 0, 255], 3);
+				rt.dispose();
+				return {
+					pass: errNull === 0 && errAfter === 0 && near(nullPx, [0, 0, 0], 2) && okOne(p1) && okOne(p2),
+					detail: `GL errors: null pass ${errNull}, after assignment ${errAfter}; null draw samples ${fmt(nullPx)} (expect black placeholder); ` +
+						`material 1: 2D ${fmt(p1.a)} 3D ${fmt(p1.b)} array ${fmt(p1.c)} cube ${fmt(p1.d)}; material 2: 2D ${fmt(p2.a)} 3D ${fmt(p2.b)} array ${fmt(p2.c)} cube ${fmt(p2.d)} (expect [255,55,0] [128,0,0] [0,0,255] [255,0,255])`
+				};
+			}
+		},
 		{
 			name: 'Raycaster hit through camera', run(T, renderer) {
 				const { scene, camera } = baseScene(T);
