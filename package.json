@@ -6,10 +6,16 @@
   "main": "./src/index.js",
   "module": "./src/index.js",
   "exports": {
-    ".": "./src/index.js"
+    ".": {
+      "import": "./src/index.js",
+      "default": "./src/index.js"
+    },
+    "./build/*": "./build/*",
+    "./src/*": "./src/*"
   },
   "files": [
     "src",
+    "build",
     "README.md",
     "ARCHITECTURE.md",
     "LICENSE"
@@ -17,11 +23,21 @@
   "scripts": {
     "test": "node --test",
     "bench": "node bench/run.mjs",
-    "bench:serve": "node bench/serve.mjs"
+    "bench:serve": "node bench/serve.mjs",
+    "build": "node build.mjs"
   },
-  "keywords": ["webgl", "webgl2", "3d", "three", "threejs", "performance", "renderer"],
+  "keywords": [
+    "webgl",
+    "webgl2",
+    "3d",
+    "three",
+    "threejs",
+    "performance",
+    "renderer"
+  ],
   "license": "MIT",
   "devDependencies": {
+    "esbuild": "^0.25.12",
     "playwright-core": "^1.63.0",
     "three": "^0.186.1"
   }

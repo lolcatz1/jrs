@@ -159,3 +159,22 @@ instancing, transparency, 2D/3D/array/cube textures, stencil, fog, shadows, spri
 ShaderMaterial with chunks and custom attributes, render targets, raycasting), times a 2 000-object scene, and when a CDN is reachable runs the same scene with
 three.js for a side-by-side number. "Copy report" puts the JSON on the clipboard.
 `node bench/conformance.mjs` runs the same page in headless Chromium.
+
+## Using the single-file build (import map swap)
+
+`npm run build` writes `build/jrs.module.js` and `build/jrs.module.min.js` (both committed). To put
+jrs behind a URL flag in an app that imports `three` through an import map:
+
+```html
+<script>
+	const useJrs = new URLSearchParams(location.search).get('renderer') === 'jrs';
+	document.write(`<script type="importmap">${JSON.stringify({
+		imports: { three: useJrs ? './vendor/jrs/build/jrs.module.js' : './vendor/three/build/three.module.js' }
+	})}<\/script>`);
+</script>
+<script type="module" src="./app.js"></script>
+```
+
+Everything that does `import * as THREE from 'three'` then resolves to jrs when the page is opened
+with `?renderer=jrs`, and to three.js otherwise. Create the renderer with `{ stencil: true }` if you
+use stencil techniques; three.js and jrs both default to no stencil buffer.
