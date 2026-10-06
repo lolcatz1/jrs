@@ -1,0 +1,92 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>jrs vs three.js benchmark</title>
+<style>body{font-family:system-ui;background:#111;color:#ddd;margin:16px} canvas{background:#000;display:block;margin-bottom:8px} pre{white-space:pre-wrap}</style>
+</head>
+<body>
+<canvas id="c" width="320" height="240"></canvas>
+<pre id="log"></pre>
+<script type="module">
+import * as JRS from '/src/index.js';
+import * as THREE from '/node_modules/three/build/three.module.js';
+import { scenarios } from '/bench/scenarios.js';
+
+const libs = { jrs: JRS, three: THREE };
+const log = (s) => { document.getElementById('log').textContent += s + '\n'; };
+
+/**
+ * Runs one scenario with one library on a fresh canvas and returns timings.
+ * frames: measured frames after warmup. Timing is the JS time spent in scene update + render.
+ */
+window.runScenario = async function (libName, scenarioName, opts = {}) {
+	const T = libs[libName];
+	const sc = scenarios[scenarioName];
+	const n = opts.n || sc.n;
+	const frames = opts.frames || 60, warmup = opts.warmup || 10;
+	const canvas = document.createElement('canvas');
+	canvas.width = 320; canvas.height = 240;
+	document.body.appendChild(canvas);
+	const renderer = new T.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
+	renderer.setSize(320, 240, false);
+	if (scenarioName === 'shadows') renderer.shadowMap.enabled = true;
+	const t0 = performance.now();
+	const { scene, camera, update } = sc.build(T, n);
+	const buildMs = performance.now() - t0;
+	const gl = renderer.getContext();
+	for (let f = 0; f < warmup; f++) { if (update) update(f); renderer.render(scene, camera); }
+	gl.finish();
+	let jsMs = 0, best = Infinity, worst = 0;
+	const wall0 = performance.now();
+	for (let f = 0; f < frames; f++) {
+		const s = performance.now();
+		if (update) update(warmup + f);
+		renderer.render(scene, camera);
+		const d = performance.now() - s;
+		jsMs += d; if (d < best) best = d; if (d > worst) worst = d;
+	}
+	gl.finish();
+	const wallMs = performance.now() - wall0;
+	const info = renderer.info.render;
+	const result = {
+		lib: libName, scenario: scenarioName, n, frames,
+		buildMs: +buildMs.toFixed(2),
+		avgMs: +(jsMs / frames).toFixed(3), bestMs: +best.toFixed(3), worstMs: +worst.toFixed(3),
+		wallAvgMs: +(wallMs / frames).toFixed(3),
+		drawCalls: info.calls, triangles: Math.round(info.triangles),
+		programs: renderer.info.programs ? renderer.info.programs.length : undefined,
+	};
+	// capture a thumbnail for visual sanity
+	if (opts.capture) result.image = canvas.toDataURL('image/png');
+	renderer.dispose();
+	canvas.remove();
+	log(JSON.stringify(result));
+	return result;
+};
+
+/** Renders the same scenario with both libraries and returns mean absolute pixel difference (0..255). */
+window.compareScenario = async function (scenarioName, n) {
+	const sc = scenarios[scenarioName];
+	const images = {};
+	for (const libName of ['jrs', 'three']) {
+		const T = libs[libName];
+		const canvas = document.createElement('canvas'); canvas.width = 320; canvas.height = 240;
+		const renderer = new T.WebGLRenderer({ canvas, antialias: false, preserveDrawingBuffer: true });
+		renderer.setSize(320, 240, false);
+		if (scenarioName === 'shadows') renderer.shadowMap.enabled = true;
+		const { scene, camera, update } = sc.build(T, n || sc.n);
+		if (update) update(0);
+		renderer.render(scene, camera);
+		const gl = renderer.getContext();
+		const px = new Uint8Array(320 * 240 * 4);
+		gl.readPixels(0, 0, 320, 240, gl.RGBA, gl.UNSIGNED_BYTE, px);
+		images[libName] = { px, url: canvas.toDataURL('image/png') };
+		renderer.dispose();
+	}
+	let sum = 0, maxd = 0, bad = 0;
+	const a = images.jrs.px, b = images.three.px;
+	for (let i = 0; i < a.length; i++) { if ((i & 3) === 3) continue; const d = Math.abs(a[i] - b[i]); sum += d; if (d > maxd) maxd = d; if (d > 32) bad++; }
+	const count = a.length * 3 / 4;
+	return { scenario: scenarioName, meanAbsDiff: +(sum / count).toFixed(3), maxDiff: maxd, fractionOver32: +(bad / count).toFixed(4), jrs: images.jrs.url, three: images.three.url };
+};
+window.ready = true;
+</script>
+</body></html>

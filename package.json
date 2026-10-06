@@ -1,0 +1,28 @@
+{
+  "name": "jrs",
+  "version": "0.1.0",
+  "description": "A faster drop-in alternative to three.js: same names, same scene graph, a different engine underneath.",
+  "type": "module",
+  "main": "./src/index.js",
+  "module": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "ARCHITECTURE.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "bench": "node bench/run.mjs",
+    "bench:serve": "node bench/serve.mjs"
+  },
+  "keywords": ["webgl", "webgl2", "3d", "three", "threejs", "performance", "renderer"],
+  "license": "MIT",
+  "devDependencies": {
+    "playwright-core": "^1.63.0",
+    "three": "^0.186.1"
+  }
+}

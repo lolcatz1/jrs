@@ -1,0 +1,16 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>jrs smoke</title></head>
+<body style="margin:0;background:#222">
+<canvas id="c" width="256" height="256"></canvas>
+<script type="module">
+import * as THREE from '/src/index.js';
+window.THREE = THREE;
+window.readPixel = (renderer, x, y) => {
+	const gl = renderer.getContext();
+	const px = new Uint8Array(4);
+	gl.readPixels(x, gl.drawingBufferHeight - 1 - y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+	return Array.from(px);
+};
+window.ready = true;
+</script>
+</body></html>

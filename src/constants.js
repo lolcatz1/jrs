@@ -1,0 +1,177 @@
+export const REVISION = '1-jrs';
+
+// Mouse / touch (kept for API parity)
+export const MOUSE = { LEFT: 0, MIDDLE: 1, RIGHT: 2, ROTATE: 0, DOLLY: 1, PAN: 2 };
+export const TOUCH = { ROTATE: 0, PAN: 1, DOLLY_PAN: 2, DOLLY_ROTATE: 3 };
+
+// Culling
+export const CullFaceNone = 0;
+export const CullFaceBack = 1;
+export const CullFaceFront = 2;
+export const CullFaceFrontBack = 3;
+
+// Shadows
+export const BasicShadowMap = 0;
+export const PCFShadowMap = 1;
+export const PCFSoftShadowMap = 2;
+export const VSMShadowMap = 3;
+
+// Sides
+export const FrontSide = 0;
+export const BackSide = 1;
+export const DoubleSide = 2;
+
+// Blending
+export const NoBlending = 0;
+export const NormalBlending = 1;
+export const AdditiveBlending = 2;
+export const SubtractiveBlending = 3;
+export const MultiplyBlending = 4;
+export const CustomBlending = 5;
+
+export const AddEquation = 100;
+export const SubtractEquation = 101;
+export const ReverseSubtractEquation = 102;
+export const MinEquation = 103;
+export const MaxEquation = 104;
+
+export const ZeroFactor = 200;
+export const OneFactor = 201;
+export const SrcColorFactor = 202;
+export const OneMinusSrcColorFactor = 203;
+export const SrcAlphaFactor = 204;
+export const OneMinusSrcAlphaFactor = 205;
+export const DstAlphaFactor = 206;
+export const OneMinusDstAlphaFactor = 207;
+export const DstColorFactor = 208;
+export const OneMinusDstColorFactor = 209;
+export const SrcAlphaSaturateFactor = 210;
+export const ConstantColorFactor = 211;
+export const OneMinusConstantColorFactor = 212;
+export const ConstantAlphaFactor = 213;
+export const OneMinusConstantAlphaFactor = 214;
+
+// Depth
+export const NeverDepth = 0;
+export const AlwaysDepth = 1;
+export const LessDepth = 2;
+export const LessEqualDepth = 3;
+export const EqualDepth = 4;
+export const GreaterEqualDepth = 5;
+export const GreaterDepth = 6;
+export const NotEqualDepth = 7;
+
+// Operations
+export const MultiplyOperation = 0;
+export const MixOperation = 1;
+export const AddOperation = 2;
+
+// Tone mapping
+export const NoToneMapping = 0;
+export const LinearToneMapping = 1;
+export const ReinhardToneMapping = 2;
+export const CineonToneMapping = 3;
+export const ACESFilmicToneMapping = 4;
+export const AgXToneMapping = 6;
+export const NeutralToneMapping = 7;
+
+// Texture mapping
+export const UVMapping = 300;
+export const CubeReflectionMapping = 301;
+export const CubeRefractionMapping = 302;
+export const EquirectangularReflectionMapping = 303;
+export const EquirectangularRefractionMapping = 304;
+
+// Wrapping
+export const RepeatWrapping = 1000;
+export const ClampToEdgeWrapping = 1001;
+export const MirroredRepeatWrapping = 1002;
+
+// Filters
+export const NearestFilter = 1003;
+export const NearestMipmapNearestFilter = 1004;
+export const NearestMipMapNearestFilter = 1004;
+export const NearestMipmapLinearFilter = 1005;
+export const NearestMipMapLinearFilter = 1005;
+export const LinearFilter = 1006;
+export const LinearMipmapNearestFilter = 1007;
+export const LinearMipMapNearestFilter = 1007;
+export const LinearMipmapLinearFilter = 1008;
+export const LinearMipMapLinearFilter = 1008;
+
+// Data types
+export const UnsignedByteType = 1009;
+export const ByteType = 1010;
+export const ShortType = 1011;
+export const UnsignedShortType = 1012;
+export const IntType = 1013;
+export const UnsignedIntType = 1014;
+export const FloatType = 1015;
+export const HalfFloatType = 1016;
+export const UnsignedShort4444Type = 1017;
+export const UnsignedShort5551Type = 1018;
+export const UnsignedInt248Type = 1020;
+
+// Pixel formats
+export const AlphaFormat = 1021;
+export const RGBFormat = 1022;
+export const RGBAFormat = 1023;
+export const LuminanceFormat = 1024;
+export const LuminanceAlphaFormat = 1025;
+export const DepthFormat = 1026;
+export const DepthStencilFormat = 1027;
+export const RedFormat = 1028;
+export const RedIntegerFormat = 1029;
+export const RGFormat = 1030;
+export const RGIntegerFormat = 1031;
+export const RGBAIntegerFormat = 1033;
+
+// Color spaces
+export const NoColorSpace = '';
+export const SRGBColorSpace = 'srgb';
+export const LinearSRGBColorSpace = 'srgb-linear';
+
+// Loop modes etc. (parity only)
+export const LoopOnce = 2200;
+export const LoopRepeat = 2201;
+export const LoopPingPong = 2202;
+
+// Normal map types
+export const TangentSpaceNormalMap = 0;
+export const ObjectSpaceNormalMap = 1;
+
+// Stencil
+export const ZeroStencilOp = 0;
+export const KeepStencilOp = 7680;
+export const ReplaceStencilOp = 7681;
+export const IncrementStencilOp = 7682;
+export const DecrementStencilOp = 7683;
+export const IncrementWrapStencilOp = 34055;
+export const DecrementWrapStencilOp = 34056;
+export const InvertStencilOp = 5386;
+
+export const NeverStencilFunc = 512;
+export const LessStencilFunc = 513;
+export const EqualStencilFunc = 514;
+export const LessEqualStencilFunc = 515;
+export const GreaterStencilFunc = 516;
+export const NotEqualStencilFunc = 517;
+export const GreaterEqualStencilFunc = 518;
+export const AlwaysStencilFunc = 519;
+
+// Usage hints
+export const StaticDrawUsage = 35044;
+export const DynamicDrawUsage = 35048;
+export const StreamDrawUsage = 35040;
+export const StaticReadUsage = 35045;
+export const DynamicReadUsage = 35049;
+export const StreamReadUsage = 35041;
+export const StaticCopyUsage = 35046;
+export const DynamicCopyUsage = 35050;
+export const StreamCopyUsage = 35042;
+
+export const GLSL1 = '100';
+export const GLSL3 = '300 es';
+
+export const WebGLCoordinateSystem = 2000;
+export const WebGPUCoordinateSystem = 2001;
