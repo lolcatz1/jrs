@@ -127,7 +127,47 @@ export const scenarios = {
 	// mix of opaque and transparent materials. Auto-batching does not apply (ShaderMaterial).
 	'shader-client': {
 		n: 1313,
+		build(T, n) { return buildShaderClient(T, n, { scale: 1 }); }
+	},
+	// Same materials and passes as a real client frame with a FIXED camera and nothing moving:
+	// two shadow render-target passes with scene.overrideMaterial (a depth ShaderMaterial), the main
+	// pass with ~210 draws, and stencil shadow-volume passes (MeshBasicMaterial, stencil state, renderOrder).
+	// Measures what a renderer still uploads when nothing changed between frames.
+	'shader-client-static': {
+		n: 211,
+		build(T, n) { return buildShaderClient(T, n, { scale: 211 / 1313, staticFrame: true }); }
+	},
+	// Shadows: 2000 casters/receivers under a shadow-casting directional light.
+	'shadows': {
+		n: 2000,
 		build(T, n) {
+			const scene = new T.Scene();
+			const camera = new T.PerspectiveCamera(60, 4 / 3, 0.1, 500);
+			camera.position.set(0, 25, 45); camera.lookAt(0, 0, 0);
+			scene.add(new T.AmbientLight(0xffffff, 0.4));
+			const sun = new T.DirectionalLight(0xffffff, 2); sun.position.set(20, 40, 10); sun.castShadow = true;
+			sun.shadow.camera.left = -40; sun.shadow.camera.right = 40; sun.shadow.camera.top = 40; sun.shadow.camera.bottom = -40; sun.shadow.camera.far = 200;
+			sun.shadow.mapSize.set(1024, 1024);
+			scene.add(sun);
+			const floor = new T.Mesh(new T.PlaneGeometry(100, 100), new T.MeshLambertMaterial({ color: 0xcccccc }));
+			floor.rotation.x = -Math.PI / 2; floor.position.y = -8; floor.receiveShadow = true; scene.add(floor);
+			const geometry = new T.BoxGeometry(0.6, 0.6, 0.6);
+			const material = new T.MeshLambertMaterial({ color: 0x8899ff });
+			for (let i = 0; i < n; i++) {
+				const m = new T.Mesh(geometry, material);
+				const p = grid(i, n, 1.5); m.position.set(p[0], p[1], p[2]);
+				m.castShadow = true; m.receiveShadow = true;
+				scene.add(m);
+			}
+			return { scene, camera };
+		}
+	},
+};
+
+function buildShaderClient(T, n, opts) {
+	const scale = opts.scale, staticFrame = opts.staticFrame === true;
+	{
+		{
 			const scene = new T.Scene();
 			const camera = new T.PerspectiveCamera(70, 4 / 3, 0.5, 2000);
 			camera.position.set(0, 60, 160); camera.lookAt(0, 0, 0);
@@ -212,11 +252,11 @@ export const scenarios = {
 				return g;
 			};
 			// pre-batched chunks: each a unique merged geometry (~1,200 triangles) in world space
-			const chunkGeometry = (seed) => {
+			const chunkGeometry = (seed, cx = 0, cz = 0) => {
 				const parts = 100, pos = new Float32Array(parts * 24 * 3), nor = new Float32Array(parts * 24 * 3), idx = new Uint32Array(parts * 36);
 				const box = new T.BoxGeometry(2, 2, 2); const bp = box.attributes.position.array, bn = box.attributes.normal.array, bi = box.index.array;
 				for (let p = 0; p < parts; p++) {
-					const ox = ((seed * 13 + p * 7) % 40) - 20, oy = ((seed * 3 + p * 5) % 8), oz = ((seed * 17 + p * 11) % 40) - 20;
+					const ox = ((seed * 13 + p * 7) % 40) - 20 + cx, oy = ((seed * 3 + p * 5) % 8), oz = ((seed * 17 + p * 11) % 40) - 20 + cz;
 					for (let v = 0; v < 24; v++) { pos[(p * 24 + v) * 3] = bp[v * 3] + ox; pos[(p * 24 + v) * 3 + 1] = bp[v * 3 + 1] + oy; pos[(p * 24 + v) * 3 + 2] = bp[v * 3 + 2] + oz; nor[(p * 24 + v) * 3] = bn[v * 3]; nor[(p * 24 + v) * 3 + 1] = bn[v * 3 + 1]; nor[(p * 24 + v) * 3 + 2] = bn[v * 3 + 2]; }
 					for (let t = 0; t < 36; t++) idx[p * 36 + t] = bi[t] + p * 24;
 				}
@@ -237,12 +277,14 @@ export const scenarios = {
 			let i = 0, batchedIndex = 0;
 			for (const g of groups) {
 				const mat = material(g.variant, {}, g.transparent === true, g.batched === true);
-				for (let k = 0; k < g.count; k++, i++) {
+				const count = Math.max(1, Math.round(g.count * scale));
+				for (let k = 0; k < count; k++, i++) {
 					let mesh;
 					if (g.batched) {
-						mesh = new T.Mesh(chunkGeometry(batchedIndex), mat);
+						// pre-merged static geometry is already in world space; the mesh transform is identity
 						const cx = (batchedIndex % 21 - 10) * 42, cz = (Math.floor(batchedIndex / 21) - 10) * 42;
-						mesh.position.set(cx, 0, cz); mesh.matrixAutoUpdate = false; mesh.updateMatrix(); mesh.frustumCulled = false;
+						mesh = new T.Mesh(chunkGeometry(batchedIndex, cx, cz), mat);
+						mesh.matrixAutoUpdate = false; mesh.frustumCulled = false;
 						batchedIndex++;
 					} else {
 						mesh = new T.Mesh(singleGeometries[i % 20], mat);
@@ -261,33 +303,36 @@ export const scenarios = {
 				renderer.setRenderTarget(rtNear); renderer.render(depthScene, shadowCam);
 				renderer.setRenderTarget(null);
 			};
-			const lamp = shared.lamp0Dir.value.clone();
-			return { scene, camera, warm, update: (f) => { shared.time.value = f * 0.016; shared.lamp0Dir.value.copy(lamp).applyAxisAngle(new T.Vector3(0, 1, 0), f * 0.002).normalize(); shared.cameraPos.value.copy(camera.position); } };
-		}
-	},
-	// Shadows: 2000 casters/receivers under a shadow-casting directional light.
-	'shadows': {
-		n: 2000,
-		build(T, n) {
-			const scene = new T.Scene();
-			const camera = new T.PerspectiveCamera(60, 4 / 3, 0.1, 500);
-			camera.position.set(0, 25, 45); camera.lookAt(0, 0, 0);
-			scene.add(new T.AmbientLight(0xffffff, 0.4));
-			const sun = new T.DirectionalLight(0xffffff, 2); sun.position.set(20, 40, 10); sun.castShadow = true;
-			sun.shadow.camera.left = -40; sun.shadow.camera.right = 40; sun.shadow.camera.top = 40; sun.shadow.camera.bottom = -40; sun.shadow.camera.far = 200;
-			sun.shadow.mapSize.set(1024, 1024);
-			scene.add(sun);
-			const floor = new T.Mesh(new T.PlaneGeometry(100, 100), new T.MeshLambertMaterial({ color: 0xcccccc }));
-			floor.rotation.x = -Math.PI / 2; floor.position.y = -8; floor.receiveShadow = true; scene.add(floor);
-			const geometry = new T.BoxGeometry(0.6, 0.6, 0.6);
-			const material = new T.MeshLambertMaterial({ color: 0x8899ff });
-			for (let i = 0; i < n; i++) {
-				const m = new T.Mesh(geometry, material);
-				const p = grid(i, n, 1.5); m.position.set(p[0], p[1], p[2]);
-				m.castShadow = true; m.receiveShadow = true;
-				scene.add(m);
+			shared.cameraPos.value.copy(camera.position);
+			if (!staticFrame) {
+				const lamp = shared.lamp0Dir.value.clone();
+				return { scene, camera, warm, update: (f) => { shared.time.value = f * 0.016; shared.lamp0Dir.value.copy(lamp).applyAxisAngle(new T.Vector3(0, 1, 0), f * 0.002).normalize(); shared.cameraPos.value.copy(camera.position); } };
 			}
-			return { scene, camera };
+			// --- static multi-pass frame: shadow RT passes with overrideMaterial, main pass, stencil volume passes
+			const depthMat = new T.ShaderMaterial({
+				vertexShader: 'void main(){ gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+				fragmentShader: 'void main(){ gl_FragColor = vec4(vec3(gl_FragCoord.z), 1.0); }',
+			});
+			// 6 stencil shadow-volume style meshes: MeshBasicMaterial, stencil ops, renderOrder groups, no colour writes for the volume passes
+			const volGeo = new T.BoxGeometry(6, 10, 6);
+			const volFront = new T.MeshBasicMaterial({ colorWrite: false, depthWrite: false, side: T.FrontSide, stencilWrite: true, stencilFunc: T.AlwaysStencilFunc, stencilZFail: T.IncrementWrapStencilOp, stencilZPass: T.KeepStencilOp, stencilFail: T.KeepStencilOp });
+			const volBack = new T.MeshBasicMaterial({ colorWrite: false, depthWrite: false, side: T.BackSide, stencilWrite: true, stencilFunc: T.AlwaysStencilFunc, stencilZFail: T.DecrementWrapStencilOp, stencilZPass: T.KeepStencilOp, stencilFail: T.KeepStencilOp });
+			const volShade = new T.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.4, depthTest: false, depthWrite: false, stencilWrite: true, stencilFunc: T.NotEqualStencilFunc, stencilRef: 0, stencilWriteMask: 0, stencilZPass: T.KeepStencilOp });
+			for (let v = 0; v < 2; v++) {
+				const f = new T.Mesh(volGeo, volFront); f.position.set(v * 30 - 15, 10, 20); f.renderOrder = 1; scene.add(f);
+				const b = new T.Mesh(volGeo, volBack); b.position.copy(f.position); b.renderOrder = 2; scene.add(b);
+				const sh = new T.Mesh(new T.PlaneGeometry(2, 2), volShade); sh.position.set(0, 0, 5); sh.renderOrder = 3; sh.frustumCulled = false; scene.add(sh);
+			}
+			const nearCam = shadowCam.clone(); nearCam.left = -60; nearCam.right = 60; nearCam.top = 60; nearCam.bottom = -60; nearCam.updateProjectionMatrix();
+			const frame = (renderer) => {
+				scene.overrideMaterial = depthMat;
+				renderer.setRenderTarget(rt); renderer.clear(); renderer.render(scene, shadowCam);
+				renderer.setRenderTarget(rtNear); renderer.clear(); renderer.render(scene, nearCam);
+				scene.overrideMaterial = null;
+				renderer.setRenderTarget(null);
+				renderer.render(scene, camera);
+			};
+			return { scene, camera, warm, frame, passes: ['shadow RT (overrideMaterial)', 'near shadow RT (overrideMaterial)', 'main + stencil volumes'] };
 		}
-	},
-};
+	}
+}

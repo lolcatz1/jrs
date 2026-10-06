@@ -53,11 +53,15 @@ class WebGLProgram {
 			if (name.endsWith('[0]')) name = name.slice(0, -3);
 			const location = gl.getUniformLocation(program, info.name);
 			if (location === null) continue; // uniform block member
-			this.uniforms[name] = { location, type: info.type, size: info.size };
+			this.uniforms[name] = { name, location, type: info.type, size: info.size, cache: undefined };
 		}
 		this.modelMatrixLocation = this.uniforms.modelMatrix ? this.uniforms.modelMatrix.location : null;
 		this.normalMatrixLocation = this.uniforms.normalMatrix ? this.uniforms.normalMatrix.location : null;
 		this.modelViewMatrixLocation = this.uniforms.modelViewMatrix ? this.uniforms.modelViewMatrix.location : null;
+		this.modelMatrixUniform = this.uniforms.modelMatrix || null;
+		this.normalMatrixUniform = this.uniforms.normalMatrix || null;
+		this.modelViewMatrixUniform = this.uniforms.modelViewMatrix || null;
+		this._frameStamp = -1; this._frameRid = 0;
 		this.spriteCenterLocation = this.uniforms.uSpriteCenter ? this.uniforms.uSpriteCenter.location : null;
 
 		// uniform blocks

@@ -79,7 +79,7 @@ class WebGLRenderList {
 			const index = ok[i];
 			const item = items[index];
 			const rank = singleRank ? 0 : rankOf(item.renderOrder);
-			const program = item.program.id & 63;
+			const program = item.program._frameRid & 63;
 			const mat = item.materialRid & 1023;
 			const geo = item.geometryRid & 1023;
 			// ((((rank*64 + program)*1024 + mat)*1024 + geo) * 2^20 + index

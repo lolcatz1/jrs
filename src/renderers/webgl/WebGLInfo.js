@@ -2,7 +2,7 @@ class WebGLInfo {
 	constructor(gl) {
 		this.gl = gl;
 		this.memory = { geometries: 0, textures: 0 };
-		this.render = { frame: 0, calls: 0, triangles: 0, points: 0, lines: 0, batches: 0, instances: 0 };
+		this.render = { frame: 0, calls: 0, triangles: 0, points: 0, lines: 0, batches: 0, instances: 0, programSwitches: 0 };
 		this.programs = null;
 		this.autoReset = true;
 	}
@@ -20,7 +20,7 @@ class WebGLInfo {
 	}
 	reset() {
 		this.render.calls = 0; this.render.triangles = 0; this.render.points = 0; this.render.lines = 0;
-		this.render.batches = 0; this.render.instances = 0;
+		this.render.batches = 0; this.render.instances = 0; this.render.programSwitches = 0;
 	}
 }
 

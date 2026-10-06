@@ -59,7 +59,12 @@ class WebGLRenderer {
 		} = parameters;
 		this.isWebGLRenderer = true;
 		this.domElement = canvas;
-		this.debug = { checkShaderErrors: true, onShaderError: null };
+		/**
+		 * debug.traceUniforms = true records, per render() call, every uniform upload that actually
+		 * reached GL (name -> count) plus program switches and draws, into debug.uniformTrace (last 16 calls).
+		 */
+		this.debug = { checkShaderErrors: true, onShaderError: null, traceUniforms: false, uniformTrace: [] };
+		this._traceUniforms = null;
 		this.autoClear = true; this.autoClearColor = true; this.autoClearDepth = true; this.autoClearStencil = true;
 		this.sortObjects = true;
 		/** Draw consecutive objects sharing geometry and material with one instanced draw call. */
@@ -96,6 +101,7 @@ class WebGLRenderer {
 		this._lastEnvKey = '';
 		this._lastLightsVersion = -1;
 		this._samplerStamp = 0;
+		this._programCounter = 0;
 		this._currentScene = null;
 		this._currentSide = -1;
 		this._materialCounter = 0; this._geometryCounter = 0;
@@ -338,8 +344,10 @@ class WebGLRenderer {
 		this._renderCallDepth++;
 		this._currentCamera = camera;
 		this._currentScene = scene;
-		this._materialCounter = 0; this._geometryCounter = 0;
+		this._materialCounter = 0; this._geometryCounter = 0; this._programCounter = 0;
 		this._currentMaterial = null; this._currentSide = -1;
+		this._traceUniforms = this.debug.traceUniforms === true ? new Map() : null;
+		this._traceSwitches = 0; this._traceDraws = this.info.render.calls;
 		this._updateEnv(scene);
 
 		_projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
@@ -389,6 +397,12 @@ class WebGLRenderer {
 		if (this._currentRenderTarget !== null) this.textures.updateRenderTargetMipmap(this._currentRenderTarget);
 		this.state.bindVertexArray(null);
 		this._currentGeometryRecord = null;
+		if (this._traceUniforms !== null) {
+			const t = this.debug.uniformTrace;
+			t.push({ pass: t.length, target: this._currentRenderTarget === null ? 'canvas' : 'renderTarget', uniforms: Object.fromEntries(this._traceUniforms), useProgram: this._traceSwitches, draws: this.info.render.calls - this._traceDraws });
+			if (t.length > 16) t.shift();
+			this._traceUniforms = null;
+		}
 		this._renderCallDepth--;
 		if (this._renderCallDepth === 0) this.info.render.frame++;
 	}
@@ -518,6 +532,10 @@ class WebGLRenderer {
 	}
 
 	_pushItem(list, object, geometry, material, group, z, shadowPass) {
+		if (shadowPass === false) {
+			const override = this._currentScene !== null ? this._currentScene.overrideMaterial : null;
+			if (override !== null && override !== undefined && material.allowOverride === true) material = override;
+		}
 		const variant = this._variantFor(object, geometry, material, shadowPass);
 		this._noteRenderOrder(object.renderOrder);
 		// compact per-frame ids for materials and geometries (dense -> good key packing)
@@ -529,10 +547,12 @@ class WebGLRenderer {
 
 	/** Resolve the program of every item in the list. Runs after the frame's lights are collected. */
 	_resolvePrograms(list, scene) {
-		const items = list.items, n = list.count;
+		const items = list.items, n = list.count, frame = this._frameId;
 		for (let i = 0; i < n; i++) {
 			const item = items[i];
-			item.program = this._getProgram(item.material, item.object, scene, item.variant);
+			const program = this._getProgram(item.material, item.object, scene, item.variant);
+			if (program._frameStamp !== frame) { program._frameStamp = frame; program._frameRid = this._programCounter++; }
+			item.program = program;
 		}
 	}
 
@@ -791,6 +811,7 @@ class WebGLRenderer {
 	_setupMaterial(item, program, material, camera, frontFaceCW, side) {
 		const gl = this._gl, state = this.state;
 		const programChanged = state.useProgram(program.program);
+		if (programChanged) { this.info.render.programSwitches++; this._traceSwitches++; }
 		const materialChanged = this._currentMaterial !== material || programChanged || this._currentSide !== side;
 		if (materialChanged) {
 			this._currentMaterial = material;
@@ -829,12 +850,16 @@ class WebGLRenderer {
 		if (material.wireframe === true && object.isMesh) geometry = this._wireframeGeometry(geometry);
 		// per-object uniforms
 		const s = object._slabData, o = object._slabOffset;
-		if (program.modelMatrixLocation !== null) gl.uniformMatrix4fv(program.modelMatrixLocation, false, s, o + 16, 16);
+		const mu = program.modelMatrixUniform;
+		if (mu !== null && !cacheSlab(mu, s, o + 16, 16)) { gl.uniformMatrix4fv(mu.location, false, s, o + 16, 16); if (this._traceUniforms !== null) this._trace(mu); }
 		if (material.isShaderMaterial) {
 			this._uploadObjectUniformsForShaderMaterial(program, object, camera);
-		} else if (program.normalMatrixLocation !== null) {
-			if (object._normalVersion !== object._worldVersion) { computeNormalMatrix(s, o); object._normalVersion = object._worldVersion; }
-			gl.uniformMatrix3fv(program.normalMatrixLocation, false, s, o + 32, 9);
+		} else {
+			const nu = program.normalMatrixUniform;
+			if (nu !== null) {
+				if (object._normalVersion !== object._worldVersion) { computeNormalMatrix(s, o); object._normalVersion = object._worldVersion; }
+				if (!cacheSlab(nu, s, o + 32, 9)) { gl.uniformMatrix3fv(nu.location, false, s, o + 32, 9); if (this._traceUniforms !== null) this._trace(nu); }
+			}
 		}
 		if (program.spriteCenterLocation !== null) gl.uniform2f(program.spriteCenterLocation, object.center.x, object.center.y);
 		// geometry
@@ -855,7 +880,8 @@ class WebGLRenderer {
 		const program = this._getProgram(material, object, scene, variant);
 		this._setupMaterial(item, program, material, camera, false, shadowPass ? shadowSideOf(material) : material.side);
 		if (material.wireframe === true) geometry = this._wireframeGeometry(geometry);
-		if (program.modelMatrixLocation !== null) gl.uniformMatrix4fv(program.modelMatrixLocation, false, IDENTITY);
+		const mu = program.modelMatrixUniform;
+		if (mu !== null && !cacheArray(mu, IDENTITY, 16)) { gl.uniformMatrix4fv(mu.location, false, IDENTITY); if (this._traceUniforms !== null) this._trace(mu); }
 		const record = this.bindingStates.bind(geometry, 2, null, this.batcher.buffer, program);
 		this.bindingStates.setBatchOffset(this.batcher.buffer, instanceOffset * 64);
 		this._draw(record, geometry, null, this._drawMode(object, material), instanceCount, true);
@@ -911,16 +937,16 @@ class WebGLRenderer {
 			if (u.boundStamp !== this._samplerStamp) for (let k = 0; k < u.size; k++) this.textures.bindEmpty(u, u.unit + k);
 		}
 		const pu = program.uniforms;
-		if (pu.projectionMatrix) gl.uniformMatrix4fv(pu.projectionMatrix.location, false, camera.projectionMatrix.elements);
-		if (pu.viewMatrix) gl.uniformMatrix4fv(pu.viewMatrix.location, false, camera.matrixWorldInverse.elements);
-		if (pu.cameraPosition) { const e = camera.matrixWorld.elements; gl.uniform3f(pu.cameraPosition.location, e[12], e[13], e[14]); }
-		if (pu.isOrthographic) gl.uniform1i(pu.isOrthographic.location, camera.isOrthographicCamera ? 1 : 0);
-		if (pu.toneMappingExposure && uniforms.toneMappingExposure === undefined) gl.uniform1f(pu.toneMappingExposure.location, this.toneMappingExposure);
+		if (pu.projectionMatrix) setUniformValue(gl, this, pu.projectionMatrix, camera.projectionMatrix);
+		if (pu.viewMatrix) setUniformValue(gl, this, pu.viewMatrix, camera.matrixWorldInverse);
+		if (pu.cameraPosition) { const u = pu.cameraPosition, e = camera.matrixWorld.elements; if (!cacheVec(u, e[12], e[13], e[14], 0)) { gl.uniform3f(u.location, e[12], e[13], e[14]); if (this._traceUniforms !== null) this._trace(u); } }
+		if (pu.isOrthographic) setUniformValue(gl, this, pu.isOrthographic, camera.isOrthographicCamera ? 1 : 0);
+		if (pu.toneMappingExposure && uniforms.toneMappingExposure === undefined) setUniformValue(gl, this, pu.toneMappingExposure, this.toneMappingExposure);
 		const fog = this._currentScene ? this._currentScene.fog : null;
 		if (fog && material.fog === true) {
-			if (pu.fogColor) gl.uniform3f(pu.fogColor.location, fog.color.r, fog.color.g, fog.color.b);
-			if (fog.isFog) { if (pu.fogNear) gl.uniform1f(pu.fogNear.location, fog.near); if (pu.fogFar) gl.uniform1f(pu.fogFar.location, fog.far); }
-			else if (pu.fogDensity) gl.uniform1f(pu.fogDensity.location, fog.density);
+			if (pu.fogColor) setUniformValue(gl, this, pu.fogColor, fog.color);
+			if (fog.isFog) { if (pu.fogNear) setUniformValue(gl, this, pu.fogNear, fog.near); if (pu.fogFar) setUniformValue(gl, this, pu.fogFar, fog.far); }
+			else if (pu.fogDensity) setUniformValue(gl, this, pu.fogDensity, fog.density);
 		}
 	}
 	/** Uploads one uniform value; recurses into structs ({...}) and arrays of structs like three.js. */
@@ -942,16 +968,18 @@ class WebGLRenderer {
 	}
 	_uploadObjectUniformsForShaderMaterial(program, object, camera) {
 		const gl = this._gl;
-		const mvLoc = program.modelViewMatrixLocation, nLoc = program.normalMatrixLocation;
-		if (mvLoc !== null || nLoc !== null) {
+		const mvu = program.modelViewMatrixUniform, nu = program.normalMatrixUniform;
+		if (mvu !== null || nu !== null) {
 			object.modelViewMatrix.multiplyMatrices(camera.matrixWorldInverse, object.matrixWorld);
-			if (mvLoc !== null) gl.uniformMatrix4fv(mvLoc, false, object.modelViewMatrix.elements);
-			if (nLoc !== null) {
+			if (mvu !== null) { const e = object.modelViewMatrix.elements; if (!cacheArray(mvu, e, 16)) { gl.uniformMatrix4fv(mvu.location, false, e); if (this._traceUniforms !== null) this._trace(mvu); } }
+			if (nu !== null) {
 				object.normalMatrix.getNormalMatrix(object.modelViewMatrix);
-				gl.uniformMatrix3fv(nLoc, false, object.normalMatrix.elements);
+				const e = object.normalMatrix.elements;
+				if (!cacheArray(nu, e, 9)) { gl.uniformMatrix3fv(nu.location, false, e); if (this._traceUniforms !== null) this._trace(nu); }
 			}
 		}
 	}
+	_trace(u) { this._traceUniforms.set(u.name, (this._traceUniforms.get(u.name) || 0) + 1); }
 }
 
 function shadowSideOf(material) {
@@ -1008,15 +1036,25 @@ function bindTextureUniform(renderer, u, value, unit) {
 /** True if `u.cache` already holds these components; otherwise stores them. */
 function cacheVec(u, a, b, c, d) {
 	let k = u.cache;
-	if (k === undefined) { k = u.cache = new Float32Array(4); k[0] = NaN; }
+	if (k === undefined) { k = u.cache = new Float64Array(4); k[0] = NaN; }
 	if (k[0] === a && k[1] === b && k[2] === c && k[3] === d) return true;
 	k[0] = a; k[1] = b; k[2] = c; k[3] = d;
+	return false;
+}
+/** True if `u.cache` equals arr[offset .. offset+n); otherwise copies it. Used for slab-backed matrices. */
+function cacheSlab(u, arr, offset, n) {
+	let k = u.cache;
+	if (k === undefined || k.length !== n) { k = u.cache = new Float64Array(n); for (let i = 0; i < n; i++) k[i] = arr[offset + i]; return false; }
+	let same = true;
+	for (let i = 0; i < n; i++) { if (k[i] !== arr[offset + i]) { same = false; break; } }
+	if (same) return true;
+	for (let i = 0; i < n; i++) k[i] = arr[offset + i];
 	return false;
 }
 /** True if `u.cache` equals the array `arr` (length n); otherwise copies it. */
 function cacheArray(u, arr, n) {
 	let k = u.cache;
-	if (k === undefined || k.length !== n) { k = u.cache = new Float32Array(n); for (let i = 0; i < n; i++) k[i] = arr[i]; return false; }
+	if (k === undefined || k.length !== n) { k = u.cache = new Float64Array(n); for (let i = 0; i < n; i++) k[i] = arr[i]; return false; }
 	let same = true;
 	for (let i = 0; i < n; i++) { if (k[i] !== arr[i]) { same = false; break; } }
 	if (same) return true;
@@ -1024,37 +1062,45 @@ function cacheArray(u, arr, n) {
 	return false;
 }
 function setUniformValue(gl, renderer, u, value) {
+	if (renderer._traceUniforms === null) return setUniformValueImpl(gl, renderer, u, value);
+	// tracing: detect whether an upload happened by counting GL calls through a tiny proxy
+	const before = traceCounter;
+	setUniformValueImpl(gl, renderer, u, value);
+	if (traceCounter !== before) renderer._trace(u);
+}
+let traceCounter = 0;
+function setUniformValueImpl(gl, renderer, u, value) {
 	const loc = u.location;
 	if (value === null || value === undefined) return;
 	switch (u.type) {
 		case gl.FLOAT:
-			if (u.size > 1 || Array.isArray(value) || ArrayBuffer.isView(value)) { if (!cacheArray(u, value, value.length)) gl.uniform1fv(loc, value); }
-			else if (u.cache !== value) { u.cache = value; gl.uniform1f(loc, value); }
+			if (u.size > 1 || Array.isArray(value) || ArrayBuffer.isView(value)) { if (!cacheArray(u, value, value.length)) { traceCounter++; gl.uniform1fv(loc, value); } }
+			else if (u.cache !== value) { u.cache = value; { traceCounter++; gl.uniform1f(loc, value); } }
 			break;
 		case gl.INT: case gl.BOOL:
-			if (u.size > 1 || Array.isArray(value) || ArrayBuffer.isView(value)) { if (!cacheArray(u, value, value.length)) gl.uniform1iv(loc, value); }
-			else { const v = value ? (typeof value === 'boolean' ? 1 : value) : 0; if (u.cache !== v) { u.cache = v; gl.uniform1i(loc, v); } }
+			if (u.size > 1 || Array.isArray(value) || ArrayBuffer.isView(value)) { if (!cacheArray(u, value, value.length)) { traceCounter++; gl.uniform1iv(loc, value); } }
+			else { const v = value ? (typeof value === 'boolean' ? 1 : value) : 0; if (u.cache !== v) { u.cache = v; { traceCounter++; gl.uniform1i(loc, v); } } }
 			break;
-		case gl.UNSIGNED_INT: if (u.size > 1) gl.uniform1uiv(loc, value); else if (u.cache !== value) { u.cache = value; gl.uniform1ui(loc, value); } break;
+		case gl.UNSIGNED_INT: if (u.size > 1) { traceCounter++; gl.uniform1uiv(loc, value); } else if (u.cache !== value) { u.cache = value; { traceCounter++; gl.uniform1ui(loc, value); } } break;
 		case gl.FLOAT_VEC2:
-			if (value.isVector2) { if (!cacheVec(u, value.x, value.y, 0, 0)) gl.uniform2f(loc, value.x, value.y); }
-			else { const a = flattenArray(value, 2); if (!cacheArray(u, a, a.length)) gl.uniform2fv(loc, a); }
+			if (value.isVector2) { if (!cacheVec(u, value.x, value.y, 0, 0)) { traceCounter++; gl.uniform2f(loc, value.x, value.y); } }
+			else { const a = flattenArray(value, 2); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniform2fv(loc, a); } }
 			break;
 		case gl.FLOAT_VEC3:
-			if (value.isVector3) { if (!cacheVec(u, value.x, value.y, value.z, 0)) gl.uniform3f(loc, value.x, value.y, value.z); }
-			else if (value.isColor) { if (!cacheVec(u, value.r, value.g, value.b, 0)) gl.uniform3f(loc, value.r, value.g, value.b); }
-			else { const a = flattenArray(value, 3); if (!cacheArray(u, a, a.length)) gl.uniform3fv(loc, a); }
+			if (value.isVector3) { if (!cacheVec(u, value.x, value.y, value.z, 0)) { traceCounter++; gl.uniform3f(loc, value.x, value.y, value.z); } }
+			else if (value.isColor) { if (!cacheVec(u, value.r, value.g, value.b, 0)) { traceCounter++; gl.uniform3f(loc, value.r, value.g, value.b); } }
+			else { const a = flattenArray(value, 3); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniform3fv(loc, a); } }
 			break;
 		case gl.FLOAT_VEC4:
-			if (value.isVector4 || value.isQuaternion) { if (!cacheVec(u, value.x, value.y, value.z, value.w)) gl.uniform4f(loc, value.x, value.y, value.z, value.w); }
-			else { const a = flattenArray(value, 4); if (!cacheArray(u, a, a.length)) gl.uniform4fv(loc, a); }
+			if (value.isVector4 || value.isQuaternion) { if (!cacheVec(u, value.x, value.y, value.z, value.w)) { traceCounter++; gl.uniform4f(loc, value.x, value.y, value.z, value.w); } }
+			else { const a = flattenArray(value, 4); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniform4fv(loc, a); } }
 			break;
-		case gl.INT_VEC2: case gl.BOOL_VEC2: if (value.isVector2) gl.uniform2i(loc, value.x, value.y); else gl.uniform2iv(loc, value); break;
-		case gl.INT_VEC3: case gl.BOOL_VEC3: if (value.isVector3) gl.uniform3i(loc, value.x, value.y, value.z); else gl.uniform3iv(loc, value); break;
-		case gl.INT_VEC4: case gl.BOOL_VEC4: if (value.isVector4) gl.uniform4i(loc, value.x, value.y, value.z, value.w); else gl.uniform4iv(loc, value); break;
-		case gl.FLOAT_MAT2: { const a = value.elements || flattenArray(value, 4); if (!cacheArray(u, a, a.length)) gl.uniformMatrix2fv(loc, false, a); break; }
-		case gl.FLOAT_MAT3: { const a = value.elements || flattenArray(value, 9); if (!cacheArray(u, a, a.length)) gl.uniformMatrix3fv(loc, false, a); break; }
-		case gl.FLOAT_MAT4: { const a = value.elements || flattenArray(value, 16); if (!cacheArray(u, a, a.length)) gl.uniformMatrix4fv(loc, false, a); break; }
+		case gl.INT_VEC2: case gl.BOOL_VEC2: if (value.isVector2) { traceCounter++; gl.uniform2i(loc, value.x, value.y); } else { traceCounter++; gl.uniform2iv(loc, value); } break;
+		case gl.INT_VEC3: case gl.BOOL_VEC3: if (value.isVector3) { traceCounter++; gl.uniform3i(loc, value.x, value.y, value.z); } else { traceCounter++; gl.uniform3iv(loc, value); } break;
+		case gl.INT_VEC4: case gl.BOOL_VEC4: if (value.isVector4) { traceCounter++; gl.uniform4i(loc, value.x, value.y, value.z, value.w); } else { traceCounter++; gl.uniform4iv(loc, value); } break;
+		case gl.FLOAT_MAT2: { const a = value.elements || flattenArray(value, 4); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniformMatrix2fv(loc, false, a); } break; }
+		case gl.FLOAT_MAT3: { const a = value.elements || flattenArray(value, 9); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniformMatrix3fv(loc, false, a); } break; }
+		case gl.FLOAT_MAT4: { const a = value.elements || flattenArray(value, 16); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniformMatrix4fv(loc, false, a); } break; }
 		case gl.SAMPLER_2D: case gl.SAMPLER_2D_SHADOW: case gl.SAMPLER_3D: case gl.SAMPLER_2D_ARRAY: case gl.SAMPLER_CUBE: case gl.SAMPLER_CUBE_SHADOW:
 		case gl.INT_SAMPLER_2D: case gl.UNSIGNED_INT_SAMPLER_2D: case gl.INT_SAMPLER_3D: case gl.UNSIGNED_INT_SAMPLER_3D: case gl.INT_SAMPLER_2D_ARRAY: case gl.UNSIGNED_INT_SAMPLER_2D_ARRAY:
 			// units were assigned at link time (u.unit .. u.unit + size - 1); bind textures, placeholders for gaps

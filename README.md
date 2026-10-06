@@ -64,16 +64,24 @@ over 60 frames after 10 warm-up frames, 320x240:
 | instanced-100k: one InstancedMesh, 100 000 instances | 100,000 | 0.05 ms | 0.06 ms | **0.96x** | 1 → 1 | 0 / 0 |
 | shadows: 2 000 casters/receivers, 1024² directional shadow map | 2,000 | 71.03 ms | 1.28 ms | **55.49x** | 4001 → 3 | 0.134 / 33 |
 
-| shader-client: 1,313 meshes, all ShaderMaterial, 12 programs sharing one 30-uniform object, 2D/3D/array/cube samplers, custom attributes, opaque + transparent (no auto-batching possible) | 1,313 | 13.59 ms | 1.87 ms | **7.25x** | 1313 → 1313 | 0 / 0 |
+| shader-client: 1,313 meshes, all ShaderMaterial, 12 programs sharing one 30-uniform object, 2D/3D/array/cube samplers, custom attributes, opaque + transparent (no auto-batching possible) | 1,313 | 13.35 ms | 1.67 ms | **8.0x** | 1313 → 1313 | 0.002 / 44 (38 edge pixels) |
+| shader-client-static: same materials, fixed camera, nothing moving, 3 passes per frame (2 shadow render targets with `scene.overrideMaterial`, main pass with stencil shadow volumes), ~215 draws per pass | 211 | 35.7 ms | 32.1 ms | 1.1x (fill-bound) | 651 → 649 | 0.001 / 10 (11 edge pixels) |
 
 The instanced scenario is a single draw call in both libraries; it measures only the fixed per-frame cost. Full data: `bench/results/latest.json`.
 
-The `shader-client` row models a real three.js game client. Its gain comes from the per-draw path, not
-from batching: per-program caching of uniform values (shared uniforms are uploaded once per frame),
-a validated-VAO fast path, cached front-face orientation, and opaque sorting by program, material and
-geometry. The bench also counts GL calls for one frame per library (`uniform*`, `bindTexture`,
-`useProgram`, `bindVertexArray`, draws, buffer and state calls): for this scene 3,086 calls per frame
-versus 3,541.
+The two `shader-client` rows model a real three.js game client. Their gain comes from the per-draw
+path, not from batching: every uniform location caches its last uploaded value (as three.js does), so
+shared uniforms, camera matrices and per-object matrices are only re-sent when they change; a
+validated-VAO fast path; cached front-face orientation; opaque sorting by program, material and
+geometry. The bench counts GL calls for one frame per library and, for multi-pass scenes, per
+`render()` call. Static scene, per pass (three → jrs): shadow render targets `uniform*` 147 → 147,
+main pass 142 → 138, `useProgram` 17 → 16, total GL calls 1,796 → 1,553. The remaining edge-pixel
+differences come from float32 matrices (geometry at ±450 units); they are identical between this and
+the previous engine version.
+
+Diagnosing uploads in your own app: set `renderer.debug.traceUniforms = true` and read
+`renderer.debug.uniformTrace` (last 16 `render()` calls: uniform name → upload count, program
+switches, draws). `renderer.info.render.programSwitches` counts `useProgram` calls per frame.
 
 `npm run bench -- --compare` additionally renders each scene with both libraries and reports
 the mean absolute pixel difference, writing both images to `bench/results/`. Lambert / Phong /

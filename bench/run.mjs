@@ -43,6 +43,10 @@ for (const name of names) {
 	const fmtCalls = (c) => c ? `total ${c.total} | uniform* ${c.uniform} | bindTexture ${c.bindTexture} | useProgram ${c.useProgram} | bindVertexArray ${c.bindVertexArray} | draw ${c.draw} | bindBuffer ${c.bindBuffer} | bufferData ${c.bufferData} | state ${c.state}` : 'n/a';
 	console.log(`${''.padEnd(20)} GL calls/frame three: ${fmtCalls(row.three.glCalls)}${row.three.glError ? ` GL ERROR 0x${row.three.glError.toString(16)}` : ''}`);
 	console.log(`${''.padEnd(20)} GL calls/frame jrs:   ${fmtCalls(row.jrs.glCalls)}${row.jrs.glError ? ` GL ERROR 0x${row.jrs.glError.toString(16)}` : ''}`);
+	if (row.three.passes) {
+		for (const lib of ['three', 'jrs']) for (const p of row[lib].passes) console.log(`${''.padEnd(20)}   ${lib.padEnd(5)} ${p.name.padEnd(34)} uniform* ${String(p.uniform).padStart(4)}  useProgram ${String(p.useProgram).padStart(3)}  draws ${String(p.draw).padStart(4)}  bindTexture ${String(p.bindTexture).padStart(3)}  bindVAO ${String(p.bindVertexArray).padStart(4)}`);
+		if (row.jrs.uniformTrace) for (const t of row.jrs.uniformTrace) { const names = Object.entries(t.uniforms).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}:${v}`).join(' '); console.log(`${''.padEnd(20)}   jrs uploads on ${t.target.padEnd(12)} (${t.draws} draws, ${t.useProgram} program switches): ${names || 'none'}`); }
+	}
 }
 
 if (compare) {
@@ -51,7 +55,7 @@ if (compare) {
 		const c = await page.evaluate((name) => window.compareScenario(name), name);
 		fs.writeFileSync(path.join(outDir, `${name}-jrs.png`), Buffer.from(c.jrs.split(',')[1], 'base64'));
 		fs.writeFileSync(path.join(outDir, `${name}-three.png`), Buffer.from(c.three.split(',')[1], 'base64'));
-		console.log(`compare ${name.padEnd(20)} meanAbsDiff=${c.meanAbsDiff} maxDiff=${c.maxDiff} fractionOver32=${c.fractionOver32}`);
+		console.log(`compare ${name.padEnd(20)} meanAbsDiff=${c.meanAbsDiff} maxDiff=${c.maxDiff} fractionOver32=${c.fractionOver32} differingPixels=${c.differingPixels}${c.samples && c.samples.length ? ' e.g. ' + c.samples.map(s => `(${s.x},${s.y}) jrs ${s.jrs} three ${s.three}`).join('; ') : ''}`);
 		const row = results.find(r => r.scenario === name); if (row) row.compare = { meanAbsDiff: c.meanAbsDiff, maxDiff: c.maxDiff, fractionOver32: c.fractionOver32 };
 	}
 	await page.close();
