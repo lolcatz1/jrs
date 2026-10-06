@@ -239,6 +239,8 @@ class WebGLPrograms {
 		if (program === undefined) {
 			const src = parameters.materialType === MATERIAL_SHADER ? buildCustomShader(material, parameters) : buildBuiltinShader(parameters);
 			program = new WebGLProgram(this.gl, parameters, src.vertexShader, src.fragmentShader);
+			// the constructor binds the new program to set sampler units; tell the state cache
+			this.renderer.state.currentProgram = program.program;
 			this.cache.set(key, program);
 			this.programs.push(program);
 			program.cacheKey = key;

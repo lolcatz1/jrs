@@ -64,7 +64,16 @@ over 60 frames after 10 warm-up frames, 320x240:
 | instanced-100k: one InstancedMesh, 100 000 instances | 100,000 | 0.05 ms | 0.06 ms | **0.96x** | 1 → 1 | 0 / 0 |
 | shadows: 2 000 casters/receivers, 1024² directional shadow map | 2,000 | 71.03 ms | 1.28 ms | **55.49x** | 4001 → 3 | 0.134 / 33 |
 
+| shader-client: 1,313 meshes, all ShaderMaterial, 12 programs sharing one 30-uniform object, 2D/3D/array/cube samplers, custom attributes, opaque + transparent (no auto-batching possible) | 1,313 | 13.59 ms | 1.87 ms | **7.25x** | 1313 → 1313 | 0 / 0 |
+
 The instanced scenario is a single draw call in both libraries; it measures only the fixed per-frame cost. Full data: `bench/results/latest.json`.
+
+The `shader-client` row models a real three.js game client. Its gain comes from the per-draw path, not
+from batching: per-program caching of uniform values (shared uniforms are uploaded once per frame),
+a validated-VAO fast path, cached front-face orientation, and opaque sorting by program, material and
+geometry. The bench also counts GL calls for one frame per library (`uniform*`, `bindTexture`,
+`useProgram`, `bindVertexArray`, draws, buffer and state calls): for this scene 3,086 calls per frame
+versus 3,541.
 
 `npm run bench -- --compare` additionally renders each scene with both libraries and reports
 the mean absolute pixel difference, writing both images to `bench/results/`. Lambert / Phong /
@@ -131,7 +140,8 @@ the controls), WebGL1.
   `matrix.elements.push(...)` or relies on double precision in matrices needs adjusting.
 * Opaque objects are grouped by shader/material/geometry instead of sorted front-to-back.
 * Lights are limited to 4 directional, 8 point, 4 spot and 2 hemisphere per scene.
-* `renderer.info.render` has two extra counters: `batches` and `instances`.
+* `renderer.info.render` has two extra counters: `batches` and `instances`. `renderer.info.memory.geometries`
+  counts geometries the renderer has uploaded, like three.js.
 * `renderer.autoBatch` (default `true`) toggles automatic instancing.
 * `geometry.boundsTree`, `computeBoundsTree()`, `disposeBoundsTree()` and the `MeshBVH` class are
   additions.

@@ -4069,6 +4069,8 @@ var Object3D = class _Object3D extends EventDispatcher {
     this._worldVersion = 0;
     this._parentWorldVersion = -1;
     this._normalVersion = -1;
+    this._flipVersion = -1;
+    this._frontFaceCW = false;
     this._cullVersion = -1;
     this._cullSphere = null;
     this._cullRadius = 0;
@@ -4680,6 +4682,8 @@ var BufferGeometry = class _BufferGeometry extends EventDispatcher {
     this._layoutVersion = 0;
     this._frameStamp = -1;
     this._frameRid = 0;
+    this._attrBits = 0;
+    this._attrBitsVersion = -1;
   }
   getIndex() {
     return this.index;
@@ -14329,6 +14333,7 @@ var WebGLPrograms = class {
     if (program === void 0) {
       const src = parameters.materialType === MATERIAL_SHADER ? buildCustomShader(material, parameters) : buildBuiltinShader(parameters);
       program = new WebGLProgram(this.gl, parameters, src.vertexShader, src.fragmentShader);
+      this.renderer.state.currentProgram = program.program;
       this.cache.set(key, program);
       this.programs.push(program);
       program.cacheKey = key;
@@ -14432,11 +14437,12 @@ var WebGLRenderList = class {
    */
   finish(sortObjects, rankOf) {
     const items = this.items;
+    const singleRank = rankOf(this.count > 0 ? items[0].renderOrder : 0) === 0 && rankOf(Infinity) === 0;
     const ok = this.opaqueKeys, on = this.opaqueCount;
     for (let i = 0; i < on; i++) {
       const index = ok[i];
       const item = items[index];
-      const rank = rankOf(item.renderOrder);
+      const rank = singleRank ? 0 : rankOf(item.renderOrder);
       const program = item.program.id & 63;
       const mat = item.materialRid & 1023;
       const geo = item.geometryRid & 1023;
@@ -14450,7 +14456,7 @@ var WebGLRenderList = class {
     for (let i = 0; i < tn; i++) {
       const index = tk[i];
       const item = items[index];
-      const rank = rankOf(item.renderOrder);
+      const rank = singleRank ? 0 : rankOf(item.renderOrder);
       const depthKey = Math.round((this.maxDepth - td[i]) * scale);
       tk[i] = (rank * 67108864 + depthKey) * INDEX_RANGE + index;
     }
@@ -14768,10 +14774,11 @@ var LOC_INSTANCE_COLOR = 5;
 var LOC_INSTANCE_MATRIX = 8;
 var ATTRIBUTE_LOCATIONS = { position: LOC_POSITION, normal: LOC_NORMAL, uv: LOC_UV, color: LOC_COLOR, uv1: LOC_UV1 };
 var WebGLBindingStates = class {
-  constructor(gl, state, attributes) {
+  constructor(gl, state, attributes, info = null) {
     this.gl = gl;
     this.state = state;
     this.attributes = attributes;
+    this.info = info;
     this.cache = /* @__PURE__ */ new WeakMap();
     this._onGeometryDispose = this._onGeometryDispose.bind(this);
   }
@@ -14786,6 +14793,7 @@ var WebGLBindingStates = class {
       }
       if (entry.custom !== null) for (const r of entry.custom.values()) this.gl.deleteVertexArray(r.vao);
       this.cache.delete(geometry);
+      if (this.info !== null) this.info.memory.geometries--;
     }
     for (const name in geometry.attributes) this.attributes.remove(geometry.attributes[name]);
     if (geometry.index !== null) this.attributes.remove(geometry.index);
@@ -14803,9 +14811,34 @@ var WebGLBindingStates = class {
     const gl = this.gl, attributes = this.attributes;
     let entry = this.cache.get(geometry);
     if (entry === void 0) {
-      entry = { vaos: [null, null, null], layoutVersion: -1, instancedFor: null, hadInstanceColor: false, custom: null };
+      entry = { vaos: [null, null, null], layoutVersion: -1, instancedFor: null, hadInstanceColor: false, custom: null, attrList: null, versionSum: -1 };
       this.cache.set(geometry, entry);
       geometry.addEventListener("dispose", this._onGeometryDispose);
+      if (this.info !== null) this.info.memory.geometries++;
+    }
+    const useCustom = program !== null && program.hasCustomAttributes === true;
+    if (entry.layoutVersion === geometry._layoutVersion && entry.attrList !== null && (mode !== 1 || entry.instancedFor === instancedObject)) {
+      const list2 = entry.attrList;
+      let sum2 = 0;
+      for (let i = 0, l = list2.length; i < l; i++) sum2 += list2[i].version;
+      if (geometry.index !== null) sum2 += geometry.index.version;
+      if (mode === 1) {
+        sum2 += instancedObject.instanceMatrix.version;
+        if (instancedObject.instanceColor !== null) sum2 += instancedObject.instanceColor.version + 1000003;
+      }
+      if (sum2 === entry.versionSum) {
+        let record2;
+        if (useCustom) {
+          if (entry.custom !== null) {
+            record2 = entry.custom.get(program.id * 4 + mode);
+            if (record2 === void 0) record2 = null;
+          } else record2 = null;
+        } else record2 = entry.vaos[mode];
+        if (record2 !== null) {
+          this.state.bindVertexArray(record2.vao);
+          return record2;
+        }
+      }
     }
     let rebuild = entry.layoutVersion !== geometry._layoutVersion;
     const geometryAttributes = geometry.attributes;
@@ -14853,7 +14886,6 @@ var WebGLBindingStates = class {
         this.state.currentVAO = null;
       }
     }
-    const useCustom = program !== null && program.hasCustomAttributes === true;
     let record;
     if (useCustom) {
       if (entry.custom === null) entry.custom = /* @__PURE__ */ new Map();
@@ -14880,6 +14912,17 @@ var WebGLBindingStates = class {
         }
       }
     }
+    const list = [];
+    for (const name in geometryAttributes) list.push(geometryAttributes[name]);
+    let sum = 0;
+    for (let i = 0; i < list.length; i++) sum += list[i].version;
+    if (geometry.index !== null) sum += geometry.index.version;
+    if (mode === 1) {
+      sum += instancedObject.instanceMatrix.version;
+      if (instancedObject.instanceColor !== null) sum += instancedObject.instanceColor.version + 1000003;
+    }
+    entry.attrList = list;
+    entry.versionSum = sum;
     return record;
   }
   _createVAO(geometry, mode, instancedObject, batchBuffer, program) {
@@ -15508,7 +15551,7 @@ var WebGLRenderer = class {
     this.programs = new WebGLPrograms(gl, this);
     this.renderLists = new WebGLRenderLists();
     this.lights = new WebGLLights();
-    this.bindingStates = new WebGLBindingStates(gl, this.state, this.attributes);
+    this.bindingStates = new WebGLBindingStates(gl, this.state, this.attributes, this.info);
     this.batcher = new WebGLBatcher(gl);
     this.shadowMap = new WebGLShadowMap(this);
     this.properties = { get: (obj) => this._materialProps(obj) };
@@ -15575,7 +15618,9 @@ var WebGLRenderer = class {
     this._onMaterialDispose = this._onMaterialDispose.bind(this);
     this._renderOrders = /* @__PURE__ */ new Map();
     this._renderOrderList = [];
+    this._lastNotedRenderOrder = NaN;
     this._rankOfRenderOrder = (ro) => {
+      if (this._renderOrderList.length <= 1) return 0;
       const r = this._renderOrders.get(ro);
       return r === void 0 ? 63 : r;
     };
@@ -15899,8 +15944,11 @@ var WebGLRenderer = class {
   _renderOrderReset() {
     this._renderOrders.clear();
     this._renderOrderList.length = 0;
+    this._lastNotedRenderOrder = NaN;
   }
   _noteRenderOrder(ro) {
+    if (ro === this._lastNotedRenderOrder) return;
+    this._lastNotedRenderOrder = ro;
     if (!this._renderOrders.has(ro)) {
       const l = this._renderOrderList;
       l.push(ro);
@@ -16078,20 +16126,27 @@ var WebGLRenderer = class {
     }
     if (object.receiveShadow) v |= V_RECEIVE_SHADOW;
     if (shadowPass) v |= V_SHADOW_PASS;
-    const attributes = geometry.attributes;
-    if (attributes.uv !== void 0) v |= V_HAS_UV;
-    if (attributes.uv1 !== void 0) v |= V_HAS_UV1;
-    if (material.vertexColors === true && attributes.color !== void 0) {
-      v |= V_HAS_COLOR;
-      if (attributes.color.itemSize === 4) v |= V_COLOR_ALPHA;
+    if (geometry._attrBitsVersion !== geometry._layoutVersion) {
+      const attributes = geometry.attributes;
+      let a2 = 0;
+      if (attributes.uv !== void 0) a2 |= V_HAS_UV;
+      if (attributes.uv1 !== void 0) a2 |= V_HAS_UV1;
+      if (attributes.color !== void 0) {
+        a2 |= V_HAS_COLOR;
+        if (attributes.color.itemSize === 4) a2 |= V_COLOR_ALPHA;
+      }
+      geometry._attrBits = a2;
+      geometry._attrBitsVersion = geometry._layoutVersion;
     }
-    return v;
+    let a = geometry._attrBits;
+    if (material.vertexColors !== true) a &= ~(V_HAS_COLOR | V_COLOR_ALPHA);
+    return v | a;
   }
   // ------------------------------------------------------------------ materials / programs
   _materialProps(material) {
     let props = this._materialProperties.get(material);
     if (props === void 0) {
-      props = { programs: [], blockData: new Float32Array(MATERIAL_BLOCK_SIZE / 4), blockSlot: -1, blockStamp: -1, textureStamp: -1 };
+      props = { programs: [], blockData: new Float32Array(MATERIAL_BLOCK_SIZE / 4), blockSlot: -1, blockStamp: -1, textureStamp: -1, resolveStamp: -1, resolveVariant: -1, resolveProgram: null };
       this._materialProperties.set(material, props);
       material.addEventListener("dispose", this._onMaterialDispose);
     }
@@ -16112,6 +16167,14 @@ var WebGLRenderer = class {
   }
   _getProgram(material, object, scene, variant) {
     const props = this._materialProps(material);
+    if (props.resolveStamp === this._frameId && props.resolveVariant === variant) return props.resolveProgram;
+    const program = this._getProgramSlow(props, material, object, scene, variant);
+    props.resolveStamp = this._frameId;
+    props.resolveVariant = variant;
+    props.resolveProgram = program;
+    return program;
+  }
+  _getProgramSlow(props, material, object, scene, variant) {
     let entry = props.programs[variant];
     if (entry !== void 0 && entry.materialVersion === material.version && entry.envVersion === this._envVersion) return entry.program;
     const vflags = {
@@ -16255,7 +16318,15 @@ var WebGLRenderer = class {
     return offset;
   }
   _bindMaterialTextures(material) {
-    const t = this.textures;
+    const t = this.textures, rt = this._currentRenderTarget;
+    if (rt !== null) {
+      for (const key of MAP_KEYS) {
+        const tex = material[key];
+        if (tex && tex.renderTarget === rt) {
+          t.bindEmpty({ target: this._gl.TEXTURE_2D, isShadowSampler: false }, TEXTURE_UNITS[key]);
+        }
+      }
+    }
     if (material.map) t.setTexture2D(material.map, TEXTURE_UNITS.map);
     if (material.alphaMap) t.setTexture2D(material.alphaMap, TEXTURE_UNITS.alphaMap);
     if (material.normalMap) t.setTexture2D(material.normalMap, TEXTURE_UNITS.normalMap);
@@ -16267,8 +16338,9 @@ var WebGLRenderer = class {
   }
   // ------------------------------------------------------------------ drawing
   _isBatchable(item) {
+    if (item.material.isShaderMaterial === true || item.group !== null) return false;
     const object = item.object;
-    return object.isMesh === true && object.isInstancedMesh !== true && object.isSkinnedMesh !== true && item.group === null && item.material.isShaderMaterial !== true && object.morphTargetInfluences === void 0 && object.onBeforeRender === defaultOnBeforeRender && object.onAfterRender === defaultOnAfterRender;
+    return object.isMesh === true && object.isInstancedMesh !== true && object.isSkinnedMesh !== true && object.morphTargetInfluences === void 0 && object.onBeforeRender === defaultOnBeforeRender && object.onAfterRender === defaultOnAfterRender;
   }
   /**
    * Build draw commands (singles and batches) from a sorted key list, then execute them.
@@ -16398,7 +16470,11 @@ var WebGLRenderer = class {
     const program = item.program;
     if (object.onBeforeRender !== defaultOnBeforeRender) object.onBeforeRender(this, scene, camera, geometry, material, group);
     const gl = this._gl;
-    const frontFaceCW = object.isMesh && object.matrixWorld.determinant() < 0;
+    if (object._flipVersion !== object._worldVersion) {
+      object._frontFaceCW = object.isMesh && object.matrixWorld.determinant() < 0;
+      object._flipVersion = object._worldVersion;
+    }
+    const frontFaceCW = object._frontFaceCW;
     this._setupMaterial(item, program, material, camera, frontFaceCW, shadowPass ? shadowSideOf(material) : material.side);
     if (material.wireframe === true && object.isMesh) geometry = this._wireframeGeometry(geometry);
     const s = object._slabData, o = object._slabOffset;
@@ -16524,14 +16600,15 @@ var WebGLRenderer = class {
     }
   }
   _uploadObjectUniformsForShaderMaterial(program, object, camera) {
-    const gl = this._gl, pu = program.uniforms;
-    if (pu.modelViewMatrix) {
+    const gl = this._gl;
+    const mvLoc = program.modelViewMatrixLocation, nLoc = program.normalMatrixLocation;
+    if (mvLoc !== null || nLoc !== null) {
       object.modelViewMatrix.multiplyMatrices(camera.matrixWorldInverse, object.matrixWorld);
-      gl.uniformMatrix4fv(pu.modelViewMatrix.location, false, object.modelViewMatrix.elements);
-    }
-    if (pu.normalMatrix) {
-      object.normalMatrix.getNormalMatrix(object.modelViewMatrix);
-      gl.uniformMatrix3fv(pu.normalMatrix.location, false, object.normalMatrix.elements);
+      if (mvLoc !== null) gl.uniformMatrix4fv(mvLoc, false, object.modelViewMatrix.elements);
+      if (nLoc !== null) {
+        object.normalMatrix.getNormalMatrix(object.modelViewMatrix);
+        gl.uniformMatrix3fv(nLoc, false, object.normalMatrix.elements);
+      }
     }
   }
 };
@@ -16539,6 +16616,7 @@ function shadowSideOf(material) {
   if (material.shadowSide !== null && material.shadowSide !== void 0) return material.shadowSide;
   return material.side === FrontSide ? BackSide : material.side === BackSide ? FrontSide : DoubleSide;
 }
+var MAP_KEYS = ["map", "alphaMap", "normalMap", "emissiveMap", "roughnessMap", "metalnessMap", "aoMap", "specularMap"];
 var IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 function computeNormalMatrix(s, o) {
   const e = o + 16;
@@ -16585,40 +16663,102 @@ function flattenArray(value, stride) {
 function bindTextureUniform(renderer, u, value, unit) {
   const gl = renderer._gl;
   if (!value || !value.isTexture) return;
+  if (value.renderTarget !== null && value.renderTarget !== void 0 && value.renderTarget === renderer._currentRenderTarget) {
+    renderer.textures.bindEmpty(u, unit);
+    return;
+  }
   if (u.type === gl.SAMPLER_3D) renderer.textures.setTexture3D(value, unit);
   else if (u.type === gl.SAMPLER_2D_ARRAY) renderer.textures.setTexture2DArray(value, unit);
   else if (u.type === gl.SAMPLER_CUBE || u.type === gl.SAMPLER_CUBE_SHADOW) renderer.textures.setTextureCube(value, unit);
   else renderer.textures.setTexture2D(value, unit);
+}
+function cacheVec(u, a, b, c, d) {
+  let k = u.cache;
+  if (k === void 0) {
+    k = u.cache = new Float32Array(4);
+    k[0] = NaN;
+  }
+  if (k[0] === a && k[1] === b && k[2] === c && k[3] === d) return true;
+  k[0] = a;
+  k[1] = b;
+  k[2] = c;
+  k[3] = d;
+  return false;
+}
+function cacheArray(u, arr, n) {
+  let k = u.cache;
+  if (k === void 0 || k.length !== n) {
+    k = u.cache = new Float32Array(n);
+    for (let i = 0; i < n; i++) k[i] = arr[i];
+    return false;
+  }
+  let same = true;
+  for (let i = 0; i < n; i++) {
+    if (k[i] !== arr[i]) {
+      same = false;
+      break;
+    }
+  }
+  if (same) return true;
+  for (let i = 0; i < n; i++) k[i] = arr[i];
+  return false;
 }
 function setUniformValue(gl, renderer, u, value) {
   const loc = u.location;
   if (value === null || value === void 0) return;
   switch (u.type) {
     case gl.FLOAT:
-      if (u.size > 1 || Array.isArray(value) || ArrayBuffer.isView(value)) gl.uniform1fv(loc, value);
-      else gl.uniform1f(loc, value);
+      if (u.size > 1 || Array.isArray(value) || ArrayBuffer.isView(value)) {
+        if (!cacheArray(u, value, value.length)) gl.uniform1fv(loc, value);
+      } else if (u.cache !== value) {
+        u.cache = value;
+        gl.uniform1f(loc, value);
+      }
       break;
     case gl.INT:
     case gl.BOOL:
-      if (u.size > 1 || Array.isArray(value) || ArrayBuffer.isView(value)) gl.uniform1iv(loc, value);
-      else gl.uniform1i(loc, value ? typeof value === "boolean" ? 1 : value : 0);
+      if (u.size > 1 || Array.isArray(value) || ArrayBuffer.isView(value)) {
+        if (!cacheArray(u, value, value.length)) gl.uniform1iv(loc, value);
+      } else {
+        const v = value ? typeof value === "boolean" ? 1 : value : 0;
+        if (u.cache !== v) {
+          u.cache = v;
+          gl.uniform1i(loc, v);
+        }
+      }
       break;
     case gl.UNSIGNED_INT:
       if (u.size > 1) gl.uniform1uiv(loc, value);
-      else gl.uniform1ui(loc, value);
+      else if (u.cache !== value) {
+        u.cache = value;
+        gl.uniform1ui(loc, value);
+      }
       break;
     case gl.FLOAT_VEC2:
-      if (value.isVector2) gl.uniform2f(loc, value.x, value.y);
-      else gl.uniform2fv(loc, flattenArray(value, 2));
+      if (value.isVector2) {
+        if (!cacheVec(u, value.x, value.y, 0, 0)) gl.uniform2f(loc, value.x, value.y);
+      } else {
+        const a = flattenArray(value, 2);
+        if (!cacheArray(u, a, a.length)) gl.uniform2fv(loc, a);
+      }
       break;
     case gl.FLOAT_VEC3:
-      if (value.isVector3) gl.uniform3f(loc, value.x, value.y, value.z);
-      else if (value.isColor) gl.uniform3f(loc, value.r, value.g, value.b);
-      else gl.uniform3fv(loc, flattenArray(value, 3));
+      if (value.isVector3) {
+        if (!cacheVec(u, value.x, value.y, value.z, 0)) gl.uniform3f(loc, value.x, value.y, value.z);
+      } else if (value.isColor) {
+        if (!cacheVec(u, value.r, value.g, value.b, 0)) gl.uniform3f(loc, value.r, value.g, value.b);
+      } else {
+        const a = flattenArray(value, 3);
+        if (!cacheArray(u, a, a.length)) gl.uniform3fv(loc, a);
+      }
       break;
     case gl.FLOAT_VEC4:
-      if (value.isVector4 || value.isQuaternion) gl.uniform4f(loc, value.x, value.y, value.z, value.w);
-      else gl.uniform4fv(loc, flattenArray(value, 4));
+      if (value.isVector4 || value.isQuaternion) {
+        if (!cacheVec(u, value.x, value.y, value.z, value.w)) gl.uniform4f(loc, value.x, value.y, value.z, value.w);
+      } else {
+        const a = flattenArray(value, 4);
+        if (!cacheArray(u, a, a.length)) gl.uniform4fv(loc, a);
+      }
       break;
     case gl.INT_VEC2:
     case gl.BOOL_VEC2:
@@ -16635,15 +16775,21 @@ function setUniformValue(gl, renderer, u, value) {
       if (value.isVector4) gl.uniform4i(loc, value.x, value.y, value.z, value.w);
       else gl.uniform4iv(loc, value);
       break;
-    case gl.FLOAT_MAT2:
-      gl.uniformMatrix2fv(loc, false, value.elements || flattenArray(value, 4));
+    case gl.FLOAT_MAT2: {
+      const a = value.elements || flattenArray(value, 4);
+      if (!cacheArray(u, a, a.length)) gl.uniformMatrix2fv(loc, false, a);
       break;
-    case gl.FLOAT_MAT3:
-      gl.uniformMatrix3fv(loc, false, value.elements || flattenArray(value, 9));
+    }
+    case gl.FLOAT_MAT3: {
+      const a = value.elements || flattenArray(value, 9);
+      if (!cacheArray(u, a, a.length)) gl.uniformMatrix3fv(loc, false, a);
       break;
-    case gl.FLOAT_MAT4:
-      gl.uniformMatrix4fv(loc, false, value.elements || flattenArray(value, 16));
+    }
+    case gl.FLOAT_MAT4: {
+      const a = value.elements || flattenArray(value, 16);
+      if (!cacheArray(u, a, a.length)) gl.uniformMatrix4fv(loc, false, a);
       break;
+    }
     case gl.SAMPLER_2D:
     case gl.SAMPLER_2D_SHADOW:
     case gl.SAMPLER_3D:

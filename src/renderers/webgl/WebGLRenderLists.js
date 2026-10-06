@@ -72,12 +72,13 @@ class WebGLRenderList {
 	 */
 	finish(sortObjects, rankOf) {
 		const items = this.items;
+		const singleRank = rankOf(this.count > 0 ? items[0].renderOrder : 0) === 0 && rankOf(Infinity) === 0; // ranker reports a single render order
 		// opaque
 		const ok = this.opaqueKeys, on = this.opaqueCount;
 		for (let i = 0; i < on; i++) {
 			const index = ok[i];
 			const item = items[index];
-			const rank = rankOf(item.renderOrder);
+			const rank = singleRank ? 0 : rankOf(item.renderOrder);
 			const program = item.program.id & 63;
 			const mat = item.materialRid & 1023;
 			const geo = item.geometryRid & 1023;
@@ -93,7 +94,7 @@ class WebGLRenderList {
 		for (let i = 0; i < tn; i++) {
 			const index = tk[i];
 			const item = items[index];
-			const rank = rankOf(item.renderOrder);
+			const rank = singleRank ? 0 : rankOf(item.renderOrder);
 			// larger z (farther) first -> smaller key
 			const depthKey = Math.round((this.maxDepth - td[i]) * scale);
 			tk[i] = ((rank * 67108864 + depthKey) * INDEX_RANGE) + index;

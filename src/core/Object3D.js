@@ -85,6 +85,7 @@ class Object3D extends EventDispatcher {
 		this._parentWorldVersion = -1;
 		// renderer scratch (initialised here so every Object3D shares one hidden class)
 		this._normalVersion = -1;
+		this._flipVersion = -1; this._frontFaceCW = false;
 		this._cullVersion = -1; this._cullSphere = null; this._cullRadius = 0; this._cullCx = 0; this._cullCy = 0; this._cullCz = 0;
 
 		this.matrixAutoUpdate = Object3D.DEFAULT_MATRIX_AUTO_UPDATE;

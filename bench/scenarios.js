@@ -120,6 +120,151 @@ export const scenarios = {
 			return { scene, camera };
 		}
 	},
+
+	// Mimics a real three.js game client: ~1,300 meshes, all ShaderMaterial, 12 programs, one shared
+	// 30-uniform object spread into every material, 4 samplers (2D / 3D / 2D array / cube) + a shadow
+	// render target, custom vertex attributes, a BATCHED define for pre-merged static geometry, and a
+	// mix of opaque and transparent materials. Auto-batching does not apply (ShaderMaterial).
+	'shader-client': {
+		n: 1313,
+		build(T, n) {
+			const scene = new T.Scene();
+			const camera = new T.PerspectiveCamera(70, 4 / 3, 0.5, 2000);
+			camera.position.set(0, 60, 160); camera.lookAt(0, 0, 0);
+			// --- shared textures
+			const rt = new T.WebGLRenderTarget(512, 512, { depthBuffer: true });
+			const rtNear = new T.WebGLRenderTarget(256, 256, { depthBuffer: true });
+			const studs = new Uint8Array(64 * 128 * 6 * 4); for (let i = 0; i < studs.length; i++) studs[i] = (i * 31) & 255;
+			const studsTex = new T.DataArrayTexture(studs, 64, 128, 6); studsTex.format = T.RGBAFormat; studsTex.type = T.UnsignedByteType; studsTex.needsUpdate = true;
+			const lg = new Uint8Array(32 * 16 * 32); for (let i = 0; i < lg.length; i++) lg[i] = 128 + ((i * 7) & 63);
+			const lgridTex = new T.Data3DTexture(lg, 32, 16, 32); lgridTex.format = T.RedFormat; lgridTex.type = T.UnsignedByteType; lgridTex.minFilter = lgridTex.magFilter = T.LinearFilter; lgridTex.needsUpdate = true;
+			const faces = []; for (let f = 0; f < 6; f++) { const d = new Uint8Array(16 * 16 * 4); for (let i = 0; i < d.length; i += 4) { d[i] = 40 * f; d[i + 1] = 90; d[i + 2] = 160; d[i + 3] = 255; } const t = new T.DataTexture(d, 16, 16, T.RGBAFormat, T.UnsignedByteType); t.needsUpdate = true; faces.push(t); }
+			const envTex = new T.CubeTexture(faces); envTex.magFilter = envTex.minFilter = T.LinearFilter; envTex.generateMipmaps = false; envTex.needsUpdate = true;
+			const makeDiffuse = (seed) => { const d = new Uint8Array(32 * 32 * 4); for (let i = 0; i < d.length; i += 4) { d[i] = (i * seed) & 255; d[i + 1] = (i >> 2) & 255; d[i + 2] = seed * 20; d[i + 3] = 255; } const t = new T.DataTexture(d, 32, 32, T.RGBAFormat, T.UnsignedByteType); t.minFilter = T.LinearMipmapLinearFilter; t.magFilter = T.LinearFilter; t.generateMipmaps = true; t.wrapS = t.wrapT = T.RepeatWrapping; t.needsUpdate = true; return t; };
+			// --- the one shared uniforms object (30 entries), spread into every material
+			const shared = {
+				lamp0Dir: { value: new T.Vector3(0.3, 0.8, 0.5).normalize() }, lamp1Dir: { value: new T.Vector3(-0.5, 0.2, -0.8).normalize() },
+				lamp0Color: { value: new T.Color(1, 0.95, 0.9) }, lamp1Color: { value: new T.Color(0.3, 0.35, 0.5) }, ambiColor: { value: new T.Color(0.25, 0.25, 0.3) },
+				fogColor: { value: new T.Color(0.6, 0.7, 0.9) }, fogNear: { value: 200 }, fogFar: { value: 1200 },
+				sunShadowMatrix: { value: new T.Matrix4() }, sunShadowMatrixNear: { value: new T.Matrix4() },
+				sunShadowTexel: { value: new T.Vector2(1 / 512, 1 / 512) }, sunShadowTexelNear: { value: new T.Vector2(1 / 256, 1 / 256) },
+				sunShadowMap: { value: rt.texture }, sunShadowMapNear: { value: rtNear.texture },
+				studsSamp: { value: studsTex }, envSamp: { value: envTex }, lgridTex: { value: lgridTex },
+				lgridOrigin: { value: new T.Vector3(-64, -16, -64) }, lgridSize: { value: new T.Vector3(128, 32, 128) }, lgridOn: { value: 1 },
+				time: { value: 0 }, cameraPos: { value: new T.Vector3() }, outlineColor: { value: new T.Color(0, 0, 0) }, outlineWidth: { value: 0.02 },
+				specPower: { value: 32 }, envStrength: { value: 0.3 }, shadowBias: { value: 0.002 }, shadowStrength: { value: 0.6 }, lgridBlend: { value: 0.5 }, globalScale: { value: new T.Vector4(1, 1, 1, 1) },
+			};
+			const vs = `
+				attribute vec3 aColor; attribute vec2 aStudsUV; attribute vec2 aSurfaceUV; attribute vec3 aTangent; attribute vec2 aTexPos;
+				uniform mat4 sunShadowMatrix; uniform mat4 sunShadowMatrixNear;
+				varying vec3 vColor; varying vec3 vNormal; varying vec3 vWorld; varying vec2 vStuds; varying vec2 vSurf; varying vec4 vShadow; varying vec4 vShadowNear; varying vec3 vTangent;
+				void main() {
+					#ifdef BATCHED
+					vec4 wp = vec4(position, 1.0); vNormal = normal; vTangent = aTangent;
+					#else
+					vec4 wp = modelMatrix * vec4(position, 1.0); vNormal = mat3(modelMatrix) * normal; vTangent = mat3(modelMatrix) * aTangent;
+					#endif
+					vColor = aColor; vStuds = aStudsUV; vSurf = aSurfaceUV + aTexPos; vWorld = wp.xyz;
+					vShadow = sunShadowMatrix * wp; vShadowNear = sunShadowMatrixNear * wp;
+					gl_Position = projectionMatrix * viewMatrix * wp;
+				}`;
+			const fs = `
+				precision highp sampler3D; precision highp sampler2DArray;
+				uniform vec3 lamp0Dir, lamp1Dir, lamp0Color, lamp1Color, ambiColor, fogColor, lgridOrigin, lgridSize, cameraPos, outlineColor; uniform float fogNear, fogFar, lgridOn, time, outlineWidth, specPower, envStrength, shadowBias, shadowStrength, lgridBlend; uniform vec4 globalScale;
+				uniform vec2 sunShadowTexel, sunShadowTexelNear; uniform sampler2D sunShadowMap, sunShadowMapNear, diffuseSamp; uniform sampler2DArray studsSamp; uniform samplerCube envSamp; uniform sampler3D lgridTex;
+				uniform float opacity, reflectance, lodDistance, ffSpecular;
+				varying vec3 vColor; varying vec3 vNormal; varying vec3 vWorld; varying vec2 vStuds; varying vec2 vSurf; varying vec4 vShadow; varying vec4 vShadowNear; varying vec3 vTangent;
+				void main() {
+					vec3 n = normalize(vNormal);
+					vec3 base = vColor * texture2D(diffuseSamp, vSurf).rgb;
+					vec4 studs = texture(studsSamp, vec3(vStuds, float(VARIANT % 6)));
+					float lg = texture(lgridTex, (vWorld - lgridOrigin) / lgridSize).r * lgridOn;
+					vec3 sc = vShadow.xyz / vShadow.w; float sh = step(sc.z - shadowBias, texture2D(sunShadowMap, sc.xy).r);
+					vec3 scn = vShadowNear.xyz / vShadowNear.w; sh *= step(scn.z - shadowBias, texture2D(sunShadowMapNear, scn.xy).r);
+					vec3 v = normalize(cameraPos - vWorld); vec3 r = reflect(-v, n);
+					vec3 env = textureCube(envSamp, r).rgb * envStrength * reflectance;
+					float d0 = max(dot(n, lamp0Dir), 0.0), d1 = max(dot(n, lamp1Dir), 0.0);
+					vec3 light = ambiColor + lamp0Color * d0 * mix(1.0, sh, shadowStrength) + lamp1Color * d1;
+					light = mix(light, light * lg * 2.0, lgridBlend);
+					float spec = pow(max(dot(r, lamp0Dir), 0.0), specPower) * ffSpecular;
+					vec3 c = base * light * mix(vec3(1.0), studs.rgb, 0.3 + 0.01 * float(VARIANT)) + spec + env + outlineColor * outlineWidth * 0.0 + vTangent * 0.0 + globalScale.xyz * 0.0;
+					float f = smoothstep(fogNear, fogFar, length(cameraPos - vWorld));
+					gl_FragColor = vec4(mix(c, fogColor, f), opacity);
+				}`;
+			const programs = {};
+			const material = (variant, own, transparent, batched) => {
+				const key = variant + ':' + transparent + ':' + batched;
+				if (programs[key]) return programs[key];
+				const m = new T.ShaderMaterial({
+					defines: batched ? { VARIANT: variant, BATCHED: '' } : { VARIANT: variant },
+					uniforms: { ...shared, opacity: { value: transparent ? 0.6 : 1 }, reflectance: { value: 0.2 + variant * 0.05 }, lodDistance: { value: 300 }, ffSpecular: { value: 0.5 }, diffuseSamp: { value: makeDiffuse(variant + 1) }, ...own },
+					vertexShader: vs, fragmentShader: fs, transparent, depthWrite: !transparent,
+				});
+				programs[key] = m;
+				return m;
+			};
+			// --- geometry with the client's custom attributes
+			const addAttributes = (g, seed) => {
+				const count = g.attributes.position.count;
+				const col = new Float32Array(count * 3), studsUv = new Float32Array(count * 2), surf = new Float32Array(count * 2), tan = new Float32Array(count * 3), texPos = new Float32Array(count * 2);
+				for (let i = 0; i < count; i++) { col[i * 3] = 0.3 + ((seed * 7 + i) % 10) / 14; col[i * 3 + 1] = 0.3 + ((seed * 3 + i) % 10) / 14; col[i * 3 + 2] = 0.3 + ((seed * 5 + i) % 10) / 14; studsUv[i * 2] = (i % 4) / 4; studsUv[i * 2 + 1] = ((i >> 2) % 4) / 4; surf[i * 2] = i % 2; surf[i * 2 + 1] = (i >> 1) % 2; tan[i * 3] = 1; texPos[i * 2] = seed * 0.1; }
+				g.setAttribute('aColor', new T.BufferAttribute(col, 3)); g.setAttribute('aStudsUV', new T.BufferAttribute(studsUv, 2)); g.setAttribute('aSurfaceUV', new T.BufferAttribute(surf, 2)); g.setAttribute('aTangent', new T.BufferAttribute(tan, 3)); g.setAttribute('aTexPos', new T.BufferAttribute(texPos, 2));
+				return g;
+			};
+			// pre-batched chunks: each a unique merged geometry (~1,200 triangles) in world space
+			const chunkGeometry = (seed) => {
+				const parts = 100, pos = new Float32Array(parts * 24 * 3), nor = new Float32Array(parts * 24 * 3), idx = new Uint32Array(parts * 36);
+				const box = new T.BoxGeometry(2, 2, 2); const bp = box.attributes.position.array, bn = box.attributes.normal.array, bi = box.index.array;
+				for (let p = 0; p < parts; p++) {
+					const ox = ((seed * 13 + p * 7) % 40) - 20, oy = ((seed * 3 + p * 5) % 8), oz = ((seed * 17 + p * 11) % 40) - 20;
+					for (let v = 0; v < 24; v++) { pos[(p * 24 + v) * 3] = bp[v * 3] + ox; pos[(p * 24 + v) * 3 + 1] = bp[v * 3 + 1] + oy; pos[(p * 24 + v) * 3 + 2] = bp[v * 3 + 2] + oz; nor[(p * 24 + v) * 3] = bn[v * 3]; nor[(p * 24 + v) * 3 + 1] = bn[v * 3 + 1]; nor[(p * 24 + v) * 3 + 2] = bn[v * 3 + 2]; }
+					for (let t = 0; t < 36; t++) idx[p * 36 + t] = bi[t] + p * 24;
+				}
+				const g = new T.BufferGeometry(); g.setAttribute('position', new T.BufferAttribute(pos, 3)); g.setAttribute('normal', new T.BufferAttribute(nor, 3)); g.setIndex(new T.BufferAttribute(idx, 1));
+				return addAttributes(g, seed);
+			};
+			const singleGeometries = []; for (let i = 0; i < 20; i++) singleGeometries.push(addAttributes(new T.BoxGeometry(1 + (i % 5), 1 + (i % 3), 1 + (i % 4)), i));
+			// --- population, per the measured scene
+			const groups = [
+				{ name: 'plastic_low batched', count: 442, variant: 0, batched: true },
+				{ name: 'plastic_low', count: 265, variant: 1 },
+				{ name: 'textured transparent', count: 126, variant: 2, transparent: true },
+				{ name: 'textured', count: 50, variant: 2 },
+				{ name: 'diamondplate', count: 115, variant: 3 }, { name: 'wood', count: 87, variant: 4 }, { name: 'grass', count: 77, variant: 5 },
+				{ name: 'slate', count: 55, variant: 6 }, { name: 'concrete', count: 42, variant: 7 }, { name: 'rust', count: 2, variant: 8 },
+				{ name: 'adorn', count: 8, variant: 9 }, { name: 'glass', count: 24, variant: 10, transparent: true }, { name: 'neon', count: 20, variant: 11 },
+			];
+			let i = 0, batchedIndex = 0;
+			for (const g of groups) {
+				const mat = material(g.variant, {}, g.transparent === true, g.batched === true);
+				for (let k = 0; k < g.count; k++, i++) {
+					let mesh;
+					if (g.batched) {
+						mesh = new T.Mesh(chunkGeometry(batchedIndex), mat);
+						const cx = (batchedIndex % 21 - 10) * 42, cz = (Math.floor(batchedIndex / 21) - 10) * 42;
+						mesh.position.set(cx, 0, cz); mesh.matrixAutoUpdate = false; mesh.updateMatrix(); mesh.frustumCulled = false;
+						batchedIndex++;
+					} else {
+						mesh = new T.Mesh(singleGeometries[i % 20], mat);
+						const p = grid(i, n, 6); mesh.position.set(p[0], p[1] + 20, p[2]); mesh.rotation.y = i * 0.3;
+					}
+					scene.add(mesh);
+				}
+			}
+			// render the shadow targets once so their textures exist (both libraries)
+			const shadowCam = new T.OrthographicCamera(-200, 200, 200, -200, 1, 500); shadowCam.position.set(50, 200, 80); shadowCam.lookAt(0, 0, 0); shadowCam.updateMatrixWorld();
+			shared.sunShadowMatrix.value.multiplyMatrices(shadowCam.projectionMatrix, shadowCam.matrixWorldInverse);
+			shared.sunShadowMatrixNear.value.copy(shared.sunShadowMatrix.value);
+			const warm = (renderer) => {
+				const depthScene = new T.Scene(); depthScene.add(new T.Mesh(new T.PlaneGeometry(400, 400), new T.MeshBasicMaterial({ color: 0xffffff })));
+				renderer.setRenderTarget(rt); renderer.render(depthScene, shadowCam);
+				renderer.setRenderTarget(rtNear); renderer.render(depthScene, shadowCam);
+				renderer.setRenderTarget(null);
+			};
+			const lamp = shared.lamp0Dir.value.clone();
+			return { scene, camera, warm, update: (f) => { shared.time.value = f * 0.016; shared.lamp0Dir.value.copy(lamp).applyAxisAngle(new T.Vector3(0, 1, 0), f * 0.002).normalize(); shared.cameraPos.value.copy(camera.position); } };
+		}
+	},
 	// Shadows: 2000 casters/receivers under a shadow-casting directional light.
 	'shadows': {
 		n: 2000,

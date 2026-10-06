@@ -13,10 +13,11 @@ const LOC_POSITION = 0, LOC_NORMAL = 1, LOC_UV = 2, LOC_COLOR = 3, LOC_UV1 = 4, 
 const ATTRIBUTE_LOCATIONS = { position: LOC_POSITION, normal: LOC_NORMAL, uv: LOC_UV, color: LOC_COLOR, uv1: LOC_UV1 };
 
 class WebGLBindingStates {
-	constructor(gl, state, attributes) {
+	constructor(gl, state, attributes, info = null) {
 		this.gl = gl;
 		this.state = state;
 		this.attributes = attributes;
+		this.info = info;
 		this.cache = new WeakMap(); // geometry -> { plain, instanced, batched }
 		this._onGeometryDispose = this._onGeometryDispose.bind(this);
 	}
@@ -29,6 +30,7 @@ class WebGLBindingStates {
 			for (const key in entry.vaos) { const v = entry.vaos[key]; if (v) this.gl.deleteVertexArray(v.vao); }
 			if (entry.custom !== null) for (const r of entry.custom.values()) this.gl.deleteVertexArray(r.vao);
 			this.cache.delete(geometry);
+			if (this.info !== null) this.info.memory.geometries--;
 		}
 		for (const name in geometry.attributes) this.attributes.remove(geometry.attributes[name]);
 		if (geometry.index !== null) this.attributes.remove(geometry.index);
@@ -47,9 +49,25 @@ class WebGLBindingStates {
 		const gl = this.gl, attributes = this.attributes;
 		let entry = this.cache.get(geometry);
 		if (entry === undefined) {
-			entry = { vaos: [null, null, null], layoutVersion: -1, instancedFor: null, hadInstanceColor: false, custom: null };
+			entry = { vaos: [null, null, null], layoutVersion: -1, instancedFor: null, hadInstanceColor: false, custom: null, attrList: null, versionSum: -1 };
 			this.cache.set(geometry, entry);
 			geometry.addEventListener('dispose', this._onGeometryDispose);
+			if (this.info !== null) this.info.memory.geometries++;
+		}
+		const useCustom = program !== null && program.hasCustomAttributes === true;
+		// Fast path: layout unchanged and no attribute version changed since the VAO was last validated.
+		if (entry.layoutVersion === geometry._layoutVersion && entry.attrList !== null && (mode !== 1 || entry.instancedFor === instancedObject)) {
+			const list = entry.attrList;
+			let sum = 0;
+			for (let i = 0, l = list.length; i < l; i++) sum += list[i].version;
+			if (geometry.index !== null) sum += geometry.index.version;
+			if (mode === 1) { sum += instancedObject.instanceMatrix.version; if (instancedObject.instanceColor !== null) sum += instancedObject.instanceColor.version + 1000003; }
+			if (sum === entry.versionSum) {
+				let record;
+				if (useCustom) { if (entry.custom !== null) { record = entry.custom.get(program.id * 4 + mode); if (record === undefined) record = null; } else record = null; }
+				else record = entry.vaos[mode];
+				if (record !== null) { this.state.bindVertexArray(record.vao); return record; }
+			}
 		}
 		// Array buffers are not VAO state: update them freely. Detect buffer recreation (forces a VAO rebuild).
 		let rebuild = entry.layoutVersion !== geometry._layoutVersion;
@@ -81,7 +99,6 @@ class WebGLBindingStates {
 			entry.layoutVersion = geometry._layoutVersion;
 			if (this.state.currentVAO !== null) { gl.bindVertexArray(null); this.state.currentVAO = null; }
 		}
-		const useCustom = program !== null && program.hasCustomAttributes === true;
 		let record;
 		if (useCustom) {
 			if (entry.custom === null) entry.custom = new Map();
@@ -107,6 +124,14 @@ class WebGLBindingStates {
 				}
 			}
 		}
+		// remember the validated state for the fast path
+		const list = [];
+		for (const name in geometryAttributes) list.push(geometryAttributes[name]);
+		let sum = 0;
+		for (let i = 0; i < list.length; i++) sum += list[i].version;
+		if (geometry.index !== null) sum += geometry.index.version;
+		if (mode === 1) { sum += instancedObject.instanceMatrix.version; if (instancedObject.instanceColor !== null) sum += instancedObject.instanceColor.version + 1000003; }
+		entry.attrList = list; entry.versionSum = sum;
 		return record;
 	}
 

@@ -1,109 +1,70 @@
 {
-  "date": "2026-10-06T19:51:19.653Z",
-  "frames": 40,
+  "date": "2026-10-06T22:02:13.923Z",
+  "frames": 60,
   "renderer": "headless Chromium / SwiftShader (software WebGL2)",
   "results": [
     {
-      "scenario": "shared-static",
-      "n": 10000,
+      "scenario": "shader-client",
+      "n": 1313,
       "three": {
         "lib": "three",
-        "scenario": "shared-static",
-        "n": 10000,
-        "frames": 40,
-        "buildMs": 81.7,
-        "avgMs": 54.387,
-        "bestMs": 14.6,
-        "worstMs": 747,
-        "wallAvgMs": 54.398,
-        "drawCalls": 10000,
-        "triangles": 120000,
-        "programs": 1
+        "scenario": "shader-client",
+        "n": 1313,
+        "frames": 60,
+        "buildMs": 130.4,
+        "avgMs": 13.585,
+        "bestMs": 3.4,
+        "worstMs": 279.9,
+        "wallAvgMs": 13.588,
+        "drawCalls": 1313,
+        "triangles": 540852,
+        "programs": 14,
+        "glCalls": {
+          "uniform": 884,
+          "bindTexture": 13,
+          "useProgram": 13,
+          "bindVertexArray": 1313,
+          "draw": 1313,
+          "bindBuffer": 0,
+          "bufferData": 0,
+          "state": 5,
+          "total": 3541
+        },
+        "glError": 0
       },
       "jrs": {
         "lib": "jrs",
-        "scenario": "shared-static",
-        "n": 10000,
-        "frames": 40,
-        "buildMs": 71.9,
-        "avgMs": 4.273,
-        "bestMs": 3.8,
-        "worstMs": 5.5,
-        "wallAvgMs": 4.277,
-        "drawCalls": 1,
-        "triangles": 120000,
-        "programs": 2
+        "scenario": "shader-client",
+        "n": 1313,
+        "frames": 60,
+        "buildMs": 149.5,
+        "avgMs": 1.873,
+        "bestMs": 0.9,
+        "worstMs": 5.9,
+        "wallAvgMs": 1.873,
+        "drawCalls": 1313,
+        "triangles": 540852,
+        "programs": 14,
+        "glCalls": {
+          "uniform": 975,
+          "bindTexture": 13,
+          "useProgram": 13,
+          "bindVertexArray": 763,
+          "draw": 1313,
+          "bindBuffer": 2,
+          "bufferData": 2,
+          "state": 5,
+          "total": 3086
+        },
+        "glError": 0
       },
-      "speedup": 12.73,
-      "wallSpeedup": 12.72
-    },
-    {
-      "scenario": "many-materials",
-      "n": 5000,
-      "three": {
-        "lib": "three",
-        "scenario": "many-materials",
-        "n": 5000,
-        "frames": 40,
-        "buildMs": 71.8,
-        "avgMs": 13.952,
-        "bestMs": 9.8,
-        "worstMs": 33.4,
-        "wallAvgMs": 13.955,
-        "drawCalls": 5000,
-        "triangles": 333380,
-        "programs": 1
-      },
-      "jrs": {
-        "lib": "jrs",
-        "scenario": "many-materials",
-        "n": 5000,
-        "frames": 40,
-        "buildMs": 60.7,
-        "avgMs": 3.25,
-        "bestMs": 2.7,
-        "worstMs": 5,
-        "wallAvgMs": 3.25,
-        "drawCalls": 600,
-        "triangles": 333380,
-        "programs": 2
-      },
-      "speedup": 4.29,
-      "wallSpeedup": 4.29
-    },
-    {
-      "scenario": "unique-geometries",
-      "n": 2000,
-      "three": {
-        "lib": "three",
-        "scenario": "unique-geometries",
-        "n": 2000,
-        "frames": 40,
-        "buildMs": 72.9,
-        "avgMs": 7.15,
-        "bestMs": 4.3,
-        "worstMs": 42.9,
-        "wallAvgMs": 7.152,
-        "drawCalls": 2000,
-        "triangles": 32000,
-        "programs": 1
-      },
-      "jrs": {
-        "lib": "jrs",
-        "scenario": "unique-geometries",
-        "n": 2000,
-        "frames": 40,
-        "buildMs": 52.6,
-        "avgMs": 4.917,
-        "bestMs": 3.1,
-        "worstMs": 8.4,
-        "wallAvgMs": 4.923,
-        "drawCalls": 2000,
-        "triangles": 32000,
-        "programs": 1
-      },
-      "speedup": 1.45,
-      "wallSpeedup": 1.45
+      "speedup": 7.25,
+      "wallSpeedup": 7.25,
+      "compare": {
+        "meanAbsDiff": 0,
+        "maxDiff": 0,
+        "fractionOver32": 0
+      }
     }
   ]
 }
