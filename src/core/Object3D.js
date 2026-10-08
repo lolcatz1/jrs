@@ -62,8 +62,8 @@ class Object3D extends EventDispatcher {
 		const slot = transformSlab.allocate(this);
 		this._slabData = slot.page.data;
 		this._slabOffset = slot.offset;
-		this._snap = slot.page.snap;
-		this._snapOffset = slot.snapOffset;
+		this._snapData = slot.page.snapshot;
+		this._snapOffset = slot.snapshotOffset;
 		const matrix = new Matrix4(this._slabData.subarray(slot.offset + LOCAL_OFFSET, slot.offset + LOCAL_OFFSET + 16));
 		const matrixWorld = new Matrix4(this._slabData.subarray(slot.offset + WORLD_OFFSET, slot.offset + WORLD_OFFSET + 16));
 
@@ -79,18 +79,13 @@ class Object3D extends EventDispatcher {
 		this._matrix = matrix;
 		this._matrixWorld = matrixWorld;
 
-		// change-detection snapshot (NaN forces the first compose)
-		const sn = this._snap, so = this._snapOffset;
-		sn[so] = NaN; sn[so + 1] = 0; sn[so + 2] = 0;
-		sn[so + 3] = 0; sn[so + 4] = 0; sn[so + 5] = 0; sn[so + 6] = 1;
-		sn[so + 7] = 1; sn[so + 8] = 1; sn[so + 9] = 1;
-		sn[so + 10] = 0; sn[so + 11] = 0; sn[so + 12] = 0; sn[so + 13] = 0;
+		// change-detection snapshot lives in the slab page (_snapData/_snapOffset); NaN forces the first compose
 		this._worldVersion = 0;
 		this._parentWorldVersion = -1;
 		// renderer scratch (initialised here so every Object3D shares one hidden class)
 		this._normalVersion = -1;
 		this._flipVersion = -1; this._frontFaceCW = false;
-		this._cullVersion = -1; this._cullSphere = null; // cull cache doubles (radius, centre) live in the snapshot record at +10..+13
+		this._cullVersion = -1; this._cullSphere = null; // cull-cache doubles (radius, centre) live in the snapshot record at +10..+13
 
 		this.matrixAutoUpdate = Object3D.DEFAULT_MATRIX_AUTO_UPDATE;
 		this.matrixWorldAutoUpdate = Object3D.DEFAULT_MATRIX_WORLD_AUTO_UPDATE;
@@ -123,7 +118,7 @@ class Object3D extends EventDispatcher {
 		if (this.matrixAutoUpdate) this.updateMatrix();
 		this._matrix.premultiply(matrix);
 		this._matrix.decompose(this.position, this.quaternion, this.scale);
-		this._snap[this._snapOffset] = NaN; // force the next updateMatrix() to recompose from TRS, as three.js does
+		this._snapData[this._snapOffset] = NaN; // force the next updateMatrix() to recompose from TRS, as three.js does
 		this.matrixWorldNeedsUpdate = true;
 	}
 	applyQuaternion(q) { this.quaternion.premultiply(q); return this; }
@@ -258,10 +253,10 @@ class Object3D extends EventDispatcher {
 	}
 
 	_snapshot() {
-		const p = this.position, q = this.quaternion, s = this.scale, n = this._snap, o = this._snapOffset;
-		n[o] = p.x; n[o + 1] = p.y; n[o + 2] = p.z;
-		n[o + 3] = q._x; n[o + 4] = q._y; n[o + 5] = q._z; n[o + 6] = q._w;
-		n[o + 7] = s.x; n[o + 8] = s.y; n[o + 9] = s.z;
+		const p = this.position, q = this.quaternion, s = this.scale, d = this._snapData, o = this._snapOffset;
+		d[o] = p.x; d[o + 1] = p.y; d[o + 2] = p.z;
+		d[o + 3] = q._x; d[o + 4] = q._y; d[o + 5] = q._z; d[o + 6] = q._w;
+		d[o + 7] = s.x; d[o + 8] = s.y; d[o + 9] = s.z;
 	}
 
 	/**
@@ -269,15 +264,15 @@ class Object3D extends EventDispatcher {
 	 * one of them changed since the last call. Returns true when it did.
 	 */
 	updateMatrix() {
-		const p = this.position, q = this.quaternion, s = this.scale, n = this._snap, o = this._snapOffset;
-		if (p.x === n[o] && p.y === n[o + 1] && p.z === n[o + 2] &&
-			q._x === n[o + 3] && q._y === n[o + 4] && q._z === n[o + 5] && q._w === n[o + 6] &&
-			s.x === n[o + 7] && s.y === n[o + 8] && s.z === n[o + 9]) {
+		const p = this.position, q = this.quaternion, s = this.scale, d = this._snapData, o = this._snapOffset;
+		if (p.x === d[o] && p.y === d[o + 1] && p.z === d[o + 2] &&
+			q._x === d[o + 3] && q._y === d[o + 4] && q._z === d[o + 5] && q._w === d[o + 6] &&
+			s.x === d[o + 7] && s.y === d[o + 8] && s.z === d[o + 9]) {
 			return false;
 		}
-		n[o] = p.x; n[o + 1] = p.y; n[o + 2] = p.z;
-		n[o + 3] = q._x; n[o + 4] = q._y; n[o + 5] = q._z; n[o + 6] = q._w;
-		n[o + 7] = s.x; n[o + 8] = s.y; n[o + 9] = s.z;
+		d[o] = p.x; d[o + 1] = p.y; d[o + 2] = p.z;
+		d[o + 3] = q._x; d[o + 4] = q._y; d[o + 5] = q._z; d[o + 6] = q._w;
+		d[o + 7] = s.x; d[o + 8] = s.y; d[o + 9] = s.z;
 
 		// inlined Matrix4.compose
 		const te = this._matrix.elements;

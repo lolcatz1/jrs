@@ -1,0 +1,144 @@
+
+### shared-static  total GL calls/frame: three 30002 -> jrs 9
+| GL function | three | jrs | delta |
+|---|---:|---:|---:|
+| bindBuffer | 0 | 2 | +2 |
+| bufferSubData | 0 | 2 | +2 |
+| bindVertexArray | 0 | 2 | +2 |
+| drawElementsInstanced | 0 | 1 | +1 |
+| getExtension | 1 | 1 | 0 |
+| clear | 1 | 1 | 0 |
+| uniformMatrix4fv | 10000 | 0 | -10000 |
+| uniformMatrix3fv | 10000 | 0 | -10000 |
+| drawElements | 10000 | 0 | -10000 |
+
+### shared-animated  total GL calls/frame: three 30002 -> jrs 12
+| GL function | three | jrs | delta |
+|---|---:|---:|---:|
+| bindBuffer | 0 | 2 | +2 |
+| bufferSubData | 0 | 2 | +2 |
+| pixelStorei | 0 | 2 | +2 |
+| bindVertexArray | 0 | 2 | +2 |
+| texSubImage2D | 0 | 1 | +1 |
+| drawElementsInstanced | 0 | 1 | +1 |
+| getExtension | 1 | 1 | 0 |
+| clear | 1 | 1 | 0 |
+| uniformMatrix4fv | 10000 | 0 | -10000 |
+| uniformMatrix3fv | 10000 | 0 | -10000 |
+| drawElements | 10000 | 0 | -10000 |
+
+### many-materials  total GL calls/frame: three 14397 -> jrs 2007
+| GL function | three | jrs | delta |
+|---|---:|---:|---:|
+| uniform1i | 0 | 600 | +600 |
+| drawElementsInstanced | 0 | 600 | +600 |
+| bindBufferRange | 0 | 200 | +200 |
+| bindBuffer | 0 | 2 | +2 |
+| bufferSubData | 0 | 2 | +2 |
+| getExtension | 1 | 1 | 0 |
+| clear | 1 | 1 | 0 |
+| uniform3f | 200 | 0 | -200 |
+| bindVertexArray | 4195 | 601 | -3594 |
+| uniformMatrix4fv | 5000 | 0 | -5000 |
+| drawElements | 5000 | 0 | -5000 |
+
+### unique-geometries  total GL calls/frame: three 6002 -> jrs 9
+| GL function | three | jrs | delta |
+|---|---:|---:|---:|
+| bindBuffer | 0 | 2 | +2 |
+| bufferSubData | 0 | 2 | +2 |
+| multiDrawElementsWEBGL | 0 | 1 | +1 |
+| getExtension | 1 | 1 | 0 |
+| clear | 1 | 1 | 0 |
+| bindVertexArray | 2000 | 2 | -1998 |
+| uniformMatrix4fv | 2000 | 0 | -2000 |
+| drawElements | 2000 | 0 | -2000 |
+
+### hierarchy-animated  total GL calls/frame: three 16002 -> jrs 12
+| GL function | three | jrs | delta |
+|---|---:|---:|---:|
+| bindBuffer | 0 | 2 | +2 |
+| bufferSubData | 0 | 2 | +2 |
+| pixelStorei | 0 | 2 | +2 |
+| bindVertexArray | 0 | 2 | +2 |
+| texSubImage2D | 0 | 1 | +1 |
+| drawElementsInstanced | 0 | 1 | +1 |
+| getExtension | 1 | 1 | 0 |
+| clear | 1 | 1 | 0 |
+| uniformMatrix4fv | 8000 | 0 | -8000 |
+| drawElements | 8000 | 0 | -8000 |
+
+### instanced-100k  total GL calls/frame: three 3 -> jrs 9
+| GL function | three | jrs | delta |
+|---|---:|---:|---:|
+| bindBuffer | 0 | 2 | +2 |
+| bufferSubData | 0 | 2 | +2 |
+| bindVertexArray | 0 | 2 | +2 |
+| getExtension | 1 | 1 | 0 |
+| clear | 1 | 1 | 0 |
+| drawElementsInstanced | 1 | 1 | 0 |
+
+### shader-client  total GL calls/frame: three 3805 -> jrs 3325
+| GL function | three | jrs | delta |
+|---|---:|---:|---:|
+| uniform1f | 170 | 172 | +2 |
+| bindBuffer | 0 | 2 | +2 |
+| bufferSubData | 0 | 2 | +2 |
+| getExtension | 1 | 1 | 0 |
+| clear | 1 | 1 | 0 |
+| useProgram | 13 | 13 | 0 |
+| bindTexture | 171 | 171 | 0 |
+| disable | 1 | 1 | 0 |
+| drawElements | 1313 | 1313 | 0 |
+| uniformMatrix4fv | 871 | 871 | 0 |
+| enable | 1 | 1 | 0 |
+| depthMask | 2 | 2 | 0 |
+| uniform3f | 13 | 12 | -1 |
+| bindVertexArray | 1248 | 763 | -485 |
+
+### shader-client-static  total GL calls/frame: three 1870 -> jrs 1626
+| GL function | three | jrs | delta |
+|---|---:|---:|---:|
+| bindBuffer | 0 | 6 | +6 |
+| bufferSubData | 0 | 6 | +6 |
+| bindBufferRange | 0 | 3 | +3 |
+| uniform1f | 42 | 44 | +2 |
+| uniformMatrix4fv | 436 | 437 | +1 |
+| getExtension | 1 | 1 | 0 |
+| bindFramebuffer | 3 | 3 | 0 |
+| viewport | 3 | 3 | 0 |
+| scissor | 3 | 3 | 0 |
+| stencilMask | 3 | 3 | 0 |
+| clear | 5 | 5 | 0 |
+| disable | 4 | 4 | 0 |
+| drawElements | 651 | 651 | 0 |
+| bindTexture | 44 | 44 | 0 |
+| depthMask | 2 | 2 | 0 |
+| colorMask | 2 | 2 | 0 |
+| enable | 4 | 4 | 0 |
+| stencilFunc | 2 | 2 | 0 |
+| stencilOp | 3 | 3 | 0 |
+| frontFace | 2 | 2 | 0 |
+| useProgram | 17 | 16 | -1 |
+| bindVertexArray | 643 | 382 | -261 |
+
+### shadows  total GL calls/frame: three 10027 -> jrs 29
+| GL function | three | jrs | delta |
+|---|---:|---:|---:|
+| bindBuffer | 0 | 3 | +3 |
+| bufferSubData | 0 | 3 | +3 |
+| drawElementsInstanced | 0 | 2 | +2 |
+| bindBufferRange | 0 | 2 | +2 |
+| useProgram | 2 | 3 | +1 |
+| bindVertexArray | 3 | 4 | +1 |
+| getExtension | 1 | 1 | 0 |
+| bindFramebuffer | 2 | 2 | 0 |
+| viewport | 2 | 2 | 0 |
+| scissor | 2 | 2 | 0 |
+| clear | 2 | 2 | 0 |
+| frontFace | 2 | 2 | 0 |
+| clearColor | 2 | 0 | -2 |
+| uniform3f | 2 | 0 | -2 |
+| uniformMatrix3fv | 2 | 0 | -2 |
+| drawElements | 4001 | 1 | -4000 |
+| uniformMatrix4fv | 6004 | 0 | -6004 |

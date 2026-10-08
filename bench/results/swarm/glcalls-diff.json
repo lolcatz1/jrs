@@ -1,0 +1,219 @@
+{
+ "shared-static": {
+  "three": {
+   "getExtension": 1,
+   "clear": 1,
+   "uniformMatrix4fv": 10000,
+   "uniformMatrix3fv": 10000,
+   "drawElements": 10000
+  },
+  "jrs": {
+   "getExtension": 1,
+   "bindBuffer": 2,
+   "bufferSubData": 2,
+   "clear": 1,
+   "bindVertexArray": 2,
+   "drawElementsInstanced": 1
+  }
+ },
+ "shared-animated": {
+  "three": {
+   "getExtension": 1,
+   "clear": 1,
+   "uniformMatrix4fv": 10000,
+   "uniformMatrix3fv": 10000,
+   "drawElements": 10000
+  },
+  "jrs": {
+   "getExtension": 1,
+   "bindBuffer": 2,
+   "bufferSubData": 2,
+   "clear": 1,
+   "pixelStorei": 2,
+   "texSubImage2D": 1,
+   "bindVertexArray": 2,
+   "drawElementsInstanced": 1
+  }
+ },
+ "many-materials": {
+  "three": {
+   "getExtension": 1,
+   "clear": 1,
+   "uniform3f": 200,
+   "uniformMatrix4fv": 5000,
+   "bindVertexArray": 4195,
+   "drawElements": 5000
+  },
+  "jrs": {
+   "getExtension": 1,
+   "bindBuffer": 2,
+   "bufferSubData": 2,
+   "clear": 1,
+   "bindBufferRange": 200,
+   "uniform1i": 600,
+   "bindVertexArray": 601,
+   "drawElementsInstanced": 600
+  }
+ },
+ "unique-geometries": {
+  "three": {
+   "getExtension": 1,
+   "clear": 1,
+   "uniformMatrix4fv": 2000,
+   "bindVertexArray": 2000,
+   "drawElements": 2000
+  },
+  "jrs": {
+   "getExtension": 1,
+   "bindBuffer": 2,
+   "bufferSubData": 2,
+   "clear": 1,
+   "bindVertexArray": 2,
+   "multiDrawElementsWEBGL": 1
+  }
+ },
+ "hierarchy-animated": {
+  "three": {
+   "getExtension": 1,
+   "clear": 1,
+   "uniformMatrix4fv": 8000,
+   "drawElements": 8000
+  },
+  "jrs": {
+   "getExtension": 1,
+   "bindBuffer": 2,
+   "bufferSubData": 2,
+   "clear": 1,
+   "pixelStorei": 2,
+   "texSubImage2D": 1,
+   "bindVertexArray": 2,
+   "drawElementsInstanced": 1
+  }
+ },
+ "instanced-100k": {
+  "three": {
+   "getExtension": 1,
+   "clear": 1,
+   "drawElementsInstanced": 1
+  },
+  "jrs": {
+   "getExtension": 1,
+   "bindBuffer": 2,
+   "bufferSubData": 2,
+   "clear": 1,
+   "bindVertexArray": 2,
+   "drawElementsInstanced": 1
+  }
+ },
+ "shader-client": {
+  "three": {
+   "getExtension": 1,
+   "clear": 1,
+   "useProgram": 13,
+   "uniform3f": 13,
+   "uniform1f": 170,
+   "bindTexture": 171,
+   "disable": 1,
+   "bindVertexArray": 1248,
+   "drawElements": 1313,
+   "uniformMatrix4fv": 871,
+   "enable": 1,
+   "depthMask": 2
+  },
+  "jrs": {
+   "getExtension": 1,
+   "bindBuffer": 2,
+   "bufferSubData": 2,
+   "depthMask": 2,
+   "clear": 1,
+   "useProgram": 13,
+   "disable": 1,
+   "uniform3f": 12,
+   "uniform1f": 172,
+   "bindTexture": 171,
+   "bindVertexArray": 763,
+   "drawElements": 1313,
+   "uniformMatrix4fv": 871,
+   "enable": 1
+  }
+ },
+ "shader-client-static": {
+  "three": {
+   "getExtension": 1,
+   "bindFramebuffer": 3,
+   "viewport": 3,
+   "scissor": 3,
+   "stencilMask": 3,
+   "clear": 5,
+   "useProgram": 17,
+   "uniformMatrix4fv": 436,
+   "disable": 4,
+   "bindVertexArray": 643,
+   "drawElements": 651,
+   "uniform1f": 42,
+   "bindTexture": 44,
+   "depthMask": 2,
+   "colorMask": 2,
+   "enable": 4,
+   "stencilFunc": 2,
+   "stencilOp": 3,
+   "frontFace": 2
+  },
+  "jrs": {
+   "getExtension": 1,
+   "bindFramebuffer": 3,
+   "viewport": 3,
+   "scissor": 3,
+   "depthMask": 2,
+   "stencilMask": 3,
+   "clear": 5,
+   "bindBuffer": 6,
+   "bufferSubData": 6,
+   "useProgram": 16,
+   "disable": 4,
+   "enable": 4,
+   "uniformMatrix4fv": 437,
+   "bindVertexArray": 382,
+   "drawElements": 651,
+   "uniform1f": 44,
+   "bindTexture": 44,
+   "colorMask": 2,
+   "stencilFunc": 2,
+   "stencilOp": 3,
+   "bindBufferRange": 3,
+   "frontFace": 2
+  }
+ },
+ "shadows": {
+  "three": {
+   "getExtension": 1,
+   "clearColor": 2,
+   "bindFramebuffer": 2,
+   "viewport": 2,
+   "scissor": 2,
+   "clear": 2,
+   "useProgram": 2,
+   "uniformMatrix4fv": 6004,
+   "frontFace": 2,
+   "bindVertexArray": 3,
+   "drawElements": 4001,
+   "uniform3f": 2,
+   "uniformMatrix3fv": 2
+  },
+  "jrs": {
+   "getExtension": 1,
+   "bindFramebuffer": 2,
+   "viewport": 2,
+   "scissor": 2,
+   "clear": 2,
+   "bindBuffer": 3,
+   "bufferSubData": 3,
+   "useProgram": 3,
+   "frontFace": 2,
+   "bindVertexArray": 4,
+   "drawElementsInstanced": 2,
+   "bindBufferRange": 2,
+   "drawElements": 1
+  }
+ }
+}
