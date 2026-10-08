@@ -1,7 +1,10 @@
 import {
 	REVISION, NoToneMapping, SRGBColorSpace, LinearSRGBColorSpace, PCFShadowMap, BasicShadowMap, VSMShadowMap, FrontSide, BackSide, DoubleSide,
-	UnsignedByteType, RGBAFormat
+	UnsignedByteType, RGBAFormat, WebGLCoordinateSystem
 } from '../constants.js';
+import { Matrix3 } from '../math/Matrix3.js';
+import { WebGLEnvironments } from './webgl/WebGLEnvironments.js';
+import { WebGLBackground } from './webgl/WebGLBackground.js';
 import { Color } from '../math/Color.js';
 import { ColorManagement } from '../math/ColorManagement.js';
 import { Frustum } from '../math/Frustum.js';
@@ -39,6 +42,11 @@ function isDescendantOf(object, ancestor) {
 	for (let o = object.parent; o !== null; o = o.parent) if (o === ancestor) return true;
 	return false;
 }
+const _envRotation = /*@__PURE__*/ new Matrix3();
+const _envRotation4 = /*@__PURE__*/ new Matrix4();
+const _envFlip = /*@__PURE__*/ new Matrix3().set(-1, 0, 0, 0, 1, 0, 0, 0, 1);
+const EMPTY_2D = { target: 0x0DE1, isShadowSampler: false }; // gl.TEXTURE_2D
+const EMPTY_CUBE = { target: 0x8513, isShadowSampler: false }; // gl.TEXTURE_CUBE_MAP
 const _emptyScene = { fog: null, environment: null, background: null, overrideMaterial: null, isScene: true, matrixWorldAutoUpdate: false, children: [], visible: true };
 let _frameCounter = 0; // unique across renderers so per-material frame stamps cannot collide
 
@@ -129,7 +137,11 @@ class WebGLRenderer {
 		this._clearAlpha = alpha ? 0 : 1;
 		this._currentRenderTarget = null;
 		this._activeCubeFace = 0;
+		this._activeMipmapLevel = 0;
+		this.coordinateSystem = WebGLCoordinateSystem;
 		this._renderCallDepth = 0;
+		this._inDrawList = false;
+		this._nestedStates = []; this._nestedDepth = 0;
 		this._frameId = 0;
 		this._cameraLayerMask = 1;
 		this._envVersion = 0;
@@ -167,6 +179,8 @@ class WebGLRenderer {
 		this._mdUsedThisFrame = false;
 		this.morphtargets = new WebGLMorphtargets(this.textures.maxTextureSize);
 		this.shadowMap = new WebGLShadowMap(this);
+		this.environments = new WebGLEnvironments(this);
+		this.background = new WebGLBackground(this);
 		this.properties = { get: (obj) => this._materialProps(obj) };
 		this.info.programs = this.programs.programs;
 		this.capabilities = {
@@ -341,6 +355,8 @@ class WebGLRenderer {
 		canvas.removeEventListener && canvas.removeEventListener('webglcontextrestored', this._onContextRestore, false);
 		this.programs.dispose();
 		this.batcher.dispose();
+		this.environments.dispose();
+		this.background.dispose();
 		if (this.megaBuffers !== null) this.megaBuffers.dispose();
 		this._gl.deleteBuffer(this._frameBuffer); this._gl.deleteBuffer(this._lightsBuffer); this._gl.deleteBuffer(this._materialBuffer);
 		this.setAnimationLoop(null);
@@ -358,10 +374,11 @@ class WebGLRenderer {
 	}
 	getRenderTarget() { return this._currentRenderTarget; }
 	getActiveCubeFace() { return this._activeCubeFace; }
-	getActiveMipmapLevel() { return 0; }
-	setRenderTarget(renderTarget, activeCubeFace = 0) {
+	getActiveMipmapLevel() { return this._activeMipmapLevel; }
+	setRenderTarget(renderTarget, activeCubeFace = 0, activeMipmapLevel = 0) {
 		this._currentRenderTarget = renderTarget;
 		this._activeCubeFace = activeCubeFace;
+		this._activeMipmapLevel = activeMipmapLevel; // accepted for API parity; level 0 is rendered
 		const state = this.state;
 		if (renderTarget !== null) {
 			const framebuffer = this.textures.setupRenderTarget(renderTarget);
@@ -419,6 +436,9 @@ class WebGLRenderer {
 		if (camera === undefined || camera.isCamera !== true) { console.error('jrs.WebGLRenderer.render: camera is not an instance of Camera.'); return; }
 		if (this._isContextLost === true) return;
 		const gl = this._gl;
+		// environment-map conversions (equirect -> cube, PMREM) render on their own; run them before this frame's state is live
+		const backgroundTexture = this.background.resolve(scene);
+		if (scene.isScene === true && scene.environment !== null) this.environments.get(scene.environment, true);
 		const savedFlat = this._flatGraph, savedMerged = this._flatMerged;
 		const flat = this.flatSceneUpdate === true && scene.isObject3D === true ? this._flatGraphFor(scene) : null;
 		if (flat !== null) {
@@ -472,6 +492,7 @@ class WebGLRenderer {
 
 		// shadows (renders into other targets; restores ours)
 		this.shadowMap.render(this.lights, scene, camera);
+		this._inDrawList = false;
 
 		// per-frame blocks (light data is filled after the shadow pass so shadow matrices are current)
 		this.lights.fill();
@@ -494,7 +515,7 @@ class WebGLRenderer {
 		}
 
 		// background + clear
-		const background = scene.background;
+		const background = scene.isScene === true ? scene.background : null;
 		if (background !== null && background.isColor) {
 			_color.copy(background);
 			if (this._currentRenderTarget === null) ColorManagement.fromWorkingColorSpace(_color, this._outputColorSpace);
@@ -506,10 +527,13 @@ class WebGLRenderer {
 			this.clear(this.autoClearColor, this.autoClearDepth, this.autoClearStencil);
 		}
 
+		if (backgroundTexture !== null) this.background.render(scene, camera, backgroundTexture);
+
 		if (scene.isScene === true) scene.onBeforeRender(this, scene, camera, this._currentRenderTarget);
 		this._drawList(list, list.opaqueSorted, list.opaqueCount, scene, camera, false, cache.ready === true ? cache.cmdOpaque : null, list.opaqueVersion);
 		this._drawList(list, list.transparentSorted, list.transparentCount, scene, camera, false, cache.ready === true ? cache.cmdTransparent : null, list.transparentVersion);
 		if (scene.isScene === true) scene.onAfterRender(this, scene, camera);
+		this._inDrawList = false;
 
 		if (this._currentRenderTarget !== null) this.textures.updateRenderTargetMipmap(this._currentRenderTarget);
 		this.state.bindVertexArray(null);
@@ -735,6 +759,41 @@ class WebGLRenderer {
 		}
 	}
 
+	/**
+	 * Environment-map conversions (PMREM, equirect -> cube) render while a frame may be in flight. They
+	 * are bracketed by these two calls, which park the frame's collected lights, render-order ranks,
+	 * dense-id counters and trace state and bring them back afterwards. Frame ids keep advancing, so
+	 * every per-frame cache simply misses once after a nested render.
+	 */
+	_beginNestedRender() {
+		let st = this._nestedStates[this._nestedDepth++];
+		if (st === undefined) st = this._nestedStates[this._nestedDepth - 1] = { lights: null, spareLights: new WebGLLights(), renderOrderList: null, spareList: [] };
+		st.lights = this.lights; this.lights = st.spareLights;
+		st.renderOrderList = this._renderOrderList; this._renderOrderList = st.spareList;
+		st.lastNotedRenderOrder = this._lastNotedRenderOrder;
+		st.scene = this._currentScene; st.camera = this._currentCamera; st.layerMask = this._cameraLayerMask;
+		st.materialCounter = this._materialCounter; st.geometryCounter = this._geometryCounter; st.programCounter = this._programCounter;
+		st.envKeyId = this._envKeyId; st.lastLightsVersion = this._lastLightsVersion;
+		st.trace = this._traceUniforms; st.traceSeq = this._traceSeq; st.traceSwitches = this._traceSwitches; st.traceDraws = this._traceDraws; st.traceList = this._traceList;
+		st.renderTarget = this._currentRenderTarget; st.cubeFace = this._activeCubeFace; st.mipLevel = this._activeMipmapLevel;
+		st.inDrawList = this._inDrawList; st.sideOverride = this._sideOverride;
+		this._traceUniforms = null; this._traceSeq = null; this._inDrawList = false; this._sideOverride = -1;
+	}
+	_endNestedRender() {
+		const st = this._nestedStates[--this._nestedDepth];
+		this.lights = st.lights; this._renderOrderList = st.renderOrderList; this._lastNotedRenderOrder = st.lastNotedRenderOrder;
+		this._currentScene = st.scene; this._currentCamera = st.camera; this._cameraLayerMask = st.layerMask;
+		this._materialCounter = st.materialCounter; this._geometryCounter = st.geometryCounter; this._programCounter = st.programCounter;
+		this._envKeyId = st.envKeyId; this._lastLightsVersion = st.lastLightsVersion;
+		// a fresh epoch: program entries resolved inside the nested render can never be mistaken for this frame's
+		this._lightsEpoch++; this._envVersion = this._lightsEpoch * 65536 + this._envKeyId;
+		this._traceUniforms = st.trace; this._traceSeq = st.traceSeq; this._traceSwitches = st.traceSwitches; this._traceDraws = st.traceDraws; this._traceList = st.traceList;
+		this._inDrawList = st.inDrawList; this._sideOverride = st.sideOverride;
+		if (this._currentRenderTarget !== st.renderTarget || this._activeCubeFace !== st.cubeFace) this.setRenderTarget(st.renderTarget, st.cubeFace, st.mipLevel);
+		this._currentMaterial = null; this._currentSide = -1; this._currentGeometryRecord = null;
+		this.state.bindVertexArray(null);
+	}
+
 	_renderOrderReset() { this._renderOrderList.length = 0; this._lastNotedRenderOrder = NaN; }
 	/** Index of `ro` in the sorted distinct-renderOrder list, or the insertion point (binary search). */
 	_renderOrderIndex(ro) {
@@ -763,7 +822,7 @@ class WebGLRenderer {
 	_updateEnv(scene) {
 		const target = this._currentRenderTarget;
 		const cs = target === null ? this._outputColorSpace : target.texture.colorSpace;
-		const fog = scene.fog === null ? 0 : (scene.fog.isFogExp2 ? 2 : 1);
+		const fog = scene.fog == null ? 0 : (scene.fog.isFogExp2 ? 2 : 1);
 		let csId = this._colorSpaceIds.get(cs);
 		if (csId === undefined) { csId = this._colorSpaceIds.size; this._colorSpaceIds.set(cs, csId); }
 		const shadowKind = this.shadowMap.enabled ? (this.shadowMap.type === BasicShadowMap ? 2 : (this.shadowMap.type === VSMShadowMap ? 3 : 1)) : 0;
@@ -1186,6 +1245,7 @@ class WebGLRenderer {
 		s[k++] = material.stencilWrite ? 1 : 0; s[k++] = material.stencilWriteMask; s[k++] = material.stencilFunc; s[k++] = material.stencilRef; s[k++] = material.stencilFuncMask;
 		s[k++] = material.stencilFail; s[k++] = material.stencilZFail; s[k++] = material.stencilZPass;
 		s[k++] = material.wireframe ? 1 : 0;
+		s[k++] = material.envMap ? material.envMap.id : -1; // the environment texture is bound once per batch
 		s[k++] = Math.floor(props.blockSlot / this._materialWindow);
 		const prev = props.batchSig;
 		if (prev !== null) {
@@ -1250,7 +1310,7 @@ class WebGLRenderer {
 	_materialProps(material) {
 		let props = this._materialProperties.get(material);
 		if (props === undefined) {
-			props = { programs: [], blockData: new Float32Array(MATERIAL_BLOCK_SIZE / 4), blockSlot: -1, blockStamp: -1, textureStamp: -1, batchSig: null, batchGroup: null };
+			props = { programs: [], blockData: new Float32Array(MATERIAL_BLOCK_SIZE / 4), blockSlot: -1, blockStamp: -1, textureStamp: -1, batchSig: null, batchGroup: null, envStamp: -1, envMap: null, envMapRotation: null, envMapIntensity: 1, envPending: false };
 			this._materialProperties.set(material, props);
 			material.addEventListener('dispose', this._onMaterialDispose);
 		}
@@ -1269,19 +1329,40 @@ class WebGLRenderer {
 
 	_getProgram(material, object, scene, variant) {
 		if (material._resolveStamp === this._frameId && material._resolveVariant === variant) return material._resolveProgram;
-		const program = this._getProgramSlow(this._materialProps(material), material, object, scene, variant);
+		const props = this._materialProps(material);
+		if (props.envStamp !== this._frameId && this._inDrawList === false) { props.envStamp = this._frameId; this._refreshEnvironment(material, props, scene); }
+		const program = this._getProgramSlow(props, material, object, scene, variant);
 		material._resolveStamp = this._frameId; material._resolveVariant = variant; material._resolveProgram = program;
 		return program;
+	}
+	/**
+	 * The texture this material samples as its environment this frame (material.envMap, else the scene's
+	 * environment for lit materials), converted to what the shader expects: the PMREM CubeUV layout for
+	 * MeshStandardMaterial and for scene.environment, a cube map otherwise. Also which rotation and
+	 * intensity apply (three.js: the scene's when the environment comes from the scene).
+	 */
+	_refreshEnvironment(material, props, scene) {
+		const raw = material.envMap;
+		const isLit = material.isMeshStandardMaterial === true || material.isMeshLambertMaterial === true || material.isMeshPhongMaterial === true;
+		const environment = (isLit && scene.isScene === true) ? scene.environment : null;
+		const source = raw || environment;
+		if (source === null || source === undefined) { props.envMap = null; props.envMapRotation = null; props.envMapIntensity = 1; props.envPending = false; return; }
+		const usePMREM = material.isMeshStandardMaterial === true || (isLit && !raw);
+		const envMap = this.environments.get(source, usePMREM);
+		props.envMap = envMap;
+		props.envPending = envMap === null; // image not ready yet: try again next frame
+		if (environment !== null && !raw) { props.envMapRotation = scene.environmentRotation; props.envMapIntensity = scene.environmentIntensity; }
+		else { props.envMapRotation = material.envMapRotation; props.envMapIntensity = material.envMapIntensity !== undefined ? material.envMapIntensity : 1; }
 	}
 	_getProgramSlow(props, material, object, scene, variant) {
 		let entry = props.programs[variant];
 		if (entry !== undefined) {
-			if (entry.materialVersion === material.version && entry.envVersion === this._envVersion) return entry.program;
+			if (entry.materialVersion === material.version && entry.envVersion === this._envVersion && entry.envMap === props.envMap) return entry.program;
 			// the previous environment (typically the other of render target / screen) is kept as a second slot
-			if (entry.altProgram !== null && entry.altMaterialVersion === material.version && entry.altEnvVersion === this._envVersion) {
-				const p = entry.program, mv = entry.materialVersion, ev = entry.envVersion;
-				entry.program = entry.altProgram; entry.materialVersion = entry.altMaterialVersion; entry.envVersion = entry.altEnvVersion;
-				entry.altProgram = p; entry.altMaterialVersion = mv; entry.altEnvVersion = ev;
+			if (entry.altProgram !== null && entry.altMaterialVersion === material.version && entry.altEnvVersion === this._envVersion && entry.altEnvMap === props.envMap) {
+				const p = entry.program, mv = entry.materialVersion, ev = entry.envVersion, em = entry.envMap;
+				entry.program = entry.altProgram; entry.materialVersion = entry.altMaterialVersion; entry.envVersion = entry.altEnvVersion; entry.envMap = entry.altEnvMap;
+				entry.altProgram = p; entry.altMaterialVersion = mv; entry.altEnvVersion = ev; entry.altEnvMap = em;
 				return entry.program;
 			}
 		}
@@ -1291,9 +1372,9 @@ class WebGLRenderer {
 			multiDraw: (variant & V_MULTIDRAW) !== 0, objectTexture: (variant & V_OBJTEX) !== 0, materialArray: (variant & V_MATARRAY) !== 0,
 			side: (variant & V_SIDE_BACK) !== 0 ? BackSide : ((variant & V_SIDE_FRONT) !== 0 ? FrontSide : material.side),
 		};
-		const parameters = this.programs.getParameters(material, object, scene || _emptyScene, this.lights, vflags);
+		const parameters = this.programs.getParameters(material, object, scene || _emptyScene, this.lights, vflags, props.envMap);
 		if (entry !== undefined && entry.program.parameters.key === parameters.key && material.isShaderMaterial !== true) {
-			entry.materialVersion = material.version; entry.envVersion = this._envVersion;
+			entry.materialVersion = material.version; entry.envVersion = this._envVersion; entry.envMap = props.envMap;
 			return entry.program;
 		}
 		const program = this.programs.acquireProgram(parameters, material);
@@ -1301,10 +1382,10 @@ class WebGLRenderer {
 		if (entry !== undefined) {
 			// current program becomes the alternate; the one it displaces is released
 			if (entry.altProgram !== null) this.programs.releaseProgram(entry.altProgram);
-			entry.altProgram = entry.program; entry.altMaterialVersion = entry.materialVersion; entry.altEnvVersion = entry.envVersion;
-			entry.program = program; entry.materialVersion = material.version; entry.envVersion = this._envVersion;
+			entry.altProgram = entry.program; entry.altMaterialVersion = entry.materialVersion; entry.altEnvVersion = entry.envVersion; entry.altEnvMap = entry.envMap;
+			entry.program = program; entry.materialVersion = material.version; entry.envVersion = this._envVersion; entry.envMap = props.envMap;
 		} else {
-			entry = { program, materialVersion: material.version, envVersion: this._envVersion, altProgram: null, altMaterialVersion: -1, altEnvVersion: -1 };
+			entry = { program, materialVersion: material.version, envVersion: this._envVersion, envMap: props.envMap, altProgram: null, altMaterialVersion: -1, altEnvVersion: -1, altEnvMap: null };
 		}
 		props.programs[variant] = entry;
 		material._programDirty = false;
@@ -1371,9 +1452,24 @@ class WebGLRenderer {
 		} else {
 			s[20] = 1; s[21] = 0; s[22] = 0; s[23] = 0; s[24] = 0; s[25] = 1; s[26] = 0; s[27] = 0; s[28] = 0; s[29] = 0; s[30] = 1; s[31] = 0;
 		}
+		// environment map: intensity / reflectivity / refractionRatio / ior and the rotation (as three.js: the
+		// inverse of the Euler rotation, with the px/nx flip of non-render-target cube textures)
+		s[32] = props.envMapIntensity;
+		s[33] = material.reflectivity !== undefined ? material.reflectivity : 1;
+		s[34] = material.refractionRatio !== undefined ? material.refractionRatio : 0.98;
+		s[35] = material.ior !== undefined ? material.ior : 1.5;
+		const envMap = props.envMap;
+		if (envMap !== null) {
+			_envRotation.setFromMatrix4(_envRotation4.makeRotationFromEuler(props.envMapRotation)).transpose();
+			if (envMap.isCubeTexture && envMap.isRenderTargetTexture === false) _envRotation.premultiply(_envFlip);
+			const e = _envRotation.elements;
+			s[36] = e[0]; s[37] = e[1]; s[38] = e[2]; s[39] = 0; s[40] = e[3]; s[41] = e[4]; s[42] = e[5]; s[43] = 0; s[44] = e[6]; s[45] = e[7]; s[46] = e[8]; s[47] = 0;
+		} else {
+			s[36] = 1; s[37] = 0; s[38] = 0; s[39] = 0; s[40] = 0; s[41] = 1; s[42] = 0; s[43] = 0; s[44] = 0; s[45] = 0; s[46] = 1; s[47] = 0;
+		}
 		const b = props.blockData;
 		let dirty = false;
-		for (let i = 0; i < 32; i++) { if (b[i] !== s[i]) { dirty = true; break; } }
+		for (let i = 0; i < 48; i++) { if (b[i] !== s[i]) { dirty = true; break; } }
 		const offset = props.blockSlot * this._materialStride;
 		if (dirty) {
 			b.set(s);
@@ -1383,11 +1479,17 @@ class WebGLRenderer {
 		return offset;
 	}
 
-	_bindMaterialTextures(material) {
+	_bindMaterialTextures(material, props) {
 		const t = this.textures, rt = this._currentRenderTarget;
 		if (rt !== null) {
 			// a map that is this render target's own texture would be a feedback loop: skip it
-			for (const key of MAP_KEYS) { const tex = material[key]; if (tex && tex.renderTarget === rt) { t.bindEmpty({ target: this._gl.TEXTURE_2D, isShadowSampler: false }, TEXTURE_UNITS[key]); } }
+			for (const key of MAP_KEYS) { const tex = material[key]; if (tex && tex.renderTarget === rt) { t.bindEmpty(EMPTY_2D, TEXTURE_UNITS[key]); } }
+		}
+		const envMap = props.envMap;
+		if (envMap !== null) {
+			if (rt !== null && envMap.renderTarget === rt) t.bindEmpty(envMap.isCubeTexture ? EMPTY_CUBE : EMPTY_2D, TEXTURE_UNITS.envMap);
+			else if (envMap.isCubeTexture) t.setTextureCube(envMap, TEXTURE_UNITS.envMap);
+			else t.setTexture2D(envMap, TEXTURE_UNITS.envMap);
 		}
 		if (material.map) t.setTexture2D(material.map, TEXTURE_UNITS.map);
 		if (material.alphaMap) t.setTexture2D(material.alphaMap, TEXTURE_UNITS.alphaMap);
@@ -1534,6 +1636,7 @@ class WebGLRenderer {
 	}
 
 	_executeCommands(cmdN, scene, camera, shadowPass) {
+		this._inDrawList = true; // program resolution from here on must not start an environment conversion render
 		this.megaBuffers.flush(); // queued page uploads (lazy, ranged) must land before the draws that read them
 		for (let c = 0; c < cmdN; c++) {
 			const item = this._cmdItem[c];
@@ -1720,7 +1823,7 @@ class WebGLRenderer {
 			if (material.isShaderMaterial) {
 				this._uploadShaderMaterialUniforms(program, material, camera, programChanged);
 			} else {
-				this._bindMaterialTextures(material);
+				this._bindMaterialTextures(material, this._materialProps(material));
 			}
 			if (material.isLineBasicMaterial) state.setLineWidth(material.linewidth * this._pixelRatio);
 		} else if (material.isShaderMaterial && material.uniformsNeedUpdate === true) {
@@ -1994,7 +2097,7 @@ function shadowSideOf(material) {
 
 const _wireGroup = { start: 0, count: 0, materialIndex: 0 };
 const MAP_KEYS = ['map', 'alphaMap', 'normalMap', 'emissiveMap', 'roughnessMap', 'metalnessMap', 'aoMap', 'specularMap'];
-const BATCH_SIG_SIZE = MAP_KEYS.length + 33; // see _batchGroupOf
+const BATCH_SIG_SIZE = MAP_KEYS.length + 34; // see _batchGroupOf
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
 /**
