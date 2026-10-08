@@ -329,7 +329,7 @@ export function buildFuzzScene(T, seed, features = defaultFeatures(), opts = {})
 					c *= texture2D( tex, vUv ).rgb;
 					#endif
 					#ifdef USE_COLOR
-					c *= vColor;
+					c *= vColor.rgb;
 					#endif
 					float d = 0.3 + 0.7 * max( dot( normalize( vNormalW ), normalize( lightDir ) ), 0.0 );
 					gl_FragColor = vec4( c * d, uOpacity );
@@ -394,7 +394,9 @@ export function buildFuzzScene(T, seed, features = defaultFeatures(), opts = {})
 		if (features.maps && textures.length && rng.chance(0.5)) params.map = rng.pick(textures);
 		if (features.vertexColors) params.vertexColors = hasVertexColors;
 		if (features.side) params.side = rng.pick([T.FrontSide, T.FrontSide, T.BackSide, T.DoubleSide]);
-		if (features.wireframe && rng.chance(0.08)) params.wireframe = true;
+		// wireframe only on materials without screen-space derivatives: flat shading and MeshStandardMaterial's
+		// geometry-roughness term use dFdx/dFdy, which are implementation-defined on line primitives
+		if (features.wireframe && kind !== 'standard' && rng.chance(0.08)) params.wireframe = true;
 		if (features.alphaTest && rng.chance(0.15)) params.alphaTest = rng.range(0.2, 0.8);
 		if (transparent) {
 			params.transparent = true;
@@ -416,7 +418,7 @@ export function buildFuzzScene(T, seed, features = defaultFeatures(), opts = {})
 		}
 		if (features.depthState && rng.chance(0.08)) { params.depthTest = false; sensitive = true; }
 		if (features.depthState && !transparent && rng.chance(0.08)) { params.depthWrite = false; sensitive = true; }
-		if (features.flatShading && kind !== 'basic' && kind !== 'shader' && rng.chance(0.3)) params.flatShading = true;
+		if (features.flatShading && kind !== 'basic' && kind !== 'shader' && !params.wireframe && rng.chance(0.3)) params.flatShading = true;
 		if (features.maps && textures.length) {
 			// jrs has one uv transform per material (the first map's); unless perMapTransform is on, every
 			// extra map on a material is the same texture object as its first map
@@ -488,6 +490,8 @@ export function buildFuzzScene(T, seed, features = defaultFeatures(), opts = {})
 	const kindsUsed = materials.map((m) => m.userData.kind);
 	note(`materials: ${kindsUsed.join(', ')}`);
 	const randomOpaqueMaterial = () => materials[rng.int(materials.length)];
+	const insensitive = materials.filter((m) => !orderSensitive.has(m));
+	const randomInsensitiveMaterial = () => insensitive.length ? insensitive[rng.int(insensitive.length)] : new T.MeshBasicMaterial({ color: randomColor() });
 
 	// ShaderMaterial custom attributes: add to geometries that end up used by 'raw-attributes'
 	const ensureShaderAttributes = (g) => {
@@ -510,8 +514,10 @@ export function buildFuzzScene(T, seed, features = defaultFeatures(), opts = {})
 		let material;
 		const groupCount = g.userData.groupCount || (g.groups.length > 1 ? g.groups.length : 0);
 		if (features.groups && groupCount > 0 && (g.userData.groupCount || rng.chance(0.5))) {
+			// groups share one renderOrder, and three.js orders them by material id while jrs orders by program:
+			// only order-insensitive materials go into material arrays
 			material = [];
-			for (let k = 0; k < groupCount; k++) material.push(randomOpaqueMaterial());
+			for (let k = 0; k < groupCount; k++) material.push(randomInsensitiveMaterial());
 		} else material = shared ? materials[rng.int(Math.min(2, materials.length))] : randomOpaqueMaterial();
 		const mesh = new T.Mesh(g, material);
 		assignRenderOrder(mesh, Array.isArray(material) ? material : [material]);

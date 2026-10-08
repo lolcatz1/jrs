@@ -36,6 +36,7 @@ const _emptyScene = { fog: null, environment: null, background: null, overrideMa
 // variant bits for program selection
 const V_INSTANCING = 1, V_INSTANCING_COLOR = 2, V_RECEIVE_SHADOW = 4, V_SHADOW_PASS = 8;
 const V_HAS_UV = 16, V_HAS_UV1 = 32, V_HAS_COLOR = 64, V_COLOR_ALPHA = 128, V_MULTIDRAW = 256, V_OBJTEX = 512;
+const V_SIDE_BACK = 1024, V_SIDE_FRONT = 2048; // two-pass transparent DoubleSide materials (three.js renders back faces, then front faces)
 
 const defaultOnBeforeRender = Object3D.prototype.onBeforeRender;
 const defaultOnAfterRender = Object3D.prototype.onAfterRender;
@@ -365,7 +366,7 @@ class WebGLRenderer {
 		this._currentCamera = camera;
 		this._currentScene = scene;
 		this._materialCounter = 0; this._geometryCounter = 0; this._programCounter = 0;
-		this._currentMaterial = null; this._currentSide = -1;
+		this._currentMaterial = null; this._currentSide = -1; this._sideOverride = -1; this._listShadowPass = false;
 		this._traceUniforms = this.debug.traceUniforms === true ? new Map() : null;
 		this._traceSwitches = 0; this._traceDraws = this.info.render.calls; this._traceSeq = this._traceUniforms !== null ? [] : null; this._traceList = 'o';
 		this._updateEnv(scene);
@@ -529,9 +530,8 @@ class WebGLRenderer {
 				if (!object.frustumCulled || _frustum.intersectsSprite(object)) {
 					const material = object.material;
 					if (material.visible) {
-						const we = object.matrixWorld.elements, ve = camera.matrixWorldInverse.elements;
-						const z = -(ve[2] * we[12] + ve[6] * we[13] + ve[10] * we[14] + ve[14]);
-						this._pushItem(list, object, object.geometry, material, null, z, false);
+						const we = object.matrixWorld.elements;
+						this._pushItem(list, object, object.geometry, material, null, ndcDepth(we[12], we[13], we[14]), false);
 					}
 				}
 			} else if (object.isMesh || object.isLine || object.isPoints) {
@@ -540,12 +540,10 @@ class WebGLRenderer {
 				if (!object.frustumCulled || this._cullTest(object, geometry, _frustum)) {
 					let z = 0;
 					if (sortObjects) {
-						// cached world center is in the slab after _cullTest; if culling is off, use the object position
-						const s = object._slabData, o = object._slabOffset, ve = camera.matrixWorldInverse.elements;
-						let cx, cy, cz;
-						if (object.frustumCulled) { cx = s[o + 41]; cy = s[o + 42]; cz = s[o + 43]; }
-						else { cx = s[o + 28]; cy = s[o + 29]; cz = s[o + 30]; }
-						z = -(ve[2] * cx + ve[6] * cy + ve[10] * cz + ve[14]);
+						// three.js sorts by the NDC depth of the object's world position (not the bounding sphere centre:
+						// a geometry that is not centred on its origin would sort differently and blend differently)
+						const s = object._slabData, o = object._slabOffset;
+						z = ndcDepth(s[o + 28], s[o + 29], s[o + 30]);
 					}
 					if (Array.isArray(material)) {
 						const groups = geometry.groups;
@@ -589,6 +587,7 @@ class WebGLRenderer {
 		}
 	}
 
+	_sideVariant() { return this._sideOverride === BackSide ? V_SIDE_BACK : (this._sideOverride === FrontSide ? V_SIDE_FRONT : 0); }
 	_variantFor(object, geometry, material, shadowPass) {
 		let v = 0;
 		if (object.isInstancedMesh) { v |= V_INSTANCING; if (object.instanceColor !== null) v |= V_INSTANCING_COLOR; }
@@ -644,6 +643,7 @@ class WebGLRenderer {
 			instancing: (variant & V_INSTANCING) !== 0, instancingColor: (variant & V_INSTANCING_COLOR) !== 0,
 			receiveShadow: (variant & V_RECEIVE_SHADOW) !== 0, shadowPass: (variant & V_SHADOW_PASS) !== 0,
 			multiDraw: (variant & V_MULTIDRAW) !== 0, objectTexture: (variant & V_OBJTEX) !== 0,
+			side: (variant & V_SIDE_BACK) !== 0 ? BackSide : ((variant & V_SIDE_FRONT) !== 0 ? FrontSide : material.side),
 		};
 		const parameters = this.programs.getParameters(material, object, scene || _emptyScene, this.lights, vflags);
 		if (entry !== undefined && entry.program.parameters.key === parameters.key && material.isShaderMaterial !== true) {
@@ -747,6 +747,9 @@ class WebGLRenderer {
 
 	_isBatchable(item) {
 		if (item.material.isShaderMaterial === true || item.group !== null) return false;
+		// a two-pass (back faces, then front faces) transparent material must stay per object: batching all
+		// back faces before all front faces composites overlapping objects differently from three.js
+		if (isTwoPass(item.material, this._listShadowPass)) return false;
 		const object = item.object;
 		return object.isMesh === true && object.isInstancedMesh !== true && object.isSkinnedMesh !== true &&
 			object.morphTargetInfluences === undefined &&
@@ -773,7 +776,7 @@ class WebGLRenderer {
 	 */
 	_drawList(list, keys, n, scene, camera, shadowPass) {
 		if (n === 0) return;
-		this._currentScene = scene;
+		this._currentScene = scene; this._listShadowPass = shadowPass;
 		if (this._traceSeq !== null) this._traceList = shadowPass ? 's' : (keys === list.transparentSorted ? 't' : 'o');
 		const batcher = this.batcher;
 		batcher.begin();
@@ -847,9 +850,14 @@ class WebGLRenderer {
 		for (let c = 0; c < cmdN; c++) {
 			const item = this._cmdItem[c];
 			const kind = this._cmdKind[c];
-			if (kind === 2) this._renderMultiDraw(item, this._cmdOffset[c], this._cmdCount[c], this._cmdMdStart[c], scene, camera, shadowPass);
-			else if (kind === 1) this._renderBatch(item, this._cmdOffset[c], this._cmdCount[c], scene, camera, shadowPass);
-			else this._renderItem(item, scene, camera, shadowPass);
+			const passes = isTwoPass(item.material, shadowPass) ? 2 : 1;
+			for (let p = 0; p < passes; p++) {
+				this._sideOverride = passes === 2 ? (p === 0 ? BackSide : FrontSide) : -1;
+				if (kind === 2) this._renderMultiDraw(item, this._cmdOffset[c], this._cmdCount[c], this._cmdMdStart[c], scene, camera, shadowPass);
+				else if (kind === 1) this._renderBatch(item, this._cmdOffset[c], this._cmdCount[c], scene, camera, shadowPass);
+				else this._renderItem(item, scene, camera, shadowPass);
+			}
+			this._sideOverride = -1;
 			this._cmdItem[c] = null;
 		}
 	}
@@ -862,9 +870,9 @@ class WebGLRenderer {
 	/** One multiDrawElements/Arrays call for `count` sub-draws whose matrices start at `drawBase` in the matrix texture. */
 	_renderMultiDraw(item, drawBase, count, mdStart, scene, camera, shadowPass) {
 		const object = item.object, material = item.material, gl = this._gl;
-		const variant = this._variantFor(object, item.geometry, material, shadowPass) | V_MULTIDRAW;
+		const variant = this._variantFor(object, item.geometry, material, shadowPass) | V_MULTIDRAW | this._sideVariant();
 		const program = this._getProgram(material, object, scene, variant);
-		this._setupMaterial(item, program, material, camera, false, shadowPass ? shadowSideOf(material) : material.side);
+		this._setupMaterial(item, program, material, camera, false, this._sideOverride >= 0 ? this._sideOverride : (shadowPass ? shadowSideOf(material) : material.side));
 		const mu = program.modelMatrixUniform;
 		if (mu !== null && !cacheArray(mu, IDENTITY, 16)) { gl.uniformMatrix4fv(mu.location, false, IDENTITY); if (this._traceUniforms !== null) this._trace(mu); }
 		const du = program.drawBaseUniform;
@@ -971,12 +979,13 @@ class WebGLRenderer {
 	_renderItem(item, scene, camera, shadowPass) {
 		const object = item.object, material = item.material, group = item.group;
 		let geometry = item.geometry;
-		const program = item.program;
+		const side = this._sideOverride >= 0 ? this._sideOverride : (shadowPass ? shadowSideOf(material) : material.side);
+		const program = this._sideOverride >= 0 ? this._getProgram(material, object, scene, this._variantFor(object, geometry, material, shadowPass) | this._sideVariant()) : item.program;
 		if (object.onBeforeRender !== defaultOnBeforeRender) object.onBeforeRender(this, scene, camera, geometry, material, group);
 		const gl = this._gl;
 		if (object._flipVersion !== object._worldVersion) { object._frontFaceCW = object.isMesh && object.matrixWorld.determinant() < 0; object._flipVersion = object._worldVersion; }
 		const frontFaceCW = object._frontFaceCW;
-		this._setupMaterial(item, program, material, camera, frontFaceCW, shadowPass ? shadowSideOf(material) : material.side);
+		this._setupMaterial(item, program, material, camera, frontFaceCW, side);
 		if (material.wireframe === true && object.isMesh) geometry = this._wireframeGeometry(geometry);
 		// per-object uniforms
 		const s = object._slabData, o = object._slabOffset;
@@ -1007,9 +1016,9 @@ class WebGLRenderer {
 		const object = item.object, material = item.material;
 		let geometry = item.geometry;
 		const gl = this._gl;
-		const variant = this._variantFor(object, geometry, material, shadowPass) | V_OBJTEX;
+		const variant = this._variantFor(object, geometry, material, shadowPass) | V_OBJTEX | this._sideVariant();
 		const program = this._getProgram(material, object, scene, variant);
-		this._setupMaterial(item, program, material, camera, false, shadowPass ? shadowSideOf(material) : material.side);
+		this._setupMaterial(item, program, material, camera, false, this._sideOverride >= 0 ? this._sideOverride : (shadowPass ? shadowSideOf(material) : material.side));
 		if (material.wireframe === true) geometry = this._wireframeGeometry(geometry);
 		const mu = program.modelMatrixUniform;
 		if (mu !== null && !cacheArray(mu, IDENTITY, 16)) { gl.uniformMatrix4fv(mu.location, false, IDENTITY); if (this._traceUniforms !== null) this._trace(mu); }
@@ -1116,6 +1125,16 @@ class WebGLRenderer {
 	_trace(u) { this._traceUniforms.set(u.name, (this._traceUniforms.get(u.name) || 0) + 1); }
 }
 
+/** NDC depth of a world-space point under the current projScreen matrix (three.js's transparent sort key). */
+function ndcDepth(x, y, z) {
+	const m = _projScreenMatrix.elements;
+	const w = m[3] * x + m[7] * y + m[11] * z + m[15];
+	return (m[2] * x + m[6] * y + m[10] * z + m[14]) / (w === 0 ? 1 : w);
+}
+/** True when three.js renders this material in two passes (back faces first, then front faces). */
+function isTwoPass(material, shadowPass) {
+	return shadowPass === false && material.transparent === true && material.side === DoubleSide && material.forceSinglePass === false;
+}
 function shadowSideOf(material) {
 	if (material.shadowSide !== null && material.shadowSide !== undefined) return material.shadowSide;
 	return material.side === FrontSide ? BackSide : (material.side === BackSide ? FrontSide : DoubleSide);

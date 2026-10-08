@@ -105,7 +105,8 @@ class WebGLProgram {
 			u.boundStamp = -1;
 			let unit;
 			if (!isCustom && (TEXTURE_UNITS[name] !== undefined || TEXTURE_UNITS[name + '0'] !== undefined)) {
-				unit = u.size > 1 ? TEXTURE_UNITS[name + '0'] : TEXTURE_UNITS[name];
+				// a sampler array of size 1 (one shadow-casting light) is still an array: it takes the '<name>0' slot
+				unit = TEXTURE_UNITS[name] !== undefined ? TEXTURE_UNITS[name] : TEXTURE_UNITS[name + '0'];
 			} else {
 				unit = nextUnit; nextUnit += u.size;
 			}
@@ -220,8 +221,8 @@ class WebGLPrograms {
 			objectTexture: variant.objectTexture === true || variant.multiDraw === true,
 			multiDraw: variant.multiDraw === true,
 			flatShading: isLit && material.flatShading === true,
-			doubleSided: material.side === DoubleSide,
-			flipSided: material.side === BackSide,
+			doubleSided: variant.side === DoubleSide,
+			flipSided: variant.side === BackSide,
 			fog, fogExp2: fog && scene.fog.isFogExp2 === true,
 			alphaTest: material.alphaTest > 0,
 			sizeAttenuation: (materialType === MATERIAL_POINTS || materialType === MATERIAL_SPRITE) && material.sizeAttenuation === true,
