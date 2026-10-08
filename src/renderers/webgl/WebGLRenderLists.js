@@ -146,20 +146,23 @@ class WebGLRenderList {
 		this.opaqueSorted = null;      // Uint32Array of item indices after finish()
 		this.transparentSorted = null;
 		this.minDepth = Infinity; this.maxDepth = -Infinity;
+		// view-space depth of the item about to be pushed. Passed through a typed array instead of an
+		// argument: a double crossing a non-inlined call boundary is boxed into a HeapNumber per call.
+		this.zScratch = new Float64Array(1);
 	}
 	init() {
 		this.count = 0; this.opaqueCount = 0; this.transparentCount = 0;
 		this.opaque.n = 0; this.transparent.n = 0;
 		this.minDepth = Infinity; this.maxDepth = -Infinity;
 	}
-	_getItem(object, geometry, material, group, z, variant) {
+	_getItem(object, geometry, material, group, variant) {
 		let item = this.items[this.count];
 		if (item === undefined) {
-			item = { id: object.id, object, geometry, material, program: null, group, z, renderOrder: object.renderOrder, materialRid: 0, geometryRid: 0, variant, mdRecord: null };
+			item = { id: object.id, object, geometry, material, program: null, group, renderOrder: object.renderOrder, materialRid: 0, geometryRid: 0, variant, mdRecord: null };
 			this.items[this.count] = item;
 		} else {
 			item.id = object.id; item.object = object; item.geometry = geometry; item.material = material; item.program = null;
-			item.group = group; item.z = z; item.renderOrder = object.renderOrder; item.variant = variant;
+			item.group = group; item.renderOrder = object.renderOrder; item.variant = variant;
 		}
 		this.count++;
 		return item;
@@ -167,9 +170,9 @@ class WebGLRenderList {
 	/**
 	 * Adds an item. `item.program` is resolved later by the renderer (once the frame's lights are known).
 	 */
-	push(object, geometry, material, group, z, materialRid, geometryRid, variant) {
+	push(object, geometry, material, group, materialRid, geometryRid, variant) {
 		if (this.count >= INDEX_RANGE) return; // list full; ignore extra items rather than corrupt keys
-		const item = this._getItem(object, geometry, material, group, z, variant);
+		const item = this._getItem(object, geometry, material, group, variant);
 		item.materialRid = materialRid; item.geometryRid = geometryRid;
 		const index = this.count - 1;
 		if (material.transparent === true) {
@@ -178,6 +181,7 @@ class WebGLRenderList {
 				slot.grow();
 				const nd = new Float32Array(this.transparentDepth.length * 2); nd.set(this.transparentDepth); this.transparentDepth = nd;
 			}
+			const z = this.zScratch[0];
 			this.transparentDepth[slot.n] = z; // depth key resolved in finish()
 			slot.ids[slot.n++] = index;
 			if (z < this.minDepth) this.minDepth = z;

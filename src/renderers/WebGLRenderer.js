@@ -108,7 +108,13 @@ class WebGLRenderer {
 		this._renderCallDepth = 0;
 		this._frameId = 0;
 		this._envVersion = 0;
-		this._lastEnvKey = '';
+		// env version = lights epoch * 65536 + interned id of the (tone mapping, colour space, shadows, fog)
+		// state, so switching between render targets and the screen revisits the same version instead
+		// of minting a new one, and no string key is built per frame
+		this._lightsEpoch = 0;
+		this._envKeyId = -1;
+		this._envKeyIds = new Map();
+		this._colorSpaceIds = new Map([['srgb-linear', 0], ['srgb', 1]]);
 		this._lastLightsVersion = -1;
 		this._samplerStamp = 0;
 		this._programCounter = 0;
@@ -161,6 +167,10 @@ class WebGLRenderer {
 
 		// uniform buffers
 		this._frameData = new Float32Array(FRAME_BLOCK_SIZE / 4);
+		// copies of what the GPU buffers currently hold: an unchanged block is not re-uploaded
+		this._frameUploaded = new Float32Array(FRAME_BLOCK_SIZE / 4);
+		this._lightsUploaded = new Float32Array(LIGHTS_BLOCK_SIZE / 4);
+		this._blocksValid = false;
 		this._frameBuffer = gl.createBuffer();
 		gl.bindBuffer(gl.UNIFORM_BUFFER, this._frameBuffer);
 		gl.bufferData(gl.UNIFORM_BUFFER, FRAME_BLOCK_SIZE, gl.DYNAMIC_DRAW);
@@ -184,10 +194,9 @@ class WebGLRenderer {
 		this._onMaterialDispose = this._onMaterialDispose.bind(this);
 
 		// render-order ranking (renderOrder -> 0..63), rebuilt per frame
-		this._renderOrders = new Map();
 		this._renderOrderList = [];
 		this._lastNotedRenderOrder = NaN;
-		this._rankOfRenderOrder = (ro) => { if (this._renderOrderList.length <= 1) return 0; const r = this._renderOrders.get(ro); return r === undefined ? 63 : r; };
+		this._rankOfRenderOrder = (ro) => this._rankOf(ro);
 
 		// draw commands
 		this._cmdCapacity = 1024;
@@ -284,7 +293,7 @@ class WebGLRenderer {
 		this.setAnimationLoop(null);
 	}
 	_onContextLost(event) { event.preventDefault(); this._isContextLost = true; }
-	_onContextRestore() { this._isContextLost = false; this.state.reset(); this.programs.dispose(); this._materialProperties = new WeakMap(); }
+	_onContextRestore() { this._isContextLost = false; this._blocksValid = false; this.state.reset(); this.programs.dispose(); this._materialProperties = new WeakMap(); }
 	setAnimationLoop(callback) {
 		this._animationLoop = callback;
 		if (this._requestId !== null) { cancelAnimationFrame(this._requestId); this._requestId = null; }
@@ -376,7 +385,7 @@ class WebGLRenderer {
 		this._renderOrderReset();
 		this._projectObject(scene, camera, 0, this.sortObjects, list);
 		this.lights.end(this.shadowMap.enabled);
-		if (this.lights.version !== this._lastLightsVersion) { this._lastLightsVersion = this.lights.version; this._envVersion++; }
+		if (this.lights.version !== this._lastLightsVersion) { this._lastLightsVersion = this.lights.version; this._lightsEpoch++; this._envVersion = this._lightsEpoch * 65536 + this._envKeyId; }
 		this._resolvePrograms(list, scene);
 
 		if (this.info.autoReset === true && this._renderCallDepth === 1) { this.info.reset(); this._traceDraws = 0; }
@@ -386,10 +395,14 @@ class WebGLRenderer {
 
 		// per-frame blocks (light data is filled after the shadow pass so shadow matrices are current)
 		this.lights.fill();
-		gl.bindBuffer(gl.UNIFORM_BUFFER, this._lightsBuffer);
-		gl.bufferSubData(gl.UNIFORM_BUFFER, 0, this.lights.data);
-		this.state.currentUniformBuffer = this._lightsBuffer;
+		if (!this._blocksValid || !sameFloats(this.lights.data, this._lightsUploaded)) {
+			this._lightsUploaded.set(this.lights.data);
+			gl.bindBuffer(gl.UNIFORM_BUFFER, this._lightsBuffer);
+			gl.bufferSubData(gl.UNIFORM_BUFFER, 0, this.lights.data);
+			this.state.currentUniformBuffer = this._lightsBuffer;
+		}
 		this._uploadFrameBlock(camera, scene);
+		this._blocksValid = true;
 		this.shadowMap.bindShadowMaps(this.lights);
 
 		list.finish(this.sortObjects, this._rankOfRenderOrder);
@@ -432,17 +445,28 @@ class WebGLRenderer {
 		if (this._renderCallDepth === 0) this.info.render.frame++;
 	}
 
-	_renderOrderReset() { this._renderOrders.clear(); this._renderOrderList.length = 0; this._lastNotedRenderOrder = NaN; }
+	_renderOrderReset() { this._renderOrderList.length = 0; this._lastNotedRenderOrder = NaN; }
+	/** Index of `ro` in the sorted distinct-renderOrder list, or the insertion point (binary search). */
+	_renderOrderIndex(ro) {
+		const l = this._renderOrderList;
+		let lo = 0, hi = l.length;
+		while (lo < hi) { const mid = (lo + hi) >> 1; if (l[mid] < ro) lo = mid + 1; else hi = mid; }
+		return lo;
+	}
 	_noteRenderOrder(ro) {
 		if (ro === this._lastNotedRenderOrder) return;
 		this._lastNotedRenderOrder = ro;
-		if (!this._renderOrders.has(ro)) {
-			const l = this._renderOrderList;
-			l.push(ro);
-			l.sort((a, b) => a - b);
-			this._renderOrders.clear();
-			for (let i = 0; i < l.length; i++) this._renderOrders.set(l[i], Math.min(i, 63));
-		}
+		const l = this._renderOrderList, at = this._renderOrderIndex(ro);
+		if (at < l.length && l[at] === ro) return;
+		l.push(ro); // sorted insertion by hand: no comparator closure, no splice result array
+		for (let i = l.length - 1; i > at; i--) l[i] = l[i - 1];
+		l[at] = ro;
+	}
+	_rankOf(ro) {
+		const l = this._renderOrderList;
+		if (l.length <= 1) return 0;
+		const at = this._renderOrderIndex(ro);
+		return at < l.length && l[at] === ro ? (at < 63 ? at : 63) : 63;
 	}
 
 	/** Detects changes in frame-wide shader-affecting state and bumps the env version. */
@@ -450,8 +474,12 @@ class WebGLRenderer {
 		const target = this._currentRenderTarget;
 		const cs = target === null ? this._outputColorSpace : target.texture.colorSpace;
 		const fog = scene.fog === null ? 0 : (scene.fog.isFogExp2 ? 2 : 1);
-		const key = this.toneMapping + '|' + cs + '|' + (this.shadowMap.enabled ? 1 : 0) + '|' + fog;
-		if (key !== this._lastEnvKey) { this._lastEnvKey = key; this._envVersion++; }
+		let csId = this._colorSpaceIds.get(cs);
+		if (csId === undefined) { csId = this._colorSpaceIds.size; this._colorSpaceIds.set(cs, csId); }
+		const key = ((this.toneMapping * 64 + csId) * 2 + (this.shadowMap.enabled ? 1 : 0)) * 3 + fog;
+		let id = this._envKeyIds.get(key);
+		if (id === undefined) { id = this._envKeyIds.size % 65536; this._envKeyIds.set(key, id); }
+		if (id !== this._envKeyId) { this._envKeyId = id; this._envVersion = this._lightsEpoch * 65536 + id; }
 	}
 
 	_uploadFrameBlock(camera, scene) {
@@ -473,6 +501,8 @@ class WebGLRenderer {
 		d[59] = this.toneMappingExposure;
 		const v = this._currentViewport;
 		d[60] = v.x; d[61] = v.y; d[62] = v.z; d[63] = v.w;
+		if (this._blocksValid && sameFloats(d, this._frameUploaded)) return;
+		this._frameUploaded.set(d);
 		gl.bindBuffer(gl.UNIFORM_BUFFER, this._frameBuffer);
 		gl.bufferSubData(gl.UNIFORM_BUFFER, 0, d);
 		this.state.currentUniformBuffer = this._frameBuffer;
@@ -522,8 +552,8 @@ class WebGLRenderer {
 					const material = object.material;
 					if (material.visible) {
 						const we = object.matrixWorld.elements, ve = camera.matrixWorldInverse.elements;
-						const z = -(ve[2] * we[12] + ve[6] * we[13] + ve[10] * we[14] + ve[14]);
-						this._pushItem(list, object, object.geometry, material, null, z, false);
+						list.zScratch[0] = -(ve[2] * we[12] + ve[6] * we[13] + ve[10] * we[14] + ve[14]);
+						this._pushItem(list, object, object.geometry, material, null, false);
 					}
 				}
 			} else if (object.isMesh || object.isLine || object.isPoints) {
@@ -539,15 +569,16 @@ class WebGLRenderer {
 						else { cx = s[o + 28]; cy = s[o + 29]; cz = s[o + 30]; }
 						z = -(ve[2] * cx + ve[6] * cy + ve[10] * cz + ve[14]);
 					}
+					list.zScratch[0] = z;
 					if (Array.isArray(material)) {
 						const groups = geometry.groups;
 						for (let i = 0, l = groups.length; i < l; i++) {
 							const group = groups[i];
 							const groupMaterial = material[group.materialIndex];
-							if (groupMaterial && groupMaterial.visible) this._pushItem(list, object, geometry, groupMaterial, group, z, false);
+							if (groupMaterial && groupMaterial.visible) this._pushItem(list, object, geometry, groupMaterial, group, false);
 						}
 					} else if (material.visible) {
-						this._pushItem(list, object, geometry, material, null, z, false);
+						this._pushItem(list, object, geometry, material, null, false);
 					}
 				}
 			}
@@ -556,7 +587,7 @@ class WebGLRenderer {
 		for (let i = 0, l = children.length; i < l; i++) this._projectObject(children[i], camera, groupOrder, sortObjects, list);
 	}
 
-	_pushItem(list, object, geometry, material, group, z, shadowPass) {
+	_pushItem(list, object, geometry, material, group, shadowPass) {
 		if (shadowPass === false) {
 			const override = this._currentScene !== null ? this._currentScene.overrideMaterial : null;
 			if (override !== null && override !== undefined && material.allowOverride === true) material = override;
@@ -567,7 +598,7 @@ class WebGLRenderer {
 		const frame = this._frameId;
 		if (material._frameStamp !== frame) { material._frameStamp = frame; material._frameRid = this._materialCounter++; }
 		if (geometry._frameStamp !== frame) { geometry._frameStamp = frame; geometry._frameRid = this._geometryCounter++; }
-		list.push(object, geometry, material, group, z, material._frameRid, geometry._frameRid, variant);
+		list.push(object, geometry, material, group, material._frameRid, geometry._frameRid, variant);
 	}
 
 	/** Resolve the program of every item in the list. Runs after the frame's lights are collected. */
@@ -616,7 +647,7 @@ class WebGLRenderer {
 		material.removeEventListener('dispose', this._onMaterialDispose);
 		const props = this._materialProperties.get(material);
 		if (props !== undefined) {
-			for (let i = 0; i < props.programs.length; i++) { const e = props.programs[i]; if (e) this.programs.releaseProgram(e.program); }
+			for (let i = 0; i < props.programs.length; i++) { const e = props.programs[i]; if (e) { this.programs.releaseProgram(e.program); if (e.altProgram !== null) this.programs.releaseProgram(e.altProgram); } }
 			if (props.blockSlot >= 0) this._materialFreeSlots.push(props.blockSlot);
 		}
 		this._materialProperties.delete(material);
@@ -631,7 +662,16 @@ class WebGLRenderer {
 	}
 	_getProgramSlow(props, material, object, scene, variant) {
 		let entry = props.programs[variant];
-		if (entry !== undefined && entry.materialVersion === material.version && entry.envVersion === this._envVersion) return entry.program;
+		if (entry !== undefined) {
+			if (entry.materialVersion === material.version && entry.envVersion === this._envVersion) return entry.program;
+			// the previous environment (typically the other of render target / screen) is kept as a second slot
+			if (entry.altProgram !== null && entry.altMaterialVersion === material.version && entry.altEnvVersion === this._envVersion) {
+				const p = entry.program, mv = entry.materialVersion, ev = entry.envVersion;
+				entry.program = entry.altProgram; entry.materialVersion = entry.altMaterialVersion; entry.envVersion = entry.altEnvVersion;
+				entry.altProgram = p; entry.altMaterialVersion = mv; entry.altEnvVersion = ev;
+				return entry.program;
+			}
+		}
 		const vflags = {
 			instancing: (variant & V_INSTANCING) !== 0, instancingColor: (variant & V_INSTANCING_COLOR) !== 0,
 			receiveShadow: (variant & V_RECEIVE_SHADOW) !== 0, shadowPass: (variant & V_SHADOW_PASS) !== 0,
@@ -643,8 +683,14 @@ class WebGLRenderer {
 			return entry.program;
 		}
 		const program = this.programs.acquireProgram(parameters, material);
-		if (entry !== undefined) this.programs.releaseProgram(entry.program);
-		entry = { program, materialVersion: material.version, envVersion: this._envVersion };
+		if (entry !== undefined) {
+			// current program becomes the alternate; the one it displaces is released
+			if (entry.altProgram !== null) this.programs.releaseProgram(entry.altProgram);
+			entry.altProgram = entry.program; entry.altMaterialVersion = entry.materialVersion; entry.altEnvVersion = entry.envVersion;
+			entry.program = program; entry.materialVersion = material.version; entry.envVersion = this._envVersion;
+		} else {
+			entry = { program, materialVersion: material.version, envVersion: this._envVersion, altProgram: null, altMaterialVersion: -1, altEnvVersion: -1 };
+		}
 		props.programs[variant] = entry;
 		material._programDirty = false;
 		return program;
@@ -1110,6 +1156,37 @@ function shadowSideOf(material) {
 const MAP_KEYS = ['map', 'alphaMap', 'normalMap', 'emissiveMap', 'roughnessMap', 'metalnessMap', 'aoMap', 'specularMap'];
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
+// WebGL2 uniform type enums as literals: reading them off the context costs a getter call per switch case
+const U_FLOAT = 0x1406;
+const U_INT = 0x1404;
+const U_BOOL = 0x8B56;
+const U_UNSIGNED_INT = 0x1405;
+const U_FLOAT_VEC2 = 0x8B50;
+const U_FLOAT_VEC3 = 0x8B51;
+const U_FLOAT_VEC4 = 0x8B52;
+const U_INT_VEC2 = 0x8B53;
+const U_INT_VEC3 = 0x8B54;
+const U_INT_VEC4 = 0x8B55;
+const U_BOOL_VEC2 = 0x8B57;
+const U_BOOL_VEC3 = 0x8B58;
+const U_BOOL_VEC4 = 0x8B59;
+const U_FLOAT_MAT2 = 0x8B5A;
+const U_FLOAT_MAT3 = 0x8B5B;
+const U_FLOAT_MAT4 = 0x8B5C;
+const U_SAMPLER_2D = 0x8B5E;
+const U_SAMPLER_3D = 0x8B5F;
+const U_SAMPLER_CUBE = 0x8B60;
+const U_SAMPLER_2D_SHADOW = 0x8B62;
+const U_SAMPLER_2D_ARRAY = 0x8DC1;
+const U_SAMPLER_2D_ARRAY_SHADOW = 0x8DC4;
+const U_SAMPLER_CUBE_SHADOW = 0x8DC5;
+const U_INT_SAMPLER_2D = 0x8DCA;
+const U_INT_SAMPLER_3D = 0x8DCB;
+const U_INT_SAMPLER_2D_ARRAY = 0x8DCF;
+const U_UNSIGNED_INT_SAMPLER_2D = 0x8DD2;
+const U_UNSIGNED_INT_SAMPLER_3D = 0x8DD3;
+const U_UNSIGNED_INT_SAMPLER_2D_ARRAY = 0x8DD7;
+
 function isLeafValue(v) {
 	return v.isVector2 || v.isVector3 || v.isVector4 || v.isColor || v.isMatrix3 || v.isMatrix4 || v.isQuaternion || v.isTexture || ArrayBuffer.isView(v);
 }
@@ -1130,12 +1207,18 @@ function bindTextureUniform(renderer, u, value, unit) {
 	if (!value || !value.isTexture) return;
 	// never sample a texture attached to the framebuffer being rendered to (feedback loop)
 	if (value.renderTarget !== null && value.renderTarget !== undefined && value.renderTarget === renderer._currentRenderTarget) { renderer.textures.bindEmpty(u, unit); return; }
-	if (u.type === gl.SAMPLER_3D) renderer.textures.setTexture3D(value, unit);
-	else if (u.type === gl.SAMPLER_2D_ARRAY) renderer.textures.setTexture2DArray(value, unit);
-	else if (u.type === gl.SAMPLER_CUBE || u.type === gl.SAMPLER_CUBE_SHADOW) renderer.textures.setTextureCube(value, unit);
+	if (u.type === U_SAMPLER_3D) renderer.textures.setTexture3D(value, unit);
+	else if (u.type === U_SAMPLER_2D_ARRAY) renderer.textures.setTexture2DArray(value, unit);
+	else if (u.type === U_SAMPLER_CUBE || u.type === U_SAMPLER_CUBE_SHADOW) renderer.textures.setTextureCube(value, unit);
 	else renderer.textures.setTexture2D(value, unit);
 }
 /** True if `u.cache` already holds these components; otherwise stores them. */
+/** Bitwise-equal compare of two same-length float images (NaN-safe: a NaN never equals, so it just re-uploads). */
+function sameFloats(a, b) {
+	for (let i = 0, n = a.length; i < n; i++) if (a[i] !== b[i]) return false;
+	return true;
+}
+
 function cacheVec(u, a, b, c, d) {
 	let k = u.cache;
 	if (k === undefined) { k = u.cache = new Float64Array(4); k[0] = NaN; }
@@ -1175,36 +1258,36 @@ function setUniformValueImpl(gl, renderer, u, value) {
 	const loc = u.location;
 	if (value === null || value === undefined) return;
 	switch (u.type) {
-		case gl.FLOAT:
+		case U_FLOAT:
 			if (u.size > 1 || Array.isArray(value) || ArrayBuffer.isView(value)) { if (!cacheArray(u, value, value.length)) { traceCounter++; gl.uniform1fv(loc, value); } }
 			else if (u.cache !== value) { u.cache = value; { traceCounter++; gl.uniform1f(loc, value); } }
 			break;
-		case gl.INT: case gl.BOOL:
+		case U_INT: case U_BOOL:
 			if (u.size > 1 || Array.isArray(value) || ArrayBuffer.isView(value)) { if (!cacheArray(u, value, value.length)) { traceCounter++; gl.uniform1iv(loc, value); } }
 			else { const v = value ? (typeof value === 'boolean' ? 1 : value) : 0; if (u.cache !== v) { u.cache = v; { traceCounter++; gl.uniform1i(loc, v); } } }
 			break;
-		case gl.UNSIGNED_INT: if (u.size > 1) { traceCounter++; gl.uniform1uiv(loc, value); } else if (u.cache !== value) { u.cache = value; { traceCounter++; gl.uniform1ui(loc, value); } } break;
-		case gl.FLOAT_VEC2:
+		case U_UNSIGNED_INT: if (u.size > 1) { traceCounter++; gl.uniform1uiv(loc, value); } else if (u.cache !== value) { u.cache = value; { traceCounter++; gl.uniform1ui(loc, value); } } break;
+		case U_FLOAT_VEC2:
 			if (value.isVector2) { if (!cacheVec(u, value.x, value.y, 0, 0)) { traceCounter++; gl.uniform2f(loc, value.x, value.y); } }
 			else { const a = flattenArray(value, 2); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniform2fv(loc, a); } }
 			break;
-		case gl.FLOAT_VEC3:
+		case U_FLOAT_VEC3:
 			if (value.isVector3) { if (!cacheVec(u, value.x, value.y, value.z, 0)) { traceCounter++; gl.uniform3f(loc, value.x, value.y, value.z); } }
 			else if (value.isColor) { if (!cacheVec(u, value.r, value.g, value.b, 0)) { traceCounter++; gl.uniform3f(loc, value.r, value.g, value.b); } }
 			else { const a = flattenArray(value, 3); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniform3fv(loc, a); } }
 			break;
-		case gl.FLOAT_VEC4:
+		case U_FLOAT_VEC4:
 			if (value.isVector4 || value.isQuaternion) { if (!cacheVec(u, value.x, value.y, value.z, value.w)) { traceCounter++; gl.uniform4f(loc, value.x, value.y, value.z, value.w); } }
 			else { const a = flattenArray(value, 4); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniform4fv(loc, a); } }
 			break;
-		case gl.INT_VEC2: case gl.BOOL_VEC2: if (value.isVector2) { traceCounter++; gl.uniform2i(loc, value.x, value.y); } else { traceCounter++; gl.uniform2iv(loc, value); } break;
-		case gl.INT_VEC3: case gl.BOOL_VEC3: if (value.isVector3) { traceCounter++; gl.uniform3i(loc, value.x, value.y, value.z); } else { traceCounter++; gl.uniform3iv(loc, value); } break;
-		case gl.INT_VEC4: case gl.BOOL_VEC4: if (value.isVector4) { traceCounter++; gl.uniform4i(loc, value.x, value.y, value.z, value.w); } else { traceCounter++; gl.uniform4iv(loc, value); } break;
-		case gl.FLOAT_MAT2: { const a = value.elements || flattenArray(value, 4); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniformMatrix2fv(loc, false, a); } break; }
-		case gl.FLOAT_MAT3: { const a = value.elements || flattenArray(value, 9); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniformMatrix3fv(loc, false, a); } break; }
-		case gl.FLOAT_MAT4: { const a = value.elements || flattenArray(value, 16); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniformMatrix4fv(loc, false, a); } break; }
-		case gl.SAMPLER_2D: case gl.SAMPLER_2D_SHADOW: case gl.SAMPLER_3D: case gl.SAMPLER_2D_ARRAY: case gl.SAMPLER_CUBE: case gl.SAMPLER_CUBE_SHADOW:
-		case gl.INT_SAMPLER_2D: case gl.UNSIGNED_INT_SAMPLER_2D: case gl.INT_SAMPLER_3D: case gl.UNSIGNED_INT_SAMPLER_3D: case gl.INT_SAMPLER_2D_ARRAY: case gl.UNSIGNED_INT_SAMPLER_2D_ARRAY:
+		case U_INT_VEC2: case U_BOOL_VEC2: if (value.isVector2) { traceCounter++; gl.uniform2i(loc, value.x, value.y); } else { traceCounter++; gl.uniform2iv(loc, value); } break;
+		case U_INT_VEC3: case U_BOOL_VEC3: if (value.isVector3) { traceCounter++; gl.uniform3i(loc, value.x, value.y, value.z); } else { traceCounter++; gl.uniform3iv(loc, value); } break;
+		case U_INT_VEC4: case U_BOOL_VEC4: if (value.isVector4) { traceCounter++; gl.uniform4i(loc, value.x, value.y, value.z, value.w); } else { traceCounter++; gl.uniform4iv(loc, value); } break;
+		case U_FLOAT_MAT2: { const a = value.elements || flattenArray(value, 4); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniformMatrix2fv(loc, false, a); } break; }
+		case U_FLOAT_MAT3: { const a = value.elements || flattenArray(value, 9); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniformMatrix3fv(loc, false, a); } break; }
+		case U_FLOAT_MAT4: { const a = value.elements || flattenArray(value, 16); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniformMatrix4fv(loc, false, a); } break; }
+		case U_SAMPLER_2D: case U_SAMPLER_2D_SHADOW: case U_SAMPLER_3D: case U_SAMPLER_2D_ARRAY: case U_SAMPLER_CUBE: case U_SAMPLER_CUBE_SHADOW:
+		case U_INT_SAMPLER_2D: case U_UNSIGNED_INT_SAMPLER_2D: case U_INT_SAMPLER_3D: case U_UNSIGNED_INT_SAMPLER_3D: case U_INT_SAMPLER_2D_ARRAY: case U_UNSIGNED_INT_SAMPLER_2D_ARRAY:
 			// units were assigned at link time (u.unit .. u.unit + size - 1); bind textures, placeholders for gaps
 			u.boundStamp = renderer._samplerStamp;
 			if (Array.isArray(value)) {

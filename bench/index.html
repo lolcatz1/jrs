@@ -28,7 +28,7 @@ window.runScenario = async function (libName, scenarioName, opts = {}) {
 	document.body.appendChild(canvas);
 	const renderer = new T.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
 	renderer.setSize(320, 240, false);
-	if (scenarioName === 'shadows') renderer.shadowMap.enabled = true;
+	if (scenarioName.startsWith('shadows')) renderer.shadowMap.enabled = true;
 	if (scenarioName.startsWith('shader-client')) { renderer.dispose(); canvas.remove(); return runScenarioStencil(T, libName, scenarioName, sc, n, frames, warmup, opts); }
 	const t0 = performance.now();
 	const { scene, camera, update, warm } = sc.build(T, n);
@@ -142,7 +142,7 @@ window.compareScenario = async function (scenarioName, n) {
 		const canvas = document.createElement('canvas'); canvas.width = 320; canvas.height = 240;
 		const renderer = new T.WebGLRenderer({ canvas, antialias: false, preserveDrawingBuffer: true, stencil: true });
 		renderer.setSize(320, 240, false);
-		if (scenarioName === 'shadows') renderer.shadowMap.enabled = true;
+		if (scenarioName.startsWith('shadows')) renderer.shadowMap.enabled = true;
 		const { scene, camera, update, warm, frame } = sc.build(T, n || sc.n);
 		if (warm) warm(renderer);
 		if (update) update(0);
@@ -174,7 +174,7 @@ window.captureScenario = async function (libName, scenarioName, opts = {}) {
 	const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height; document.body.appendChild(canvas);
 	const renderer = new T.WebGLRenderer({ canvas, antialias: false, preserveDrawingBuffer: true, stencil: true });
 	renderer.setSize(width, height, false);
-	if (scenarioName === 'shadows') renderer.shadowMap.enabled = true;
+	if (scenarioName.startsWith('shadows')) renderer.shadowMap.enabled = true;
 	const { scene, camera, update, warm, frame } = sc.build(T, n);
 	camera.aspect = width / height; camera.updateProjectionMatrix();
 	if (warm) warm(renderer);

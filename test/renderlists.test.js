@@ -12,7 +12,8 @@ const opaqueMat = { transparent: false }, glassMat = { transparent: true };
 function frame(list, specs, rankOf) {
 	list.init();
 	specs.forEach((s, i) => {
-		list.push({ id: i, renderOrder: s.ro }, s.indexed ? geoIndexed : geoPlain, s.transparent ? glassMat : opaqueMat, null, s.z, s.mat, s.geo, 0);
+		list.zScratch[0] = s.z;
+		list.push({ id: i, renderOrder: s.ro }, s.indexed ? geoIndexed : geoPlain, s.transparent ? glassMat : opaqueMat, null, s.mat, s.geo, 0);
 		list.items[i].program = { _frameRid: s.prog };
 	});
 	list.finish(true, rankOf);
