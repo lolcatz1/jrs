@@ -184,6 +184,51 @@
       }
     },
     {
+      "scenario": "transparent-sort",
+      "n": 10000,
+      "three": {
+        "lib": "three",
+        "scenario": "transparent-sort",
+        "n": 10000,
+        "frames": 60,
+        "buildMs": 95.4,
+        "avgMs": 29.198,
+        "medianMs": 27.5,
+        "bestMs": 24.7,
+        "worstMs": 54.7,
+        "wallAvgMs": 29.21,
+        "drawCalls": 10000,
+        "triangles": 120000,
+        "programs": 1,
+        "glCalls": null,
+        "glError": 0
+      },
+      "jrs": {
+        "lib": "jrs",
+        "scenario": "transparent-sort",
+        "n": 10000,
+        "frames": 60,
+        "buildMs": 96.9,
+        "avgMs": 11.962,
+        "medianMs": 12.1,
+        "bestMs": 8.5,
+        "worstMs": 20.1,
+        "wallAvgMs": 11.968,
+        "drawCalls": 1,
+        "triangles": 120000,
+        "programs": 2,
+        "glCalls": null,
+        "glError": 0
+      },
+      "speedup": 2.27,
+      "wallSpeedup": 2.44,
+      "compare": {
+        "meanAbsDiff": 0,
+        "maxDiff": 0,
+        "fractionOver32": 0
+      }
+    },
+    {
       "scenario": "hierarchy-animated",
       "n": 8000,
       "three": {
