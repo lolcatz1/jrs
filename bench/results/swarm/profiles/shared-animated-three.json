@@ -98,6 +98,12 @@
   "samples": 125015,
   "phases": [
    {
+    "phase": "app update",
+    "msPerFrame": 3.106,
+    "pct": 8.9,
+    "glMsPerFrame": 0
+   },
+   {
     "phase": "scene graph update",
     "msPerFrame": 3.238,
     "pct": 9.3,
@@ -123,15 +129,15 @@
    },
    {
     "phase": "per-draw state",
-    "msPerFrame": 13.367,
-    "pct": 38.3,
-    "glMsPerFrame": 3.915
+    "msPerFrame": 5.549,
+    "pct": 15.9,
+    "glMsPerFrame": 0
    },
    {
     "phase": "uniform upload",
-    "msPerFrame": 0.027,
-    "pct": 0.1,
-    "glMsPerFrame": 0
+    "msPerFrame": 7.906,
+    "pct": 22.7,
+    "glMsPerFrame": 3.915
    },
    {
     "phase": "texture bind",
@@ -153,8 +159,8 @@
    },
    {
     "phase": "frame setup/other renderer",
-    "msPerFrame": 6.48,
-    "pct": 18.6,
+    "msPerFrame": 6.42,
+    "pct": 18.4,
     "glMsPerFrame": 1.559
    },
    {
@@ -171,8 +177,8 @@
    },
    {
     "phase": "other JS",
-    "msPerFrame": 3.286,
-    "pct": 9.4,
+    "msPerFrame": 0.178,
+    "pct": 0.5,
     "glMsPerFrame": 0
    }
   ],
@@ -571,6 +577,83 @@
    {
     "key": "clear <- WebGLRenderer.clear [WebGLRenderer:17002]",
     "msPerFrame": 0.006,
+    "pct": 0
+   }
+  ],
+  "unclassifiedLeaves": [
+   {
+    "key": "setFromEuler [Quaternion:4191] -> app update",
+    "msPerFrame": 1.579,
+    "pct": 4.5
+   },
+   {
+    "key": "multiplyMatrices [Matrix4:10570] -> draw issue",
+    "msPerFrame": 1.303,
+    "pct": 3.7
+   },
+   {
+    "key": "set y [Euler:11418] -> app update",
+    "msPerFrame": 1.131,
+    "pct": 3.2
+   },
+   {
+    "key": "multiplyMatrices [Matrix4:10570] -> scene graph update",
+    "msPerFrame": 0.904,
+    "pct": 2.6
+   },
+   {
+    "key": "now [(native)] -> other JS",
+    "msPerFrame": 0.126,
+    "pct": 0.4
+   },
+   {
+    "key": "window.__runFrames [(native)] -> other JS",
+    "msPerFrame": 0.041,
+    "pct": 0.1
+   },
+   {
+    "key": "WebGLShadowMap.render [WebGLShadowMap:9143] -> frame setup/other renderer",
+    "msPerFrame": 0.01,
+    "pct": 0
+   },
+   {
+    "key": "(anonymous) [(native)] -> other JS",
+    "msPerFrame": 0.009,
+    "pct": 0
+   },
+   {
+    "key": "updateMatrixWorld [Camera:46703] -> frame setup/other renderer",
+    "msPerFrame": 0.005,
+    "pct": 0
+   },
+   {
+    "key": "multiplyMatrices [Matrix4:10570] -> draw-list build",
+    "msPerFrame": 0.005,
+    "pct": 0
+   },
+   {
+    "key": "setFromRotationMatrix [Quaternion:4289] -> frame setup/other renderer",
+    "msPerFrame": 0.003,
+    "pct": 0
+   },
+   {
+    "key": "shadowCastingAndTexturingLightsFirst [shadowCastingAndTexturingLightsFirst:8448] -> uniform upload",
+    "msPerFrame": 0.003,
+    "pct": 0
+   },
+   {
+    "key": "serializeAsCallArgument [(native)] -> other JS",
+    "msPerFrame": 0.002,
+    "pct": 0
+   },
+   {
+    "key": "decompose [Matrix4:11079] -> frame setup/other renderer",
+    "msPerFrame": 0.002,
+    "pct": 0
+   },
+   {
+    "key": "innerSerialize [(native)] -> other JS",
+    "msPerFrame": 0.001,
     "pct": 0
    }
   ]

@@ -190,6 +190,12 @@
   "samples": 200351,
   "phases": [
    {
+    "phase": "app update",
+    "msPerFrame": 3.172,
+    "pct": 22.6,
+    "glMsPerFrame": 0
+   },
+   {
     "phase": "scene graph update",
     "msPerFrame": 3.571,
     "pct": 25.5,
@@ -281,8 +287,8 @@
    },
    {
     "phase": "other JS",
-    "msPerFrame": 3.305,
-    "pct": 23.6,
+    "msPerFrame": 0.134,
+    "pct": 1,
     "glMsPerFrame": 0
    }
   ],
@@ -726,6 +732,48 @@
    {
     "key": "bindBuffer <- _uploadFrameBlock [WebGLRenderer.js:457]",
     "msPerFrame": 0.001,
+    "pct": 0
+   }
+  ],
+  "unclassifiedLeaves": [
+   {
+    "key": "multiplyMatrices [Matrix4.js:133] -> scene graph update",
+    "msPerFrame": 0.944,
+    "pct": 6.7
+   },
+   {
+    "key": "now [(native)] -> other JS",
+    "msPerFrame": 0.092,
+    "pct": 0.7
+   },
+   {
+    "key": "window.__runFrames [(native)] -> other JS",
+    "msPerFrame": 0.035,
+    "pct": 0.3
+   },
+   {
+    "key": "updateMatrixWorld [Camera.js:57] -> frame setup/other renderer",
+    "msPerFrame": 0.006,
+    "pct": 0
+   },
+   {
+    "key": "(anonymous) [(native)] -> other JS",
+    "msPerFrame": 0.004,
+    "pct": 0
+   },
+   {
+    "key": "convert [ColorManagement.js:15] -> frame setup/other renderer",
+    "msPerFrame": 0.002,
+    "pct": 0
+   },
+   {
+    "key": "multiplyScalar [Vector3.js:33] -> uniform upload",
+    "msPerFrame": 0.002,
+    "pct": 0
+   },
+   {
+    "key": "serialize [(native)] -> other JS",
+    "msPerFrame": 0.002,
     "pct": 0
    }
   ]

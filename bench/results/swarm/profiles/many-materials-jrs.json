@@ -166,6 +166,12 @@
   "samples": 84342,
   "phases": [
    {
+    "phase": "app update",
+    "msPerFrame": 0.007,
+    "pct": 0.1,
+    "glMsPerFrame": 0
+   },
+   {
     "phase": "scene graph update",
     "msPerFrame": 1.451,
     "pct": 17,
@@ -245,8 +251,8 @@
    },
    {
     "phase": "other JS",
-    "msPerFrame": 0.211,
-    "pct": 2.5,
+    "msPerFrame": 0.204,
+    "pct": 2.4,
     "glMsPerFrame": 0.002
    }
   ],
@@ -685,6 +691,43 @@
    {
     "key": "bindBuffer <- _uploadFrameBlock [WebGLRenderer.js:457]",
     "msPerFrame": 0.002,
+    "pct": 0
+   }
+  ],
+  "unclassifiedLeaves": [
+   {
+    "key": "now [(native)] -> other JS",
+    "msPerFrame": 0.162,
+    "pct": 1.9
+   },
+   {
+    "key": "window.__runFrames [(native)] -> other JS",
+    "msPerFrame": 0.026,
+    "pct": 0.3
+   },
+   {
+    "key": "(anonymous) [(native)] -> other JS",
+    "msPerFrame": 0.011,
+    "pct": 0.1
+   },
+   {
+    "key": "multiplyMatrices [Matrix4.js:133] -> frame setup/other renderer",
+    "msPerFrame": 0.004,
+    "pct": 0
+   },
+   {
+    "key": "_updateInverse [Camera.js:43] -> frame setup/other renderer",
+    "msPerFrame": 0.002,
+    "pct": 0
+   },
+   {
+    "key": "serializeAsCallArgument [(native)] -> other JS",
+    "msPerFrame": 0.002,
+    "pct": 0
+   },
+   {
+    "key": "serialize [(native)] -> other JS",
+    "msPerFrame": 0.001,
     "pct": 0
    }
   ]

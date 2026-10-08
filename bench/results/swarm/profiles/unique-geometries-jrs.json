@@ -166,6 +166,12 @@
   "samples": 1566,
   "phases": [
    {
+    "phase": "app update",
+    "msPerFrame": 0.009,
+    "pct": 0.4,
+    "glMsPerFrame": 0
+   },
+   {
     "phase": "scene graph update",
     "msPerFrame": 0.453,
     "pct": 20,
@@ -239,8 +245,8 @@
    },
    {
     "phase": "other JS",
-    "msPerFrame": 0.161,
-    "pct": 7.1,
+    "msPerFrame": 0.152,
+    "pct": 6.7,
     "glMsPerFrame": 0
    }
   ],
@@ -628,6 +634,28 @@
    },
    {
     "key": "clear <- render [WebGLRenderer.js:354]",
+    "msPerFrame": 0.002,
+    "pct": 0.1
+   }
+  ],
+  "unclassifiedLeaves": [
+   {
+    "key": "now [(native)] -> other JS",
+    "msPerFrame": 0.143,
+    "pct": 6.3
+   },
+   {
+    "key": "window.__runFrames [(native)] -> other JS",
+    "msPerFrame": 0.009,
+    "pct": 0.4
+   },
+   {
+    "key": "_updateInverse [Camera.js:43] -> frame setup/other renderer",
+    "msPerFrame": 0.004,
+    "pct": 0.2
+   },
+   {
+    "key": "onAfterRender [Object3D.js:116] -> frame setup/other renderer",
     "msPerFrame": 0.002,
     "pct": 0.1
    }

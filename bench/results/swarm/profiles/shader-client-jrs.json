@@ -184,6 +184,12 @@
   "samples": 85452,
   "phases": [
    {
+    "phase": "app update",
+    "msPerFrame": 0.026,
+    "pct": 0.6,
+    "glMsPerFrame": 0
+   },
+   {
     "phase": "scene graph update",
     "msPerFrame": 0.121,
     "pct": 2.7,
@@ -263,8 +269,8 @@
    },
    {
     "phase": "other JS",
-    "msPerFrame": 0.19,
-    "pct": 4.3,
+    "msPerFrame": 0.164,
+    "pct": 3.7,
     "glMsPerFrame": 0.002
    }
   ],
@@ -762,6 +768,33 @@
    },
    {
     "key": "finish <- (anonymous) [(native)]",
+    "msPerFrame": 0.002,
+    "pct": 0
+   }
+  ],
+  "unclassifiedLeaves": [
+   {
+    "key": "now [(native)] -> other JS",
+    "msPerFrame": 0.142,
+    "pct": 3.2
+   },
+   {
+    "key": "window.__runFrames [(native)] -> other JS",
+    "msPerFrame": 0.017,
+    "pct": 0.4
+   },
+   {
+    "key": "(anonymous) [(native)] -> other JS",
+    "msPerFrame": 0.002,
+    "pct": 0
+   },
+   {
+    "key": "innerSerialize [(native)] -> other JS",
+    "msPerFrame": 0.002,
+    "pct": 0
+   },
+   {
+    "key": "onAfterRender [Object3D.js:116] -> frame setup/other renderer",
     "msPerFrame": 0.002,
     "pct": 0
    }

@@ -126,6 +126,12 @@
   "samples": 115636,
   "phases": [
    {
+    "phase": "app update",
+    "msPerFrame": 0.006,
+    "pct": 0,
+    "glMsPerFrame": 0
+   },
+   {
     "phase": "scene graph update",
     "msPerFrame": 2.862,
     "pct": 10,
@@ -139,7 +145,7 @@
    },
    {
     "phase": "sort",
-    "msPerFrame": 0.55,
+    "msPerFrame": 0.551,
     "pct": 1.9,
     "glMsPerFrame": 0
    },
@@ -151,15 +157,15 @@
    },
    {
     "phase": "per-draw state",
-    "msPerFrame": 11.952,
-    "pct": 41.9,
-    "glMsPerFrame": 3.26
+    "msPerFrame": 5.112,
+    "pct": 17.9,
+    "glMsPerFrame": 0
    },
    {
     "phase": "uniform upload",
-    "msPerFrame": 0.034,
-    "pct": 0.1,
-    "glMsPerFrame": 0
+    "msPerFrame": 6.928,
+    "pct": 24.3,
+    "glMsPerFrame": 3.26
    },
    {
     "phase": "texture bind",
@@ -181,8 +187,8 @@
    },
    {
     "phase": "frame setup/other renderer",
-    "msPerFrame": 5.619,
-    "pct": 19.7,
+    "msPerFrame": 5.566,
+    "pct": 19.5,
     "glMsPerFrame": 1.528
    },
    {
@@ -199,7 +205,7 @@
    },
    {
     "phase": "other JS",
-    "msPerFrame": 0.176,
+    "msPerFrame": 0.167,
     "pct": 0.6,
     "glMsPerFrame": 0
    }
@@ -599,6 +605,83 @@
    {
     "key": "clear <- WebGLRenderer.clear [WebGLRenderer:17002]",
     "msPerFrame": 0.009,
+    "pct": 0
+   }
+  ],
+  "unclassifiedLeaves": [
+   {
+    "key": "multiplyMatrices [Matrix4:10570] -> draw issue",
+    "msPerFrame": 1.156,
+    "pct": 4.1
+   },
+   {
+    "key": "multiplyMatrices [Matrix4:10570] -> scene graph update",
+    "msPerFrame": 0.769,
+    "pct": 2.7
+   },
+   {
+    "key": "now [(native)] -> other JS",
+    "msPerFrame": 0.126,
+    "pct": 0.4
+   },
+   {
+    "key": "window.__runFrames [(native)] -> other JS",
+    "msPerFrame": 0.025,
+    "pct": 0.1
+   },
+   {
+    "key": "(anonymous) [(native)] -> other JS",
+    "msPerFrame": 0.015,
+    "pct": 0.1
+   },
+   {
+    "key": "updateMatrixWorld [Camera:46703] -> frame setup/other renderer",
+    "msPerFrame": 0.008,
+    "pct": 0
+   },
+   {
+    "key": "WebGLShadowMap.render [WebGLShadowMap:9143] -> frame setup/other renderer",
+    "msPerFrame": 0.006,
+    "pct": 0
+   },
+   {
+    "key": "multiplyMatrices [Matrix4:10570] -> draw-list build",
+    "msPerFrame": 0.006,
+    "pct": 0
+   },
+   {
+    "key": "copy [Color:14530] -> frame setup/other renderer",
+    "msPerFrame": 0.002,
+    "pct": 0
+   },
+   {
+    "key": "innerSerialize [(native)] -> other JS",
+    "msPerFrame": 0.002,
+    "pct": 0
+   },
+   {
+    "key": "convert [createColorManagement:6722] -> frame setup/other renderer",
+    "msPerFrame": 0.002,
+    "pct": 0
+   },
+   {
+    "key": "copy [Matrix4:10183] -> scene graph update",
+    "msPerFrame": 0.002,
+    "pct": 0
+   },
+   {
+    "key": "normalize [Plane:20813] -> project + cull",
+    "msPerFrame": 0.002,
+    "pct": 0
+   },
+   {
+    "key": "get alphaTest [Material:21547] -> uniform upload",
+    "msPerFrame": 0.002,
+    "pct": 0
+   },
+   {
+    "key": "copy [Matrix4:10183] -> frame setup/other renderer",
+    "msPerFrame": 0.002,
     "pct": 0
    }
   ]

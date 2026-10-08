@@ -176,7 +176,7 @@
   "phases": [
    {
     "phase": "app update",
-    "msPerFrame": 0.019,
+    "msPerFrame": 0.039,
     "pct": 0,
     "glMsPerFrame": 0
    },
@@ -194,7 +194,7 @@
    },
    {
     "phase": "sort",
-    "msPerFrame": 0.277,
+    "msPerFrame": 0.28,
     "pct": 0.2,
     "glMsPerFrame": 0
    },
@@ -212,7 +212,7 @@
    },
    {
     "phase": "uniform upload",
-    "msPerFrame": 1.021,
+    "msPerFrame": 1.024,
     "pct": 0.9,
     "glMsPerFrame": 0.66
    },
@@ -254,8 +254,8 @@
    },
    {
     "phase": "other JS",
-    "msPerFrame": 0.178,
-    "pct": 0.2,
+    "msPerFrame": 0.151,
+    "pct": 0.1,
     "glMsPerFrame": 0
    }
   ],
@@ -759,6 +759,83 @@
    {
     "key": "enable <- setBlending [WebGLState:10264]",
     "msPerFrame": 0.001,
+    "pct": 0
+   }
+  ],
+  "unclassifiedLeaves": [
+   {
+    "key": "multiplyMatrices [Matrix4:10570] -> draw issue",
+    "msPerFrame": 0.186,
+    "pct": 0.2
+   },
+   {
+    "key": "now [(native)] -> other JS",
+    "msPerFrame": 0.114,
+    "pct": 0.1
+   },
+   {
+    "key": "multiplyMatrices [Matrix4:10570] -> scene graph update",
+    "msPerFrame": 0.08,
+    "pct": 0.1
+   },
+   {
+    "key": "window.__runFrames [(native)] -> other JS",
+    "msPerFrame": 0.029,
+    "pct": 0
+   },
+   {
+    "key": "determinantAffine [Matrix4:10669] -> frame setup/other renderer",
+    "msPerFrame": 0.023,
+    "pct": 0
+   },
+   {
+    "key": "applyMatrix4 [Vector4:8516] -> project + cull",
+    "msPerFrame": 0.013,
+    "pct": 0
+   },
+   {
+    "key": "(anonymous) [(native)] -> other JS",
+    "msPerFrame": 0.008,
+    "pct": 0
+   },
+   {
+    "key": "decompose [Matrix4:11079] -> frame setup/other renderer",
+    "msPerFrame": 0.005,
+    "pct": 0
+   },
+   {
+    "key": "copy [Vector4:8343] -> frame setup/other renderer",
+    "msPerFrame": 0.005,
+    "pct": 0
+   },
+   {
+    "key": "convert [createColorManagement:6722] -> frame setup/other renderer",
+    "msPerFrame": 0.004,
+    "pct": 0
+   },
+   {
+    "key": "set [Vector3:4878] -> project + cull",
+    "msPerFrame": 0.003,
+    "pct": 0
+   },
+   {
+    "key": "get depthTexture [RenderTarget:9480] -> frame setup/other renderer",
+    "msPerFrame": 0.003,
+    "pct": 0
+   },
+   {
+    "key": "invert [Matrix4:10743] -> frame setup/other renderer",
+    "msPerFrame": 0.003,
+    "pct": 0
+   },
+   {
+    "key": "copy [Matrix4:10183] -> scene graph update",
+    "msPerFrame": 0.003,
+    "pct": 0
+   },
+   {
+    "key": "floor [Vector4:8850] -> frame setup/other renderer",
+    "msPerFrame": 0.003,
     "pct": 0
    }
   ]

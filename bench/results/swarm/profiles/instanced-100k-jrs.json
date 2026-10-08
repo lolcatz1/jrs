@@ -157,6 +157,12 @@
   "samples": 292,
   "phases": [
    {
+    "phase": "app update",
+    "msPerFrame": 0.011,
+    "pct": 3.1,
+    "glMsPerFrame": 0
+   },
+   {
     "phase": "project + cull",
     "msPerFrame": 0.008,
     "pct": 2.4,
@@ -176,8 +182,8 @@
    },
    {
     "phase": "other JS",
-    "msPerFrame": 0.303,
-    "pct": 86.6,
+    "msPerFrame": 0.293,
+    "pct": 83.6,
     "glMsPerFrame": 0
    }
   ],
@@ -320,6 +326,23 @@
    },
    {
     "key": "bufferSubData <- render [WebGLRenderer.js:354]",
+    "msPerFrame": 0.003,
+    "pct": 0.8
+   }
+  ],
+  "unclassifiedLeaves": [
+   {
+    "key": "now [(native)] -> other JS",
+    "msPerFrame": 0.283,
+    "pct": 80.8
+   },
+   {
+    "key": "window.__runFrames [(native)] -> other JS",
+    "msPerFrame": 0.01,
+    "pct": 2.7
+   },
+   {
+    "key": "get [WebGLRenderLists.js:112] -> frame setup/other renderer",
     "msPerFrame": 0.003,
     "pct": 0.8
    }

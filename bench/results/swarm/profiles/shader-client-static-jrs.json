@@ -227,7 +227,7 @@
   "phases": [
    {
     "phase": "app update",
-    "msPerFrame": 0.026,
+    "msPerFrame": 0.033,
     "pct": 0,
     "glMsPerFrame": 0
    },
@@ -305,7 +305,7 @@
    },
    {
     "phase": "other JS",
-    "msPerFrame": 0.119,
+    "msPerFrame": 0.112,
     "pct": 0.1,
     "glMsPerFrame": 0
    }
@@ -814,6 +814,48 @@
    },
    {
     "key": "clear <- render [WebGLRenderer.js:354]",
+    "msPerFrame": 0.003,
+    "pct": 0
+   }
+  ],
+  "unclassifiedLeaves": [
+   {
+    "key": "multiplyMatrices [Matrix4.js:133] -> draw issue",
+    "msPerFrame": 0.121,
+    "pct": 0.1
+   },
+   {
+    "key": "now [(native)] -> other JS",
+    "msPerFrame": 0.086,
+    "pct": 0.1
+   },
+   {
+    "key": "window.__runFrames [(native)] -> other JS",
+    "msPerFrame": 0.022,
+    "pct": 0
+   },
+   {
+    "key": "updateMatrixWorld [Camera.js:57] -> frame setup/other renderer",
+    "msPerFrame": 0.008,
+    "pct": 0
+   },
+   {
+    "key": "convert [ColorManagement.js:15] -> frame setup/other renderer",
+    "msPerFrame": 0.007,
+    "pct": 0
+   },
+   {
+    "key": "onAfterRender [Object3D.js:116] -> frame setup/other renderer",
+    "msPerFrame": 0.004,
+    "pct": 0
+   },
+   {
+    "key": "(anonymous) [(native)] -> other JS",
+    "msPerFrame": 0.004,
+    "pct": 0
+   },
+   {
+    "key": "set [Vector3.js:11] -> project + cull",
     "msPerFrame": 0.003,
     "pct": 0
    }

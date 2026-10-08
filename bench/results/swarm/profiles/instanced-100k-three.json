@@ -116,6 +116,12 @@
   "samples": 309,
   "phases": [
    {
+    "phase": "app update",
+    "msPerFrame": 0.006,
+    "pct": 2.3,
+    "glMsPerFrame": 0
+   },
+   {
     "phase": "project + cull",
     "msPerFrame": 0.005,
     "pct": 1.7,
@@ -123,14 +129,14 @@
    },
    {
     "phase": "per-draw state",
-    "msPerFrame": 0.016,
-    "pct": 5.8,
+    "msPerFrame": 0.013,
+    "pct": 4.7,
     "glMsPerFrame": 0
    },
    {
     "phase": "uniform upload",
-    "msPerFrame": 0.003,
-    "pct": 1.1,
+    "msPerFrame": 0.006,
+    "pct": 2.3,
     "glMsPerFrame": 0
    },
    {
@@ -153,8 +159,8 @@
    },
    {
     "phase": "other JS",
-    "msPerFrame": 0.222,
-    "pct": 79.5,
+    "msPerFrame": 0.216,
+    "pct": 77.1,
     "glMsPerFrame": 0
    }
   ],
@@ -394,6 +400,28 @@
     "key": "clear <- WebGLRenderer.clear [WebGLRenderer:17002]",
     "msPerFrame": 0.006,
     "pct": 2
+   }
+  ],
+  "unclassifiedLeaves": [
+   {
+    "key": "now [(native)] -> other JS",
+    "msPerFrame": 0.2,
+    "pct": 71.3
+   },
+   {
+    "key": "window.__runFrames [(native)] -> other JS",
+    "msPerFrame": 0.016,
+    "pct": 5.8
+   },
+   {
+    "key": "WebGLShadowMap.render [WebGLShadowMap:9143] -> frame setup/other renderer",
+    "msPerFrame": 0.007,
+    "pct": 2.4
+   },
+   {
+    "key": "copy [Matrix4:10183] -> frame setup/other renderer",
+    "msPerFrame": 0.003,
+    "pct": 1.2
    }
   ]
  },

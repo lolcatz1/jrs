@@ -108,6 +108,12 @@
   "samples": 83626,
   "phases": [
    {
+    "phase": "app update",
+    "msPerFrame": 0.002,
+    "pct": 0,
+    "glMsPerFrame": 0
+   },
+   {
     "phase": "scene graph update",
     "msPerFrame": 1.39,
     "pct": 6.6,
@@ -121,8 +127,8 @@
    },
    {
     "phase": "sort",
-    "msPerFrame": 1.418,
-    "pct": 6.7,
+    "msPerFrame": 1.44,
+    "pct": 6.9,
     "glMsPerFrame": 0
    },
    {
@@ -133,15 +139,15 @@
    },
    {
     "phase": "per-draw state",
-    "msPerFrame": 5.997,
-    "pct": 28.5,
-    "glMsPerFrame": 1.098
+    "msPerFrame": 3.707,
+    "pct": 17.6,
+    "glMsPerFrame": 0
    },
    {
     "phase": "uniform upload",
-    "msPerFrame": 0.686,
-    "pct": 3.3,
-    "glMsPerFrame": 0.049
+    "msPerFrame": 3.004,
+    "pct": 14.3,
+    "glMsPerFrame": 1.147
    },
    {
     "phase": "geometry bind",
@@ -157,8 +163,8 @@
    },
    {
     "phase": "frame setup/other renderer",
-    "msPerFrame": 4.575,
-    "pct": 21.8,
+    "msPerFrame": 4.553,
+    "pct": 21.7,
     "glMsPerFrame": 1.811
    },
    {
@@ -175,8 +181,8 @@
    },
    {
     "phase": "other JS",
-    "msPerFrame": 0.207,
-    "pct": 1,
+    "msPerFrame": 0.177,
+    "pct": 0.8,
     "glMsPerFrame": 0.002
    }
   ],
@@ -595,6 +601,68 @@
    {
     "key": "finish <- (anonymous) [(native)]",
     "msPerFrame": 0.002,
+    "pct": 0
+   }
+  ],
+  "unclassifiedLeaves": [
+   {
+    "key": "multiplyMatrices [Matrix4:10570] -> draw issue",
+    "msPerFrame": 1.993,
+    "pct": 9.5
+   },
+   {
+    "key": "multiplyMatrices [Matrix4:10570] -> scene graph update",
+    "msPerFrame": 0.353,
+    "pct": 1.7
+   },
+   {
+    "key": "now [(native)] -> other JS",
+    "msPerFrame": 0.133,
+    "pct": 0.6
+   },
+   {
+    "key": "applyMatrix4 [Vector4:8516] -> project + cull",
+    "msPerFrame": 0.107,
+    "pct": 0.5
+   },
+   {
+    "key": "window.__runFrames [(native)] -> other JS",
+    "msPerFrame": 0.03,
+    "pct": 0.1
+   },
+   {
+    "key": "(anonymous) [(native)] -> other JS",
+    "msPerFrame": 0.009,
+    "pct": 0
+   },
+   {
+    "key": "updateMatrixWorld [Camera:46703] -> frame setup/other renderer",
+    "msPerFrame": 0.006,
+    "pct": 0
+   },
+   {
+    "key": "WebGLShadowMap.render [WebGLShadowMap:9143] -> frame setup/other renderer",
+    "msPerFrame": 0.005,
+    "pct": 0
+   },
+   {
+    "key": "multiplyMatrices [Matrix4:10570] -> other JS",
+    "msPerFrame": 0.001,
+    "pct": 0
+   },
+   {
+    "key": "multiplyMatrices [Matrix4:10570] -> draw-list build",
+    "msPerFrame": 0.001,
+    "pct": 0
+   },
+   {
+    "key": "decompose [Matrix4:11079] -> frame setup/other renderer",
+    "msPerFrame": 0.001,
+    "pct": 0
+   },
+   {
+    "key": "isTypedArray [(native)] -> other JS",
+    "msPerFrame": 0.001,
     "pct": 0
    }
   ]

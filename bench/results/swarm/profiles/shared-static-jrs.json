@@ -157,6 +157,12 @@
   "samples": 5387,
   "phases": [
    {
+    "phase": "app update",
+    "msPerFrame": 0.02,
+    "pct": 0.2,
+    "glMsPerFrame": 0
+   },
+   {
     "phase": "scene graph update",
     "msPerFrame": 2.729,
     "pct": 33,
@@ -230,8 +236,8 @@
    },
    {
     "phase": "other JS",
-    "msPerFrame": 0.213,
-    "pct": 2.6,
+    "msPerFrame": 0.194,
+    "pct": 2.3,
     "glMsPerFrame": 0
    }
   ],
@@ -630,6 +636,38 @@
    {
     "key": "clear <- render [WebGLRenderer.js:354]",
     "msPerFrame": 0.003,
+    "pct": 0
+   }
+  ],
+  "unclassifiedLeaves": [
+   {
+    "key": "now [(native)] -> other JS",
+    "msPerFrame": 0.138,
+    "pct": 1.7
+   },
+   {
+    "key": "(anonymous) [(native)] -> other JS",
+    "msPerFrame": 0.034,
+    "pct": 0.4
+   },
+   {
+    "key": "window.__runFrames [(native)] -> other JS",
+    "msPerFrame": 0.022,
+    "pct": 0.3
+   },
+   {
+    "key": "setComponents [Plane.js:14] -> project + cull",
+    "msPerFrame": 0.002,
+    "pct": 0
+   },
+   {
+    "key": "get [WebGLRenderLists.js:112] -> frame setup/other renderer",
+    "msPerFrame": 0.002,
+    "pct": 0
+   },
+   {
+    "key": "multiplyMatrices [Matrix4.js:133] -> uniform upload",
+    "msPerFrame": 0.002,
     "pct": 0
    }
   ]

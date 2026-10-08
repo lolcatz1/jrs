@@ -117,6 +117,12 @@
   "samples": 100533,
   "phases": [
    {
+    "phase": "app update",
+    "msPerFrame": 0.07,
+    "pct": 0.2,
+    "glMsPerFrame": 0
+   },
+   {
     "phase": "scene graph update",
     "msPerFrame": 7.218,
     "pct": 17.8,
@@ -130,8 +136,8 @@
    },
    {
     "phase": "sort",
-    "msPerFrame": 3.263,
-    "pct": 8,
+    "msPerFrame": 3.297,
+    "pct": 8.1,
     "glMsPerFrame": 0
    },
    {
@@ -142,15 +148,15 @@
    },
    {
     "phase": "per-draw state",
-    "msPerFrame": 7.154,
-    "pct": 17.6,
-    "glMsPerFrame": 1.633
+    "msPerFrame": 3.891,
+    "pct": 9.6,
+    "glMsPerFrame": 0
    },
    {
     "phase": "uniform upload",
-    "msPerFrame": 0.014,
-    "pct": 0,
-    "glMsPerFrame": 0
+    "msPerFrame": 3.295,
+    "pct": 8.1,
+    "glMsPerFrame": 1.633
    },
    {
     "phase": "geometry bind",
@@ -166,7 +172,7 @@
    },
    {
     "phase": "frame setup/other renderer",
-    "msPerFrame": 4.88,
+    "msPerFrame": 4.867,
     "pct": 12,
     "glMsPerFrame": 1.427
    },
@@ -184,8 +190,8 @@
    },
    {
     "phase": "other JS",
-    "msPerFrame": 0.3,
-    "pct": 0.7,
+    "msPerFrame": 0.193,
+    "pct": 0.5,
     "glMsPerFrame": 0
    }
   ],
@@ -574,6 +580,83 @@
    {
     "key": "clear <- WebGLRenderer.clear [WebGLRenderer:17002]",
     "msPerFrame": 0.008,
+    "pct": 0
+   }
+  ],
+  "unclassifiedLeaves": [
+   {
+    "key": "multiplyMatrices [Matrix4:10570] -> draw issue",
+    "msPerFrame": 3.511,
+    "pct": 8.7
+   },
+   {
+    "key": "multiplyMatrices [Matrix4:10570] -> scene graph update",
+    "msPerFrame": 0.752,
+    "pct": 1.9
+   },
+   {
+    "key": "applyMatrix4 [Vector4:8516] -> project + cull",
+    "msPerFrame": 0.308,
+    "pct": 0.8
+   },
+   {
+    "key": "invert [Matrix3:6347] -> draw issue",
+    "msPerFrame": 0.269,
+    "pct": 0.7
+   },
+   {
+    "key": "now [(native)] -> other JS",
+    "msPerFrame": 0.138,
+    "pct": 0.3
+   },
+   {
+    "key": "setFromMatrix4 [Matrix3:6227] -> draw issue",
+    "msPerFrame": 0.108,
+    "pct": 0.3
+   },
+   {
+    "key": "set [Matrix3:6153] -> draw issue",
+    "msPerFrame": 0.063,
+    "pct": 0.2
+   },
+   {
+    "key": "window.__runFrames [(native)] -> other JS",
+    "msPerFrame": 0.04,
+    "pct": 0.1
+   },
+   {
+    "key": "setFromEuler [Quaternion:4191] -> app update",
+    "msPerFrame": 0.033,
+    "pct": 0.1
+   },
+   {
+    "key": "transpose [Matrix3:6386] -> draw issue",
+    "msPerFrame": 0.032,
+    "pct": 0.1
+   },
+   {
+    "key": "getNormalMatrix [Matrix3:6406] -> draw issue",
+    "msPerFrame": 0.018,
+    "pct": 0
+   },
+   {
+    "key": "set y [Euler:11418] -> app update",
+    "msPerFrame": 0.016,
+    "pct": 0
+   },
+   {
+    "key": "(anonymous) [(native)] -> other JS",
+    "msPerFrame": 0.009,
+    "pct": 0
+   },
+   {
+    "key": "multiplyMatrices [Matrix4:10570] -> frame setup/other renderer",
+    "msPerFrame": 0.008,
+    "pct": 0
+   },
+   {
+    "key": "WebGLShadowMap.render [WebGLShadowMap:9143] -> frame setup/other renderer",
+    "msPerFrame": 0.003,
     "pct": 0
    }
   ]

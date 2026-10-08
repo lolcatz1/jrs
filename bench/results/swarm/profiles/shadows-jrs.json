@@ -153,6 +153,12 @@
   "samples": 2364,
   "phases": [
    {
+    "phase": "app update",
+    "msPerFrame": 0.014,
+    "pct": 0.4,
+    "glMsPerFrame": 0
+   },
+   {
     "phase": "scene graph update",
     "msPerFrame": 0.647,
     "pct": 18.6,
@@ -238,8 +244,8 @@
    },
    {
     "phase": "other JS",
-    "msPerFrame": 0.129,
-    "pct": 3.7,
+    "msPerFrame": 0.116,
+    "pct": 3.3,
     "glMsPerFrame": 0
    }
   ],
@@ -722,6 +728,63 @@
    },
    {
     "key": "bindBuffer <- render [WebGLRenderer.js:354]",
+    "msPerFrame": 0.001,
+    "pct": 0
+   }
+  ],
+  "unclassifiedLeaves": [
+   {
+    "key": "_collect [WebGLShadowMap.js:84] -> shadow pass",
+    "msPerFrame": 0.1,
+    "pct": 2.9
+   },
+   {
+    "key": "now [(native)] -> other JS",
+    "msPerFrame": 0.097,
+    "pct": 2.8
+   },
+   {
+    "key": "window.__runFrames [(native)] -> other JS",
+    "msPerFrame": 0.016,
+    "pct": 0.4
+   },
+   {
+    "key": "updateMatrices [LightShadow.js:28] -> shadow pass",
+    "msPerFrame": 0.005,
+    "pct": 0.1
+   },
+   {
+    "key": "(anonymous) [(native)] -> other JS",
+    "msPerFrame": 0.004,
+    "pct": 0.1
+   },
+   {
+    "key": "lookAt [Matrix4.js:113] -> shadow pass",
+    "msPerFrame": 0.003,
+    "pct": 0.1
+   },
+   {
+    "key": "multiplyMatrices [Matrix4.js:133] -> uniform upload",
+    "msPerFrame": 0.003,
+    "pct": 0.1
+   },
+   {
+    "key": "updateMatrixWorld [Camera.js:57] -> frame setup/other renderer",
+    "msPerFrame": 0.003,
+    "pct": 0.1
+   },
+   {
+    "key": "lookAt [Object3D.js:145] -> shadow pass",
+    "msPerFrame": 0.002,
+    "pct": 0
+   },
+   {
+    "key": "bindShadowMaps [WebGLShadowMap.js:109] -> frame setup/other renderer",
+    "msPerFrame": 0.001,
+    "pct": 0
+   },
+   {
+    "key": "get [WebGLRenderLists.js:112] -> frame setup/other renderer",
     "msPerFrame": 0.001,
     "pct": 0
    }

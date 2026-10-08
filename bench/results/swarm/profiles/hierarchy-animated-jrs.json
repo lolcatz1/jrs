@@ -172,6 +172,12 @@
   "samples": 86942,
   "phases": [
    {
+    "phase": "app update",
+    "msPerFrame": 0.136,
+    "pct": 1.5,
+    "glMsPerFrame": 0
+   },
+   {
     "phase": "scene graph update",
     "msPerFrame": 2.957,
     "pct": 32.2,
@@ -251,8 +257,8 @@
    },
    {
     "phase": "other JS",
-    "msPerFrame": 0.307,
-    "pct": 3.4,
+    "msPerFrame": 0.171,
+    "pct": 1.9,
     "glMsPerFrame": 0
    }
   ],
@@ -695,6 +701,38 @@
    },
    {
     "key": "bindVertexArray <- render [WebGLRenderer.js:354]",
+    "msPerFrame": 0.002,
+    "pct": 0
+   }
+  ],
+  "unclassifiedLeaves": [
+   {
+    "key": "multiplyMatrices [Matrix4.js:133] -> scene graph update",
+    "msPerFrame": 0.677,
+    "pct": 7.4
+   },
+   {
+    "key": "now [(native)] -> other JS",
+    "msPerFrame": 0.11,
+    "pct": 1.2
+   },
+   {
+    "key": "(anonymous) [(native)] -> other JS",
+    "msPerFrame": 0.031,
+    "pct": 0.3
+   },
+   {
+    "key": "window.__runFrames [(native)] -> other JS",
+    "msPerFrame": 0.029,
+    "pct": 0.3
+   },
+   {
+    "key": "innerSerialize [(native)] -> other JS",
+    "msPerFrame": 0.002,
+    "pct": 0
+   },
+   {
+    "key": "get [WebGLRenderLists.js:112] -> frame setup/other renderer",
     "msPerFrame": 0.002,
     "pct": 0
    }

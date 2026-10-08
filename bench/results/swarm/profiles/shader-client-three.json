@@ -118,8 +118,8 @@
   "phases": [
    {
     "phase": "app update",
-    "msPerFrame": 0.004,
-    "pct": 0,
+    "msPerFrame": 0.018,
+    "pct": 0.2,
     "glMsPerFrame": 0
    },
    {
@@ -136,7 +136,7 @@
    },
    {
     "phase": "sort",
-    "msPerFrame": 0.347,
+    "msPerFrame": 0.352,
     "pct": 3.7,
     "glMsPerFrame": 0
    },
@@ -154,15 +154,15 @@
    },
    {
     "phase": "per-draw state",
-    "msPerFrame": 1.938,
-    "pct": 20.4,
-    "glMsPerFrame": 0.393
+    "msPerFrame": 1.138,
+    "pct": 12,
+    "glMsPerFrame": 0.016
    },
    {
     "phase": "uniform upload",
-    "msPerFrame": 0.016,
-    "pct": 0.2,
-    "glMsPerFrame": 0
+    "msPerFrame": 0.827,
+    "pct": 8.7,
+    "glMsPerFrame": 0.377
    },
    {
     "phase": "texture bind",
@@ -184,8 +184,8 @@
    },
    {
     "phase": "frame setup/other renderer",
-    "msPerFrame": 0.704,
-    "pct": 7.4,
+    "msPerFrame": 0.698,
+    "pct": 7.3,
     "glMsPerFrame": 0.037
    },
    {
@@ -202,8 +202,8 @@
    },
    {
     "phase": "other JS",
-    "msPerFrame": 0.211,
-    "pct": 2.2,
+    "msPerFrame": 0.186,
+    "pct": 2,
     "glMsPerFrame": 0
    }
   ],
@@ -648,6 +648,53 @@
     "key": "uniform3f <- setValueV3f [setValueV3f:5159]",
     "msPerFrame": 0.013,
     "pct": 0.1
+   }
+  ],
+  "unclassifiedLeaves": [
+   {
+    "key": "multiplyMatrices [Matrix4:10570] -> draw issue",
+    "msPerFrame": 0.171,
+    "pct": 1.8
+   },
+   {
+    "key": "now [(native)] -> other JS",
+    "msPerFrame": 0.14,
+    "pct": 1.5
+   },
+   {
+    "key": "multiplyMatrices [Matrix4:10570] -> scene graph update",
+    "msPerFrame": 0.12,
+    "pct": 1.3
+   },
+   {
+    "key": "window.__runFrames [(native)] -> other JS",
+    "msPerFrame": 0.038,
+    "pct": 0.4
+   },
+   {
+    "key": "applyMatrix4 [Vector4:8516] -> project + cull",
+    "msPerFrame": 0.033,
+    "pct": 0.3
+   },
+   {
+    "key": "determinantAffine [Matrix4:10669] -> frame setup/other renderer",
+    "msPerFrame": 0.032,
+    "pct": 0.3
+   },
+   {
+    "key": "(anonymous) [(native)] -> other JS",
+    "msPerFrame": 0.009,
+    "pct": 0.1
+   },
+   {
+    "key": "convert [createColorManagement:6722] -> frame setup/other renderer",
+    "msPerFrame": 0.004,
+    "pct": 0
+   },
+   {
+    "key": "WebGLShadowMap.render [WebGLShadowMap:9143] -> frame setup/other renderer",
+    "msPerFrame": 0.002,
+    "pct": 0
    }
   ]
  },
