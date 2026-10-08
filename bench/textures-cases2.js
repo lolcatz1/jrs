@@ -1087,5 +1087,65 @@ export function moreCases(env, C, has, h) {
 		return shot(side, scene, camera);
 	}, { callsMatch: ['texStorage2D', 'texSubImage2D', 'texImage2D'] });
 
+	// ----------------------------------------------------------------------------------------------------- state changes between frames
+	add('state', 'sampler parameters changed after the first upload without needsUpdate are ignored (wrap, filter)', (T, side) => {
+		const tex = new T.DataTexture(rgbaPattern(4, 4), 4, 4, T.RGBAFormat, T.UnsignedByteType); tex.needsUpdate = true;
+		tex.repeat.set(2.5, 2.5);
+		const { scene, camera } = quadScene(T, basic(T, tex));
+		side.renderer.render(scene, camera);
+		tex.wrapS = tex.wrapT = T.RepeatWrapping; tex.magFilter = T.LinearFilter; tex.minFilter = T.LinearFilter;
+		return shot(side, scene, camera);
+	});
+	add('state', 'sampler parameters changed with needsUpdate are applied', (T, side) => {
+		const tex = new T.DataTexture(rgbaPattern(4, 4), 4, 4, T.RGBAFormat, T.UnsignedByteType); tex.needsUpdate = true;
+		tex.repeat.set(2.5, 2.5);
+		const { scene, camera } = quadScene(T, basic(T, tex));
+		side.renderer.render(scene, camera);
+		tex.wrapS = tex.wrapT = T.RepeatWrapping; tex.magFilter = T.LinearFilter; tex.minFilter = T.LinearFilter; tex.needsUpdate = true;
+		return shot(side, scene, camera);
+	});
+	add('state', 'the same texture object in two map slots of one material (map and emissiveMap)', (T, side) => {
+		const tex = new T.DataTexture(rgbaPattern(4, 4), 4, 4, T.RGBAFormat, T.UnsignedByteType); tex.needsUpdate = true; tex.colorSpace = T.SRGBColorSpace;
+		const { scene, camera } = plain(T);
+		scene.add(new T.AmbientLight(0xffffff, 0.3));
+		scene.add(new T.Mesh(new T.PlaneGeometry(2, 2), new T.MeshLambertMaterial({ map: tex, emissive: 0xffffff, emissiveMap: tex, emissiveIntensity: 0.5 })));
+		return shot(side, scene, camera);
+	}, { tolerance: 1 });
+	add('state', 'InstancedMesh with a map and instance colours (not batched, own draw)', (T, side) => {
+		const tex = new T.DataTexture(rgbaPattern(4, 4), 4, 4, T.RGBAFormat, T.UnsignedByteType); tex.needsUpdate = true; tex.colorSpace = T.SRGBColorSpace; tex.magFilter = T.NearestFilter;
+		const { scene, camera } = plain(T);
+		const im = new T.InstancedMesh(new T.PlaneGeometry(0.8, 0.8), new T.MeshBasicMaterial({ map: tex }), 4);
+		const m = new T.Matrix4(), c = new T.Color();
+		for (let i = 0; i < 4; i++) { m.makeTranslation(-0.5 + (i % 2), 0.5 - Math.floor(i / 2), 0); im.setMatrixAt(i, m); im.setColorAt(i, c.setHSL(i / 4, 0.8, 0.6)); }
+		scene.add(im);
+		return shot(side, scene, camera);
+	});
+	for (const [label, bump] of [['without', false], ['with', true]]) {
+		add('state', `material.transparent toggled ${label} needsUpdate on a texture with alpha < 1 (OPAQUE define follows the program cache)`, (T, side) => {
+			const tex = new T.DataTexture(rgbaPattern(4, 4, 100), 4, 4, T.RGBAFormat, T.UnsignedByteType); tex.needsUpdate = true;
+			const mat = basic(T, tex);
+			const { scene, camera } = quadScene(T, mat);
+			side.renderer.render(scene, camera);
+			mat.transparent = true; if (bump) mat.needsUpdate = true;
+			return shot(side, scene, camera);
+		});
+	}
+	add('state', 'a map assigned to a material after its program was built (map was null at first render)', (T, side) => {
+		const tex = new T.DataTexture(rgbaPattern(4, 4), 4, 4, T.RGBAFormat, T.UnsignedByteType); tex.needsUpdate = true;
+		const mat = new T.MeshBasicMaterial({ color: 0xffaa66 });
+		const { scene, camera } = quadScene(T, mat);
+		side.renderer.render(scene, camera);
+		mat.map = tex; mat.needsUpdate = true;
+		return shot(side, scene, camera);
+	});
+	add('state', 'a texture re-used after dispose is uploaded again and keeps userData', (T, side) => {
+		const tex = new T.DataTexture(rgbaPattern(4, 4), 4, 4, T.RGBAFormat, T.UnsignedByteType); tex.needsUpdate = true; tex.userData.k = 7;
+		const { scene, camera } = quadScene(T, basic(T, tex));
+		side.renderer.render(scene, camera);
+		tex.dispose(); tex.dispose();
+		const r = shot(side, scene, camera);
+		return { ...r, data: { userData: tex.userData, memory: memTex(side) } };
+	});
+
 	return out;
 }
