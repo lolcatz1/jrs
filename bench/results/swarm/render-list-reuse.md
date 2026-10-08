@@ -54,6 +54,31 @@ Validation run: `npm test` (100 pass), `node bench/conformance.mjs` (all PASS), 
 
 Run twice: plain and with a shadow-casting directional light. Steps: static, 8 small camera orbits (level 1 with transparent re-sort), camera far / near (cull flips), fov change, alternating cameras (perspective A / B / orthographic) every frame, add / remove mesh, `visible` on mesh and parent group, moving an opaque / transparent object, material colour change, material swap, `transparent` / `visible` / `wireframe` toggles, `needsUpdate`, geometry swap, bounding-sphere change, geometry moved off screen and back, `renderOrder` (shadow on: rank map), `frustumCulled = false`, object and camera layers, `scene.overrideMaterial` on / off, `sortObjects` off / on, assigning `onBeforeRender`, light intensity / move / add / remove, `castShadow` toggle, InstancedMesh colour / matrix change, vertex-data update (`needsUpdate`, mega-buffer upload on replay), material arrays (never reused), Sprite incl. orbit and material invisible, `autoBatch` / `autoBatchMinimum` / `autoMultiDraw` toggles, an `onBeforeRender` hook that adds / removes an object mid-frame, interleaved render-target renders of the same scene and camera. It also renders the bench scenarios (1500 objects) with verify on. All identical; `listReuse` counters show reuse actually happened (e.g. plain: 54 level-0 reuses, 9 camera-only, 93 command replays).
 
+## Post-merge update (merged with integration tip 137051f)
+
+Merged `origin/claude/threejs-performance-fork-vfqpcw` (zero-alloc-frame, stall-hunter, uniform-dirty-tracking, texture-unit-tracking, shadow-pass, static-client-passes). Conflicts were in `WebGLRenderer.js` and `WebGLRenderLists.js`; resolved keeping both behaviours:
+* Items no longer carry `z` (`list.zScratch`): `_itemDepth(object, ve, out)` now writes into a Float64Array; the camera-only re-sort keeps per-item depths in `RenderListCache.itemZ` (filled on the recording build) and `resortTransparent(sortObjects, rankOf, itemZ)` reads them. Keys are still identical to a full rebuild (verify mode).
+* Render-order ranks are the sorted `_renderOrderList` (`_setRenderOrders` restores it); lights version bump uses the packed `_lightsEpoch`/`_envKeyId`; `_blocksValid` reset on context restore. Batcher texImage2D upload and UBO skipping are untouched; command replay still requires the batcher hash to match.
+* `WebGLRenderLists.js` changes kept minimal for swarm/transparent-sort: `get(..., camera)`, `finish()` split in two halves + version counters, `resortTransparent`, depth-key clamp. If transparent-sort replaces the 52-bit keys, the integrator must keep: per-half version bumps, a re-sort entry point taking per-item depths, and the clamp.
+
+Validation after merge: `npm test` 100/100, conformance / addons / smoke clean, `reuse-check.mjs` 528 frame pairs identical with 0 verify mismatches, `--compare` meanAbsDiff / maxDiff equal to the integration tip's `latest.json` for every scenario (incl. shadows-animated 0.121 / 31).
+
+Medians, jrs ms, integration tip vs merged branch (two runs each; noisy machine):
+
+| scenario | integration tip (run1 / run2) | merged (run1 / run2) | best -> best |
+|---|---:|---:|---:|
+| shared-static | 3.1 / 2.9 | 0.8 / 1.2 | 2.9 -> 0.8 |
+| many-materials | 5.7 / 3.3 | 1.1 / 1.0 | 3.3 -> 1.0 |
+| unique-geometries | 1.7 / 1.1 | 0.5 / 0.9 | 1.1 -> 0.5 |
+| shader-client-static | 23.3 / 18.9 | 20.1 / 28.7 | 18.9 -> 20.1 (noise; execution-bound, unaffected by reuse) |
+| shared-animated | 5.4 / 5.5 | 6.7 / 4.7 | 5.4 -> 4.7 |
+| hierarchy-animated | 4.0 / 4.2 | 5.1 / 4.3 | 4.0 -> 4.3 (+7 %, inside the run-to-run spread of 4.0-5.1; animated scenes never reuse, so only the accessor / signature overhead applies) |
+| shader-client | 3.9 / 3.3 | 3.2 / 2.7 | 3.3 -> 2.7 |
+| shadows | 1.8 / 1.3 | 0.9 / 0.7 | 1.3 -> 0.7 |
+| shadows-animated | 1.3 / 2.3 | 2.2 / 1.5 | 1.3 -> 1.5 (noise) |
+
+GL-call counts are unchanged by reuse (CPU-only). The hierarchy-animated delta is the one number above the 5 % guideline; the spread between identical runs is larger than the delta, but the integrator may want to re-measure.
+
 ## Risks / notes for the integrator
 
 * **Global epochs, not per scene**: any `visible` / `add` / ... anywhere invalidates every scene's cache. Correct but conservative; an app that toggles something unrelated every frame gets no reuse (and pays ~nothing).
