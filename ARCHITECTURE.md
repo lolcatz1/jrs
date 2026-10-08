@@ -291,7 +291,7 @@ three.js API and take the bone out of the hot loops:
   computation as `Object3D.updateMatrixWorld` (recompose the local matrix when the TRS changed, multiply with the parent
   when the local matrix, the parent's world version or `force` changed; affine 3x4 product) in one loop over those
   arrays, without touching the Bone objects. Non-bone children are updated through their own `updateMatrixWorld`.
-  A plan is rebuilt after an add / remove / attach that involves a Bone (`epochs.bones`); rigs with Bone subclasses
+  A plan is dropped (and rebuilt on the next update) by an add / remove / attach that involves a bone of its hierarchy, so spawning a character rebuilds only the rigs it touches; rigs with Bone subclasses
   use the generic path.
 * **Animation writes the record directly.** `PropertyBinding` bound to a bone `quaternion` / `position` / `scale`
   resolves the record at bind time and its setter stores the components and bumps the versions, no bone access, no

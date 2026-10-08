@@ -13,12 +13,11 @@ import { TRS_VERSION, TRS_MATRIX_SEEN, TRS_WORLD_VERSION, TRS_PARENT_WORLD_VERSI
  *
  * A plan belongs to a root bone (a Bone whose parent is not a Bone) and covers all Bones below it. Children that are
  * not bones (attached meshes, lights, groups holding further bones) are updated through their own
- * `updateMatrixWorld` after the loop, with the same `force` they would have received. Plans stay valid until
- * `epochs.bones` changes (an add / remove / attach involving a Bone); rigs with Bone subclasses are not planned.
+ * `updateMatrixWorld` after the loop, with the same `force` they would have received. A plan is dropped by an
+ * add / remove / attach that involves a Bone of its hierarchy; rigs with Bone subclasses are not planned.
  */
 class RigPlan {
 	constructor(root, bonesClass) {
-		this.epoch = epochs.bones;
 		this.enabled = true;
 		const bones = [], parents = [], extras = [], extraOwner = [];
 		const visit = (bone, parentIndex) => {

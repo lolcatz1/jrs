@@ -86,7 +86,7 @@ class Bone extends Object3D {
 		if (parent === null || parent.isBone !== true) {
 			// root of a bone hierarchy: update the whole rig from flat arrays (see RigPlan)
 			let plan = this._plan;
-			if (plan === null || plan.epoch !== epochs.bones) plan = this._plan = new RigPlan(this, Bone);
+			if (plan === null) plan = this._plan = new RigPlan(this, Bone);
 			if (plan.enabled) { plan.update(force); return; }
 		}
 		if (this.matrixAutoUpdate) this.updateMatrix();

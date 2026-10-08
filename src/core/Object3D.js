@@ -37,6 +37,16 @@ const _childremovedEvent = { type: 'childremoved', child: null };
  * A monotonically increasing `_worldVersion` lets the renderer cache derived
  * data (normal matrix, world bounding sphere, instance buffers) per object.
  */
+/** A Bone add / remove drops the cached update plan of the rig it touches (the root bone above `parent`) and of `child` (which may become a root). */
+function invalidateRigs(parent, child) {
+	if (child._plan !== undefined) child._plan = null;
+	if (parent.isBone === true) {
+		let root = parent;
+		while (root.parent !== null && root.parent.isBone === true) root = root.parent;
+		root._plan = null;
+	}
+}
+
 class Object3D extends EventDispatcher {
 	constructor() {
 		super();
@@ -167,7 +177,7 @@ class Object3D extends EventDispatcher {
 			object.parent = this;
 			this.children.push(object);
 			epochs.structure++;
-			if (object.isBone === true || this.isBone === true) epochs.bones++;
+			if (object.isBone === true || this.isBone === true) invalidateRigs(this, object);
 			object.matrixWorldNeedsUpdate = true;
 			object.dispatchEvent(_addedEvent);
 			_childaddedEvent.child = object;
@@ -188,7 +198,7 @@ class Object3D extends EventDispatcher {
 			object.parent = null;
 			this.children.splice(index, 1);
 			epochs.structure++;
-			if (object.isBone === true || this.isBone === true) epochs.bones++;
+			if (object.isBone === true || this.isBone === true) invalidateRigs(this, object);
 			object.dispatchEvent(_removedEvent);
 			_childremovedEvent.child = object;
 			this.dispatchEvent(_childremovedEvent);
@@ -210,7 +220,7 @@ class Object3D extends EventDispatcher {
 		object.parent = this;
 		this.children.push(object);
 		epochs.structure++;
-		if (object.isBone === true || this.isBone === true) epochs.bones++;
+		if (object.isBone === true || this.isBone === true) invalidateRigs(this, object);
 		object.updateWorldMatrix(false, true);
 		object.dispatchEvent(_addedEvent);
 		_childaddedEvent.child = object;
