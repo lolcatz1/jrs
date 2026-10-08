@@ -345,6 +345,7 @@ class WebGLTextures {
 			texture.addEventListener('dispose', this._onTextureDispose);
 		}
 		state.bindTexture(gl.TEXTURE_CUBE_MAP, p.webglTexture, slot);
+		if (texture.isRenderTargetTexture === true || texture.isCubeDepthTexture === true) return; // storage belongs to the render target
 		const images = texture.image;
 		if (p.version === texture.version || !Array.isArray(images) || images.length < 6) return;
 		for (let i = 0; i < 6; i++) { const im = images[i]; if (!im || (im.complete === false)) return; }
@@ -368,6 +369,7 @@ class WebGLTextures {
 
 	/** Sets up (once) and binds a render target's framebuffer. */
 	setupRenderTarget(renderTarget) {
+		if (renderTarget.isWebGLCubeRenderTarget === true) return this._setupCubeRenderTarget(renderTarget);
 		const gl = this.gl, state = this.state;
 		const p = this.get(renderTarget);
 		const texture = renderTarget.texture;
@@ -430,13 +432,82 @@ class WebGLTextures {
 		return p.framebuffer;
 	}
 
+	/** Framebuffer plus cube colour / cube depth storage of a WebGLCubeRenderTarget. Faces are attached by attachCubeFace(). */
+	_setupCubeRenderTarget(renderTarget) {
+		const gl = this.gl, state = this.state;
+		const p = this.get(renderTarget);
+		if (p.framebuffer !== undefined && p.width === renderTarget.width) return p.framebuffer;
+		if (p.framebuffer !== undefined) {
+			this._onRenderTargetDispose({ target: renderTarget });
+			renderTarget.addEventListener('dispose', this._onRenderTargetDispose);
+			return this._setupCubeRenderTarget(renderTarget);
+		}
+		const size = renderTarget.width;
+		renderTarget.addEventListener('dispose', this._onRenderTargetDispose);
+		const texture = renderTarget.texture;
+		const tp = this.get(texture);
+		texture.isRenderTargetTexture = true;
+		p.framebuffer = gl.createFramebuffer();
+		state.bindFramebuffer(p.framebuffer);
+		p.cubeFace = -1;
+		if (renderTarget.depthOnly !== true) {
+			tp.webglTexture = gl.createTexture(); this.info.memory.textures++;
+			state.bindTexture(gl.TEXTURE_CUBE_MAP, tp.webglTexture, 0);
+			this._setTextureParameters(gl.TEXTURE_CUBE_MAP, texture);
+			const glFormat = this.glFormat(texture.format), glType = this.glType(texture.type);
+			const glInternalFormat = this.glInternalFormat(texture.internalFormat, glFormat, glType, texture.colorSpace);
+			for (let i = 0; i < 6; i++) gl.texImage2D(gl.TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, glInternalFormat, size, size, 0, glFormat, glType, null);
+			tp.version = texture.version;
+		} else {
+			gl.drawBuffers([gl.NONE]);
+			gl.readBuffer(gl.NONE);
+		}
+		const dt = renderTarget.depthTexture;
+		if (dt) {
+			const dp = this.get(dt);
+			if (dp.webglTexture !== undefined) gl.deleteTexture(dp.webglTexture); else this.info.memory.textures++;
+			dp.webglTexture = gl.createTexture();
+			dt.isRenderTargetTexture = true;
+			state.bindTexture(gl.TEXTURE_CUBE_MAP, dp.webglTexture, 0);
+			this._setTextureParameters(gl.TEXTURE_CUBE_MAP, dt);
+			const glInternalFormat = this.glInternalFormat(null, this.glFormat(dt.format), this.glType(dt.type));
+			gl.texStorage2D(gl.TEXTURE_CUBE_MAP, 1, glInternalFormat, size, size);
+			dp.version = dt.version;
+		} else if (renderTarget.depthBuffer) {
+			p.depthbuffer = gl.createRenderbuffer();
+			gl.bindRenderbuffer(gl.RENDERBUFFER, p.depthbuffer);
+			gl.renderbufferStorage(gl.RENDERBUFFER, renderTarget.stencilBuffer ? gl.DEPTH24_STENCIL8 : gl.DEPTH_COMPONENT24, size, size);
+			gl.framebufferRenderbuffer(gl.FRAMEBUFFER, renderTarget.stencilBuffer ? gl.DEPTH_STENCIL_ATTACHMENT : gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, p.depthbuffer);
+			gl.bindRenderbuffer(gl.RENDERBUFFER, null);
+		}
+		p.width = size;
+		return p.framebuffer;
+	}
+
+	/** Attaches `face` of a cube render target's colour / depth textures to its (currently bound) framebuffer. */
+	attachCubeFace(renderTarget, face) {
+		const p = this.get(renderTarget);
+		if (p.cubeFace === face) return;
+		const gl = this.gl;
+		const target = gl.TEXTURE_CUBE_MAP_POSITIVE_X + face;
+		if (renderTarget.depthOnly !== true) gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, target, this.get(renderTarget.texture).webglTexture, 0);
+		const dt = renderTarget.depthTexture;
+		if (dt) gl.framebufferTexture2D(gl.FRAMEBUFFER, dt.format === DepthStencilFormat ? gl.DEPTH_STENCIL_ATTACHMENT : gl.DEPTH_ATTACHMENT, target, this.get(dt).webglTexture, 0);
+		if (p.cubeFace === -1) {
+			const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+			if (status !== gl.FRAMEBUFFER_COMPLETE) console.error('WebGLTextures: cube render target framebuffer incomplete: 0x' + status.toString(16));
+		}
+		p.cubeFace = face;
+	}
+
 	/** Regenerates mipmaps for a render target texture after rendering to it. */
 	updateRenderTargetMipmap(renderTarget) {
 		const texture = renderTarget.texture;
 		if (this._textureNeedsMipmaps(texture)) {
 			const tp = this.get(texture);
-			this.state.bindTexture(this.gl.TEXTURE_2D, tp.webglTexture, 0);
-			this.gl.generateMipmap(this.gl.TEXTURE_2D);
+			const target = renderTarget.isWebGLCubeRenderTarget === true ? this.gl.TEXTURE_CUBE_MAP : this.gl.TEXTURE_2D;
+			this.state.bindTexture(target, tp.webglTexture, 0);
+			this.gl.generateMipmap(target);
 		}
 	}
 }

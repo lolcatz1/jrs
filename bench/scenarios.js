@@ -312,6 +312,33 @@ export const scenarios = {
 		n: 2000,
 		build(T, n) { return buildShadows(T, n, true); }
 	},
+	// Point light shadows: the same 2000 casters under one shadow-casting point light (six cube faces, 512² each).
+	'shadows-point': {
+		n: 2000,
+		build(T, n) { return buildShadows(T, n, false, true); }
+	},
+	// Same, with a third of the casters moving each frame: the six-face pass cannot be skipped.
+	'shadows-point-animated': {
+		n: 2000,
+		build(T, n) { return buildShadows(T, n, true, true); }
+	},
+	// Every shadow kind at once: directional + spot + two point lights casting (cube maps share texture units with the 2D maps), plus a non-casting point light.
+	'shadows-point-multi': {
+		n: 400,
+		build(T, n) {
+			const { scene, camera } = buildShadows(T, n, false, true);
+			scene.children.filter(c => c.isPointLight).forEach(l => { l.intensity = 2500; l.position.set(-12, 22, 6); });
+			const lamp2 = new T.PointLight(0xffd0a0, 2500); lamp2.position.set(14, 18, -6); lamp2.castShadow = true;
+			lamp2.shadow.camera.near = 1; lamp2.shadow.camera.far = 120; lamp2.shadow.bias = -0.0005; lamp2.shadow.mapSize.set(256, 256);
+			const spot = new T.SpotLight(0x88aaff, 4000, 0, 0.5, 0.3); spot.position.set(0, 30, 25); spot.target.position.set(0, 0, 0); spot.castShadow = true;
+			spot.shadow.camera.near = 5; spot.shadow.camera.far = 90; spot.shadow.mapSize.set(512, 512);
+			const sun = new T.DirectionalLight(0xffffff, 0.6); sun.position.set(-20, 40, -10); sun.castShadow = true;
+			sun.shadow.camera.left = -30; sun.shadow.camera.right = 30; sun.shadow.camera.top = 30; sun.shadow.camera.bottom = -30; sun.shadow.camera.far = 120;
+			const glow = new T.PointLight(0x00ff88, 500); glow.position.set(0, 6, 8);
+			scene.add(lamp2, spot, spot.target, sun, glow);
+			return { scene, camera };
+		}
+	},
 };
 
 function buildSkinnedCrowd(T, n) {
@@ -375,17 +402,24 @@ function buildSkinnedCrowd(T, n) {
 	return { scene, camera, update: (f) => { for (let i = 0; i < mixers.length; i++) mixers[i].update(1 / 60); } };
 }
 
-function buildShadows(T, n, animated) {
+function buildShadows(T, n, animated, point = false) {
 	{
 		{
 			const scene = new T.Scene();
 			const camera = new T.PerspectiveCamera(60, 4 / 3, 0.1, 500);
 			camera.position.set(0, 25, 45); camera.lookAt(0, 0, 0);
 			scene.add(new T.AmbientLight(0xffffff, 0.4));
-			const sun = new T.DirectionalLight(0xffffff, 2); sun.position.set(20, 40, 10); sun.castShadow = true;
-			sun.shadow.camera.left = -40; sun.shadow.camera.right = 40; sun.shadow.camera.top = 40; sun.shadow.camera.bottom = -40; sun.shadow.camera.far = 200;
-			sun.shadow.mapSize.set(1024, 1024);
-			scene.add(sun);
+			if (point) {
+				const lamp = new T.PointLight(0xffffff, 6000); lamp.position.set(0, 30, 0); lamp.castShadow = true;
+				lamp.shadow.camera.near = 1; lamp.shadow.camera.far = 120; lamp.shadow.bias = -0.0005;
+				lamp.shadow.mapSize.set(512, 512);
+				scene.add(lamp);
+			} else {
+				const sun = new T.DirectionalLight(0xffffff, 2); sun.position.set(20, 40, 10); sun.castShadow = true;
+				sun.shadow.camera.left = -40; sun.shadow.camera.right = 40; sun.shadow.camera.top = 40; sun.shadow.camera.bottom = -40; sun.shadow.camera.far = 200;
+				sun.shadow.mapSize.set(1024, 1024);
+				scene.add(sun);
+			}
 			const floor = new T.Mesh(new T.PlaneGeometry(100, 100), new T.MeshLambertMaterial({ color: 0xcccccc }));
 			floor.rotation.x = -Math.PI / 2; floor.position.y = -8; floor.receiveShadow = true; scene.add(floor);
 			const geometry = new T.BoxGeometry(0.6, 0.6, 0.6);
