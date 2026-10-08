@@ -171,7 +171,7 @@ export function conformanceTests() {
 				renderer.render(scene, camera); const a2 = probe();
 				d.intensity = 0.2; renderer.render(scene, camera); const b = probe();           // direct light mutation
 				d.color.r = 0; renderer.render(scene, camera); const c = probe();                // direct colour channel mutation
-				scene.fog = new T.Fog(0x000040, 1, 7); renderer.render(scene, camera); const e = probe();
+				scene.fog = new T.Fog(0x402000, 1, 7); renderer.render(scene, camera); const e = probe(); // fog colour != background: a fully fogged pixel must stay distinguishable
 				scene.fog.near = 0.1; scene.fog.far = 4.8; renderer.render(scene, camera); const f = probe();  // direct fog mutation
 				camera.position.x = 3; renderer.render(scene, camera); const g = probe();                    // camera move
 				const same = a.every((v, i) => v === a2[i]);
@@ -609,6 +609,50 @@ export function conformanceTests() {
 				const pa = readPixel(renderer, 128 - 44, 128), pb = readPixel(renderer, 128 + 44, 128), pc = readPixel(renderer, 128, 128 - 66);
 				const switches = renderer.info.render.programSwitches;
 				return { pass: added === 2 && near(pa, [255, 0, 0], 2) && near(pb, [0, 0, 255], 2) && near(pc, [0, 255, 0], 2) && switches === 2, detail: `programs created ${added} (expected 2: same source -> shared, different defines -> own), colours ${fmt(pa)} ${fmt(pb)} ${fmt(pc)}, program switches per frame ${switches} (expected 2)` };
+			}
+		},
+		{
+			name: 'ShaderMaterial custom attributes drawn from mega-buffer pages (matches three.js)', run(T, renderer, ref) {
+				const vs = 'attribute vec3 aTint; attribute float aMix; varying vec3 vTint; varying float vMix; void main(){ vTint = aTint; vMix = aMix; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }';
+				const fs = 'uniform vec3 base; varying vec3 vTint; varying float vMix; void main(){ gl_FragColor = vec4(mix(base, vTint, vMix), 1.0); }';
+				const tinted = (L, geometry, seed) => {
+					const n = geometry.attributes.position.count, tint = new Float32Array(n * 3), mixv = new Float32Array(n);
+					for (let i = 0; i < n; i++) { tint[i * 3] = ((i + seed) % 3) / 2; tint[i * 3 + 1] = ((i * 2 + seed) % 5) / 4; tint[i * 3 + 2] = (seed % 2); mixv[i] = 0.5 + 0.5 * ((i + seed) % 2); }
+					geometry.setAttribute('aTint', new L.BufferAttribute(tint, 3)); geometry.setAttribute('aMix', new L.BufferAttribute(mixv, 1));
+					return geometry;
+				};
+				const build = (L, frame) => {
+					const { scene, camera } = baseScene(L, 7);
+					const mats = [0, 1].map((k) => new L.ShaderMaterial({ uniforms: { base: { value: new L.Color(0.1 + 0.4 * k, 0.2, 0.3) } }, vertexShader: vs, fragmentShader: fs }));
+					const make = (geometry, x, y, m) => { const mesh = new L.Mesh(geometry, m); mesh.position.set(x, y, 0); mesh.rotation.set(0.3 * x, 0.4 + 0.2 * y, 0); scene.add(mesh); return mesh; };
+					const g0 = tinted(L, new L.BoxGeometry(1.2, 1.2, 1.2), 1), g1 = tinted(L, new L.SphereGeometry(0.7, 12, 8), 2), g2 = tinted(L, new L.PlaneGeometry(1.4, 1.4).toNonIndexed(), 3);
+					const g3 = tinted(L, new L.BoxGeometry(1, 1, 1, 2, 2, 2), 4); g3.clearGroups(); g3.addGroup(0, 36, 0); g3.addGroup(36, 36, 1);
+					const a = make(g0, -2.2, 1.2, mats[0]), b = make(g1, 0, 1.2, mats[1]), c = make(g2, 2.2, 1.2, mats[0]), d = make(g0, -2.2, -1.2, mats[1]), e = make(g3, 0, -1.2, mats);
+					const w = make(g1, 2.2, -1.2, mats[0]);
+					if (frame > 0) { // dynamic update of a custom attribute, and wireframe toggled
+						const t = g1.attributes.aTint; for (let i = 0; i < t.array.length; i++) t.array[i] = 1 - t.array[i]; t.needsUpdate = true;
+						w.material = new L.ShaderMaterial({ uniforms: { base: { value: new L.Color(1, 1, 0) } }, vertexShader: vs, fragmentShader: fs, wireframe: true });
+					}
+					return { scene, camera, mats, g1 };
+				};
+				const run = (L, rend, frame) => {
+					const s = build(L, frame);
+					// a depth-only pass first (position only), as a shadow pass would: page layouts are made before the colour programs exist
+					const depth = new L.ShaderMaterial({ vertexShader: 'void main(){ gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }', fragmentShader: 'void main(){ gl_FragColor = vec4(1.0); }' });
+					if (rend === renderer) { s.scene.overrideMaterial = depth; renderer.render(s.scene, s.camera); s.scene.overrideMaterial = null; }
+					return s;
+				};
+				const s0 = run(T, renderer, 0);
+				renderer.render(s0.scene, s0.camera);
+				const px0 = readAll(renderer);
+				const d0 = compareWithReference(ref, (L) => build(L, 0), px0);
+				const s1 = run(T, renderer, 1);
+				renderer.render(s1.scene, s1.camera);
+				const px1 = readAll(renderer);
+				const d1 = compareWithReference(ref, (L) => build(L, 1), px1);
+				const rec = renderer.megaBuffers ? renderer.megaBuffers.records.get(s1.g1) : null; // the sphere must have been drawn from a page that carries the custom attributes
+				const paged = rec === null || (rec.page !== null && rec.layout.customNames.has('aTint') && rec.layout.customNames.has('aMix'));
+				return { pass: paged && refOk(d0) && refOk(d1) && diffImages(px0, px1).badFraction > 0.001, detail: `${paged ? 'paged' : 'NOT paged'}; static: ${refDetail(d0)}; after attribute update + wireframe: ${refDetail(d1)}` };
 			}
 		},
 		{

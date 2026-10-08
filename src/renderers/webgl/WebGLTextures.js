@@ -226,7 +226,7 @@ class WebGLTextures {
 			p.webglTexture = gl.createTexture();
 			this.info.memory.textures++;
 			texture.addEventListener('dispose', this._onTextureDispose);
-			state.bindTexture(gl.TEXTURE_2D, p.webglTexture, slot);
+			state.bindTexture(gl.TEXTURE_2D, p.webglTexture, slot); state.activeTexture(slot);
 			gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255, 255]));
 			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
 			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
@@ -242,8 +242,7 @@ class WebGLTextures {
 			this.info.memory.textures++;
 			texture.addEventListener('dispose', this._onTextureDispose);
 		}
-		state.bindTexture(gl.TEXTURE_2D, p.webglTexture, slot);
-		state.activeTexture(slot); // bindTexture skips both calls when its cache says the texture is already bound at `slot`
+		state.bindTexture(gl.TEXTURE_2D, p.webglTexture, slot); state.activeTexture(slot);
 		state.setUnpack(texture.flipY, texture.premultiplyAlpha, texture.unpackAlignment);
 		const image = texture.image;
 		const glFormat = this.glFormat(texture.format);
@@ -263,7 +262,7 @@ class WebGLTextures {
 		} else if (texture.isDataTexture || texture.isDepthTexture) {
 			const levels = useMipmaps ? Math.floor(Math.log2(Math.max(image.width, image.height))) + 1 : 1;
 			if (p.allocated !== true || p.width !== image.width || p.height !== image.height) {
-				if (p.allocated === true) { gl.deleteTexture(p.webglTexture); p.webglTexture = gl.createTexture(); state.bindTexture(gl.TEXTURE_2D, p.webglTexture, slot); this._setTextureParameters(gl.TEXTURE_2D, texture); }
+				if (p.allocated === true) { gl.deleteTexture(p.webglTexture); p.webglTexture = gl.createTexture(); state.bindTexture(gl.TEXTURE_2D, p.webglTexture, slot); state.activeTexture(slot); this._setTextureParameters(gl.TEXTURE_2D, texture); }
 				gl.texStorage2D(gl.TEXTURE_2D, levels, glInternalFormat, image.width, image.height);
 				p.allocated = true; p.width = image.width; p.height = image.height;
 			}
@@ -303,7 +302,7 @@ class WebGLTextures {
 			this.info.memory.textures++;
 			texture.addEventListener('dispose', this._onTextureDispose);
 		}
-		state.bindTexture(target, p.webglTexture, slot);
+		state.bindTexture(target, p.webglTexture, slot); state.activeTexture(slot);
 		if (p.version === texture.version || texture.image === null) return;
 		const image = texture.image;
 		state.setUnpack(false, texture.premultiplyAlpha, texture.unpackAlignment);
@@ -313,7 +312,7 @@ class WebGLTextures {
 		const useMipmaps = this._textureNeedsMipmaps(texture);
 		const levels = useMipmaps ? Math.floor(Math.log2(Math.max(image.width, image.height, target === gl.TEXTURE_3D ? image.depth : 1))) + 1 : 1;
 		if (p.allocated !== true || p.width !== image.width || p.height !== image.height || p.depth !== image.depth || p.levels !== levels) {
-			if (p.allocated === true) { gl.deleteTexture(p.webglTexture); p.webglTexture = gl.createTexture(); state.bindTexture(target, p.webglTexture, slot); this._setTextureParameters(target, texture); }
+			if (p.allocated === true) { gl.deleteTexture(p.webglTexture); p.webglTexture = gl.createTexture(); state.bindTexture(target, p.webglTexture, slot); state.activeTexture(slot); this._setTextureParameters(target, texture); }
 			gl.texStorage3D(target, levels, glInternalFormat, image.width, image.height, image.depth);
 			p.allocated = true; p.width = image.width; p.height = image.height; p.depth = image.depth; p.levels = levels;
 			p.fullUploadNeeded = true;
@@ -345,7 +344,7 @@ class WebGLTextures {
 			this.info.memory.textures++;
 			texture.addEventListener('dispose', this._onTextureDispose);
 		}
-		state.bindTexture(gl.TEXTURE_CUBE_MAP, p.webglTexture, slot);
+		state.bindTexture(gl.TEXTURE_CUBE_MAP, p.webglTexture, slot); state.activeTexture(slot);
 		if (texture.isRenderTargetTexture === true || texture.isCubeDepthTexture === true) return; // storage belongs to the render target
 		const images = texture.image;
 		if (p.version === texture.version || !Array.isArray(images) || images.length < 6) return;
@@ -383,7 +382,7 @@ class WebGLTextures {
 			// color (reuse a texture object created earlier by a sampler binding of this texture)
 			if (renderTarget.depthOnly !== true) {
 				if (tp.webglTexture === undefined) { tp.webglTexture = gl.createTexture(); this.info.memory.textures++; }
-				state.bindTexture(gl.TEXTURE_2D, tp.webglTexture, 0);
+				state.bindTexture(gl.TEXTURE_2D, tp.webglTexture, 0); state.activeTexture(0);
 				this._setTextureParameters(gl.TEXTURE_2D, texture);
 				const glFormat = this.glFormat(texture.format), glType = this.glType(texture.type);
 				const glInternalFormat = this.glInternalFormat(texture.internalFormat, glFormat, glType, texture.colorSpace);
@@ -401,7 +400,7 @@ class WebGLTextures {
 				if (dp.webglTexture === undefined) { dp.webglTexture = gl.createTexture(); this.info.memory.textures++; }
 				else { gl.deleteTexture(dp.webglTexture); dp.webglTexture = gl.createTexture(); } // immutable storage: fresh object
 				dt.isRenderTargetTexture = true;
-				state.bindTexture(gl.TEXTURE_2D, dp.webglTexture, 0);
+				state.bindTexture(gl.TEXTURE_2D, dp.webglTexture, 0); state.activeTexture(0);
 				this._setTextureParameters(gl.TEXTURE_2D, dt);
 				const glFormat = this.glFormat(dt.format), glType = this.glType(dt.type);
 				const glInternalFormat = this.glInternalFormat(null, glFormat, glType);
@@ -507,7 +506,7 @@ class WebGLTextures {
 		if (this._textureNeedsMipmaps(texture)) {
 			const tp = this.get(texture);
 			const target = renderTarget.isWebGLCubeRenderTarget === true ? this.gl.TEXTURE_CUBE_MAP : this.gl.TEXTURE_2D;
-			this.state.bindTexture(target, tp.webglTexture, 0);
+			this.state.bindTexture(target, tp.webglTexture, 0); this.state.activeTexture(0);
 			this.gl.generateMipmap(target);
 		}
 	}

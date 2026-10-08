@@ -2,7 +2,7 @@ import {
 	MATERIAL_BASIC, MATERIAL_LAMBERT, MATERIAL_PHONG, MATERIAL_STANDARD, MATERIAL_NORMAL, MATERIAL_DEPTH, MATERIAL_LINE, MATERIAL_POINTS,
 	MATERIAL_SPRITE, MATERIAL_SHADER, MATERIAL_SHADOW_DEPTH, TEXTURE_UNITS, pointShadowUnit, buildBuiltinShader, buildCustomShader
 } from '../shaders/ShaderLib.js';
-import { DoubleSide, NoToneMapping, SRGBColorSpace, BasicShadowMap } from '../../constants.js';
+import { DoubleSide, BackSide, NoToneMapping, SRGBColorSpace, BasicShadowMap } from '../../constants.js';
 
 export const BLOCK_FRAME = 0;
 export const BLOCK_LIGHTS = 1;
@@ -10,6 +10,44 @@ export const BLOCK_MATERIAL = 2;
 
 let _programId = 0;
 const FIXED_ATTRIBUTES = { position: 0, normal: 1, uv: 2, color: 3, uv1: 4, instanceColor: 5, skinIndex: 6, skinWeight: 7, instanceMatrix: 8 };
+
+/**
+ * Custom (ShaderMaterial) attribute names get one location per name, shared by every program and every
+ * renderer, so geometries holding them can live in a mega-buffer page whose VAO fits all those programs.
+ * Locations start at 9, just above instanceMatrix (a mat4, 8-11): a program that declares instanceMatrix
+ * cannot use 9-11 and keeps linker-chosen locations for the colliding names (see WebGLProgram.customFixed).
+ */
+const CUSTOM_ATTRIBUTE_BASE = 9;
+const customAttributeIndex = new Map();
+/** Fixed location for a custom attribute name, or -1 when it has none (not seen in any program yet). */
+export function customAttributeLocation(name) {
+	const i = customAttributeIndex.get(name);
+	return i === undefined ? -1 : CUSTOM_ATTRIBUTE_BASE + i;
+}
+/** Number of custom attribute names registered so far (grows when a program with a new name is linked). */
+export function customAttributeCount() { return customAttributeIndex.size; }
+const ATTRIBUTE_DECLARATION = /(?<=^|[;}\n])\s*(?:attribute|in)\s+(?:(?:highp|mediump|lowp)\s+)?(\w+)\s+([^;(){}]+);/g; // a declaration starts a line or follows ';' / '}' (function parameters follow '(' or ',')
+function bindCustomAttributeLocations(gl, program, vertexSource, maxAttributes) {
+	if (/layout\s*\(\s*location/.test(vertexSource)) return; // explicit locations: leave everything to the shader
+	const usesInstanceMatrix = /^[ \t]*#define[ \t]+USE_INSTANCING\b/m.test(vertexSource); // the prefix declares instanceMatrix only under this define
+	const hasTangent = /^[ \t]*#define[ \t]+USE_TANGENT\b/m.test(vertexSource);
+	ATTRIBUTE_DECLARATION.lastIndex = 0;
+	let m;
+	while ((m = ATTRIBUTE_DECLARATION.exec(vertexSource)) !== null) {
+		if (m[1].startsWith('mat')) continue; // multi-location attributes stay with the linker
+		const names = m[2].split(',');
+		for (let k = 0; k < names.length; k++) {
+			if (names[k].indexOf('[') !== -1) continue;
+			const name = names[k].trim();
+			if (name === '' || FIXED_ATTRIBUTES[name] !== undefined || (name === 'tangent' && !hasTangent)) continue; // the prefix declares tangent (and the other optional attributes) under defines
+			let i = customAttributeIndex.get(name);
+			if (i === undefined) { i = customAttributeIndex.size; customAttributeIndex.set(name, i); }
+			const location = CUSTOM_ATTRIBUTE_BASE + i;
+			if (location >= maxAttributes || (usesInstanceMatrix && location < 12)) continue;
+			gl.bindAttribLocation(program, location, name);
+		}
+	}
+}
 
 /**
  * A compiled program plus everything the renderer needs to drive it without
@@ -36,6 +74,7 @@ class WebGLProgram {
 		gl.bindAttribLocation(program, 6, 'skinIndex');
 		gl.bindAttribLocation(program, 7, 'skinWeight');
 		gl.bindAttribLocation(program, 8, 'instanceMatrix');
+		if (parameters.materialType === MATERIAL_SHADER) bindCustomAttributeLocations(gl, program, vertexSource, gl.getParameter(gl.MAX_VERTEX_ATTRIBS)); // built-in shaders have no custom attributes
 		gl.linkProgram(program);
 		if (gl.getProgramParameter(program, gl.LINK_STATUS) === false) {
 			const log = gl.getProgramInfoLog(program);
@@ -100,6 +139,12 @@ class WebGLProgram {
 			if (FIXED_ATTRIBUTES[info.name] === undefined && location >= 0) this.customAttributes.push(record);
 		}
 		this.hasCustomAttributes = this.customAttributes.length > 0;
+		/** every custom attribute sits at its per-name fixed location (so a mega-buffer page VAO can feed this program) */
+		this.customFixed = true;
+		for (let i = 0; i < this.customAttributes.length; i++) {
+			const r = this.customAttributes[i];
+			if (r.locationSize !== 1 || customAttributeLocation(r.name) !== r.location) { this.customFixed = false; break; }
+		}
 
 		// Texture units are assigned once per program at link time and never change:
 		// built-in programs use the fixed table, custom (ShaderMaterial) programs number their
@@ -108,7 +153,8 @@ class WebGLProgram {
 		const isCustom = parameters.materialType === MATERIAL_SHADER;
 		this.samplerUniforms = [];
 		let nextUnit = 0;
-		gl.useProgram(program);
+		gl.useProgram(program); // leaves this program current in GL: the renderer syncs its state cache (justLinked)
+		this.justLinked = true;
 		for (const name in this.uniforms) {
 			const u = this.uniforms[name];
 			const target = samplerTarget(gl, u.type);
@@ -127,7 +173,8 @@ class WebGLProgram {
 				continue;
 			}
 			if (!isCustom && (TEXTURE_UNITS[name] !== undefined || TEXTURE_UNITS[name + '0'] !== undefined)) {
-				unit = u.size > 1 ? TEXTURE_UNITS[name + '0'] : TEXTURE_UNITS[name];
+				// a sampler array of size 1 (one shadow-casting light) is still an array: it takes the '<name>0' slot
+				unit = TEXTURE_UNITS[name] !== undefined ? TEXTURE_UNITS[name] : TEXTURE_UNITS[name + '0'];
 			} else {
 				unit = nextUnit; nextUnit += u.size;
 			}
@@ -235,7 +282,9 @@ class WebGLPrograms {
 		const pointShadowBasic = numPointShadows > 0 && renderer.shadowMap.type === BasicShadowMap;
 		const toneMapping = (material.toneMapped && renderer.toneMapping !== NoToneMapping && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH && materialType !== MATERIAL_NORMAL) ? renderer.toneMapping : NoToneMapping;
 		const currentRenderTarget = renderer.getRenderTarget();
-		const sRGBOutput = (currentRenderTarget === null ? renderer.outputColorSpace : currentRenderTarget.texture.colorSpace) === SRGBColorSpace && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH && materialType !== MATERIAL_NORMAL;
+		// three.js: shaders encode to the output colour space only when rendering to the canvas; a render target
+		// is written in the working (linear) space (an sRGB render target encodes in hardware)
+		const sRGBOutput = currentRenderTarget === null && renderer.outputColorSpace === SRGBColorSpace && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH && materialType !== MATERIAL_NORMAL;
 		// skinning and morph targets are object / geometry features (same rule as three.js: the program follows the object)
 		const skinning = object.isSkinnedMesh === true;
 		const morphAttributes = geometry.morphAttributes;
@@ -259,7 +308,8 @@ class WebGLPrograms {
 			materialArray: variant.materialArray === true && (variant.objectTexture === true || variant.multiDraw === true),
 			materialArraySize: renderer._materialWindow, materialPad: renderer._materialPad,
 			flatShading: isLit && material.flatShading === true,
-			doubleSided: !leanShadow && material.side === DoubleSide,
+			doubleSided: !leanShadow && variant.side === DoubleSide,
+			flipSided: !leanShadow && variant.side === BackSide,
 			leanShadow,
 			fog, fogExp2: fog && scene.fog.isFogExp2 === true,
 			alphaTest: material.alphaTest > 0,
@@ -281,7 +331,7 @@ class WebGLPrograms {
 		key = key * 2 + (map ? 1 : 0); key = key * 2 + (alphaMap ? 1 : 0); key = key * 2 + (emissiveMap ? 1 : 0); key = key * 2 + (normalMap ? 1 : 0);
 		key = key * 2 + (roughnessMap ? 1 : 0); key = key * 2 + (metalnessMap ? 1 : 0); key = key * 2 + (aoMap ? 1 : 0); key = key * 2 + (specularMap ? 1 : 0);
 		key = key * 2 + (useUv ? 1 : 0); key = key * 2 + (useUv1 ? 1 : 0); key = key * 2 + (vertexColors ? 1 : 0); key = key * 2 + (p.vertexAlphas ? 1 : 0);
-		key = key * 2 + (p.instancing ? 1 : 0); key = key * 2 + (p.instancingColor ? 1 : 0); key = key * 2 + (p.flatShading ? 1 : 0); key = key * 2 + (p.doubleSided ? 1 : 0);
+		key = key * 2 + (p.instancing ? 1 : 0); key = key * 2 + (p.instancingColor ? 1 : 0); key = key * 2 + (p.flatShading ? 1 : 0); key = key * 2 + (p.doubleSided ? 1 : 0); key = key * 2 + (p.flipSided ? 1 : 0);
 		key = key * 2 + (fog ? 1 : 0); key = key * 2 + (p.alphaTest ? 1 : 0); key = key * 2 + (p.sizeAttenuation ? 1 : 0); key = key * 2 + (p.premultipliedAlpha ? 1 : 0);
 		key = key * 2 + (p.dithering ? 1 : 0); key = key * 2 + (hasUv1 ? 1 : 0); key = key * 8 + toneMapping; key = key * 2 + (sRGBOutput ? 1 : 0);
 		key = key * 8 + numDirShadows; key = key * 8 + numSpotShadows; key = key * 2 + (p.multiDraw ? 1 : 0); key = key * 2 + (p.objectTexture ? 1 : 0); key = key * 2 + (leanShadow ? 1 : 0);

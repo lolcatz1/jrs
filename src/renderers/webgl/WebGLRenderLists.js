@@ -146,6 +146,7 @@ class WebGLRenderList {
 	constructor() {
 		this.items = [];          // pooled item objects, index = insertion order
 		this.count = 0;
+		this.flags = new Uint8Array(1024); // per item index: batching eligibility bits (BATCHABLE / MULTIDRAWABLE), computed once in WebGLRenderer._pushItem
 		this.opaque = new SortSlot(1024);
 		this.transparent = new SortSlot(256);
 		this.opaqueCount = 0;
@@ -181,11 +182,13 @@ class WebGLRenderList {
 	/**
 	 * Adds an item. `item.program` is resolved later by the renderer (once the frame's lights are known).
 	 */
-	push(object, geometry, material, group, materialRid, geometryRid, variant, batchGroup) {
+	push(object, geometry, material, group, materialRid, geometryRid, variant, batchGroup, flags = 0) {
 		if (this.count >= INDEX_RANGE) return; // list full; ignore extra items rather than corrupt keys
 		const item = this._getItem(object, geometry, material, group, variant);
 		item.materialRid = materialRid; item.geometryRid = geometryRid; item.batchGroup = batchGroup;
 		const index = this.count - 1;
+		if (index >= this.flags.length) { const nf = new Uint8Array(this.flags.length * 2); nf.set(this.flags); this.flags = nf; }
+		this.flags[index] = flags;
 		if (material.transparent === true) {
 			const slot = this.transparent;
 			if (slot.n === slot.ids.length) {
@@ -194,9 +197,10 @@ class WebGLRenderList {
 			}
 			const z = this.zScratch[0];
 			this.transparentDepth[slot.n] = z; // depth key resolved in finish()
+			const zf = this.transparentDepth[slot.n]; // the float32-rounded value: min/max must bound what finish() reads back
 			slot.ids[slot.n++] = index;
-			if (z < this.minDepth) this.minDepth = z;
-			if (z > this.maxDepth) this.maxDepth = z;
+			if (zf < this.minDepth) this.minDepth = zf;
+			if (zf > this.maxDepth) this.maxDepth = zf;
 			this.transparentCount++;
 		} else {
 			const slot = this.opaque;
