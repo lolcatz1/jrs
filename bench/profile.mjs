@@ -19,11 +19,16 @@ const r = await page.evaluate(async (name) => {
 	const { scene, camera, update } = sc.build(JRS, sc.n);
 	const gl = renderer.getContext();
 	const t = {};
-	const wrap = (obj, m, label) => { if (!obj || typeof obj[m] !== 'function') { console.warn('profile: skipping stale wrapper', label); return; } const f = obj[m].bind(obj); obj[m] = (...a) => { const s = performance.now(); const r = f(...a); t[label] = (t[label] || 0) + performance.now() - s; return r; }; };
-	wrap(renderer, '_projectObject', 'project(total,recursive)');
+	// outermost call only: recursive methods (_projectObject) would otherwise be counted once per nesting level
+	const wrap = (obj, m, label) => { if (!obj || typeof obj[m] !== 'function') { console.warn('profile: skipping stale wrapper', label); return; } const f = obj[m]; let depth = 0; obj[m] = function (...a) { if (depth++ > 0) { try { return f.apply(this, a); } finally { depth--; } } const s = performance.now(); try { return f.apply(this, a); } finally { t[label] = (t[label] || 0) + performance.now() - s; depth--; } }; };
+	wrap(scene, 'updateMatrixWorld', 'scene.updateMatrixWorld'); scene._flatUMW = scene.updateMatrixWorld; // the wrapper is not a subclass override
+	wrap(renderer, '_projectObject', 'projectObject');
+	wrap(renderer, '_flatPass', 'flatPass(update+project)');
 	wrap(renderer, '_drawList', 'drawList');
 	wrap(renderer, '_resolvePrograms', 'resolvePrograms');
-	wrap(renderer.batcher, 'upload', 'batcher.upload');
+	wrap(renderer.batcher, 'uploadTexture', 'batcher.uploadTexture');
+	wrap(gl, 'texImage2D', 'gl.texImage2D');
+	wrap(gl, 'texSubImage2D', 'gl.texSubImage2D');
 	wrap(renderer.bindingStates, 'bind', 'bindingStates.bind');
 	wrap(renderer, '_syncMaterialBlock', 'syncMaterialBlock');
 	wrap(renderer, '_setupMaterial', 'setupMaterial(total)');
@@ -33,6 +38,7 @@ const r = await page.evaluate(async (name) => {
 	wrap(gl, 'bindBufferRange', 'gl.bindBufferRange');
 	wrap(gl, 'vertexAttribPointer', 'gl.vertexAttribPointer');
 	wrap(gl, 'bindVertexArray', 'gl.bindVertexArray');
+	{ const list = renderer.renderLists.get(scene, 0, camera); wrap(Object.getPrototypeOf(list), 'finish', 'list.finish(sort)'); }
 	for (let f = 0; f < 10; f++) { if (update) update(f); renderer.render(scene, camera); }
 	gl.finish();
 	for (const k in t) t[k] = 0;
@@ -40,16 +46,17 @@ const r = await page.evaluate(async (name) => {
 	const s0 = performance.now();
 	for (let f = 0; f < N; f++) { if (update) update(10 + f); renderer.render(scene, camera); }
 	const total = (performance.now() - s0) / N;
-	for (const k in t) t[k] = +(t[k] / N).toFixed(3);
-	t.total = +total.toFixed(3);
-	t.calls = renderer.info.render.calls; t.batches = renderer.info.render.batches;
+	const out = {}; // snapshot before the no-batch pass below adds to the same timers
+	for (const k in t) out[k] = +(t[k] / N).toFixed(3);
+	out.total = +total.toFixed(3);
+	out.calls = renderer.info.render.calls; out.batches = renderer.info.render.batches;
 	// no-batch comparison
 	renderer.autoBatch = false;
 	for (let f = 0; f < 5; f++) renderer.render(scene, camera);
 	const s1 = performance.now();
 	for (let f = 0; f < N; f++) renderer.render(scene, camera);
-	t.totalNoBatch = +((performance.now() - s1) / N).toFixed(3);
-	return t;
+	out.totalNoBatch = +((performance.now() - s1) / N).toFixed(3);
+	return out;
 }, name);
 console.log(JSON.stringify(r, null, 1));
 await browser.close(); server.close();

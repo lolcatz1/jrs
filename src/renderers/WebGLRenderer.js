@@ -13,6 +13,7 @@ import { BufferGeometry } from '../core/BufferGeometry.js';
 import { BufferAttribute } from '../core/BufferAttribute.js';
 import { Object3D } from '../core/Object3D.js';
 import { epochs } from '../core/epochs.js';
+import { FlatGraph, K_RENDERABLE, K_SPRITE, K_LIGHT, K_LOD, K_CUSTOM, K_INSUB, K_POST, K_NOCOUNT } from '../core/FlatGraph.js';
 import { WebGLState } from './webgl/WebGLState.js';
 import { WebGLAttributes } from './webgl/WebGLAttributes.js';
 import { WebGLTextures } from './webgl/WebGLTextures.js';
@@ -32,6 +33,11 @@ const _projScreenMatrix = /*@__PURE__*/ new Matrix4();
 const _vector3 = /*@__PURE__*/ new Vector3();
 const _color = /*@__PURE__*/ new Color();
 const _frustum = /*@__PURE__*/ new Frustum();
+
+function isDescendantOf(object, ancestor) {
+	for (let o = object.parent; o !== null; o = o.parent) if (o === ancestor) return true;
+	return false;
+}
 const _emptyScene = { fog: null, environment: null, background: null, overrideMaterial: null, isScene: true, matrixWorldAutoUpdate: false, children: [], visible: true };
 let _frameCounter = 0; // unique across renderers so per-material frame stamps cannot collide
 
@@ -70,7 +76,7 @@ class WebGLRenderer {
 		 * debug.traceUniforms = true records, per render() call, every uniform upload that actually
 		 * reached GL (name -> count) plus program switches and draws, into debug.uniformTrace (last 16 calls).
 		 */
-		this.debug = { checkShaderErrors: true, onShaderError: null, traceUniforms: false, uniformTrace: [], verifyListReuse: false, listReuse: { rebuilt: 0, same: 0, cameraOnly: 0, commandsReplayed: 0, mismatches: 0 } };
+		this.debug = { checkShaderErrors: true, onShaderError: null, traceUniforms: false, uniformTrace: [], verifyListReuse: false, listReuse: { rebuilt: 0, same: 0, cameraOnly: 0, commandsReplayed: 0, mismatches: 0 }, flatUpdate: { merged: 0, split: 0, projectOnly: 0, rebuilds: 0 } };
 		this._traceUniforms = null;
 		this.autoClear = true; this.autoClearColor = true; this.autoClearDepth = true; this.autoClearStencil = true;
 		this.sortObjects = true;
@@ -231,6 +237,14 @@ class WebGLRenderer {
 		this._cmdN = 0;
 		/** Reuse the previous frame's sorted render list and draw commands when nothing relevant changed (see WebGLRenderListCache). */
 		this.reuseRenderLists = true;
+		/**
+		 * Update world matrices, cull and collect render items in one flat loop over a per-scene array (core/FlatGraph.js)
+		 * instead of the recursive `scene.updateMatrixWorld()` + `_projectObject` walks. `false` restores the recursive walks.
+		 */
+		this.flatSceneUpdate = true;
+		this._flatGraph = null;     // FlatGraph of the scene being rendered (null: recursive walks)
+		this._flatMerged = false;   // this render() updates matrices and projects in the same loop (animated scene)
+		this._deferSkeletons = false; this._skinnedPending = []; // skeleton.update() runs after a merged pass (bones may follow their mesh)
 		this._zTmp = new Float64Array(1);
 		this._rec = null;          // RenderListCache being recorded during a build, else null
 		this._megaTouch = null;    // Map geometry -> mega-buffer record touched while building commands, else null
@@ -393,8 +407,17 @@ class WebGLRenderer {
 		if (camera === undefined || camera.isCamera !== true) { console.error('jrs.WebGLRenderer.render: camera is not an instance of Camera.'); return; }
 		if (this._isContextLost === true) return;
 		const gl = this._gl;
-		if (scene.matrixWorldAutoUpdate === true) scene.updateMatrixWorld();
-		if (camera.parent === null && camera.matrixWorldAutoUpdate === true) camera.updateMatrixWorld();
+		const savedFlat = this._flatGraph, savedMerged = this._flatMerged;
+		const flat = this.flatSceneUpdate === true && scene.isObject3D === true ? this._flatGraphFor(scene) : null;
+		if (flat !== null) {
+			// the frustum needs the camera's final world matrix before the pass: a parentless camera updates itself, a camera
+			// inside this scene is updated with its ancestor chain (the pass then finds that chain up to date)
+			if (camera.parent === null) { if (camera.matrixWorldAutoUpdate === true) camera.updateMatrixWorld(); }
+			else if (scene.matrixWorldAutoUpdate === true && isDescendantOf(camera, scene)) camera.updateWorldMatrix(true, false);
+		} else {
+			if (scene.matrixWorldAutoUpdate === true) scene.updateMatrixWorld();
+			if (camera.parent === null && camera.matrixWorldAutoUpdate === true) camera.updateMatrixWorld();
+		}
 		this._frameId = ++_frameCounter;
 		this._renderCallDepth++;
 		this._currentCamera = camera;
@@ -410,6 +433,17 @@ class WebGLRenderer {
 
 		const list = this.renderLists.get(scene, this._renderCallDepth - 1, camera);
 		const cache = list.cache;
+		if (flat !== null) {
+			// A list that cannot be reused anyway (no recorded dependencies, epochs moved, or the last pass moved something: the
+			// scene is animating) is built in one loop that also updates the matrices. Otherwise the matrices are updated in a
+			// loop of their own first, so an unchanged frame can reuse its list without projecting.
+			const update = scene.matrixWorldAutoUpdate === true;
+			const merged = update && (cache.hasSig === false || cache.flatChanged === true || this.reuseRenderLists === false ||
+				cache.structure !== epochs.structure || cache.world !== epochs.world);
+			if (update && merged === false) { this._flatPass(flat, scene, camera, null, true, false, false); cache.flatChanged = flat.changed; }
+			this._flatGraph = flat; this._flatMerged = merged;
+			this.debug.flatUpdate[merged ? 'merged' : update ? 'split' : 'projectOnly']++;
+		} else { this._flatGraph = null; this._flatMerged = false; }
 		const level = this._prepareList(list, cache, scene, camera);
 
 		if (this.info.autoReset === true && this._renderCallDepth === 1) { this.info.reset(); this._traceDraws = 0; }
@@ -469,8 +503,18 @@ class WebGLRenderer {
 			if (t.length > 16) t.shift();
 			this._traceUniforms = null;
 		}
+		this._flatGraph = savedFlat; this._flatMerged = savedMerged;
 		this._renderCallDepth--;
 		if (this._renderCallDepth === 0) this.info.render.frame++;
+	}
+
+	/** The scene's flat graph, built on first use and rebuilt when a patch was not possible or `children` was edited directly. */
+	_flatGraphFor(scene) {
+		let g = scene._flatGraph;
+		if (g === null) { g = new FlatGraph(scene); scene._flatGraph = g; }
+		if (g.valid === false || g.validate() === false) { g.rebuild(); this.debug.flatUpdate.rebuilds++; }
+		g.patches = 0;
+		return g;
 	}
 
 	// ------------------------------------------------------------------ render-list reuse
@@ -485,7 +529,7 @@ class WebGLRenderer {
 		this._cameraLayerMask = camera.layers.mask;
 		let level = -1;
 		const view = camera.matrixWorldInverse.elements, pv = _projScreenMatrix.elements;
-		if (this.reuseRenderLists === true && cache.ready === true) level = this._reuseLevel(list, cache, scene, camera, view, pv);
+		if (this.reuseRenderLists === true && cache.ready === true && this._flatMerged === false) level = this._reuseLevel(list, cache, scene, camera, view, pv);
 		if (level >= 0) {
 			this.lights.begin();
 			const lights = cache.lights;
@@ -572,6 +616,25 @@ class WebGLRenderer {
 	/** Traverse the scene into `list`; when the frame before was identical, also record what the list depends on. */
 	_buildList(list, cache, scene, camera, view, pv) {
 		const override = scene.overrideMaterial === undefined ? null : scene.overrideMaterial;
+		const flat = this._flatGraph;
+		if (this._flatMerged === true) {
+			// animated scene: world matrices and render items in one loop; nothing is recorded (the list is new every frame)
+			cache.ready = false; cache.resort = false;
+			cache.cmdOpaque.invalidate(); cache.cmdTransparent.invalidate();
+			this._rec = null;
+			this._cameraLayerMask = camera.layers.mask;
+			list.init();
+			this.lights.begin();
+			this._renderOrderReset();
+			this._flatPass(flat, scene, camera, list, true, true, this.sortObjects);
+			cache.hasSig = true; cache.structure = epochs.structure; cache.world = epochs.world; cache.sortObjects = this.sortObjects; cache.override = override;
+			cache.setCamera(camera, view, pv);
+			cache.flatChanged = flat.changed;
+			this.lights.end(this.shadowMap.enabled);
+			if (this.lights.version !== this._lastLightsVersion) { this._lastLightsVersion = this.lights.version; this._lightsEpoch++; this._envVersion = this._lightsEpoch * 65536 + this._envKeyId; }
+			this._resolvePrograms(list, scene);
+			return;
+		}
 		const structure = epochs.structure, world = epochs.world;
 		const record = this.reuseRenderLists === true && cache.hasSig && cache.structure === structure && cache.world === world &&
 			cache.sortObjects === this.sortObjects && cache.override === override;
@@ -585,7 +648,8 @@ class WebGLRenderer {
 		list.init();
 		this.lights.begin();
 		this._renderOrderReset();
-		this._projectObject(scene, camera, 0, this.sortObjects, list);
+		if (flat !== null) this._flatPass(flat, scene, camera, list, false, true, this.sortObjects);
+		else this._projectObject(scene, camera, 0, this.sortObjects, list);
 		this._rec = null;
 		this.lights.end(this.shadowMap.enabled);
 		if (this.lights.version !== this._lastLightsVersion) { this._lastLightsVersion = this.lights.version; this._lightsEpoch++; this._envVersion = this._lightsEpoch * 65536 + this._envKeyId; }
@@ -802,6 +866,170 @@ class WebGLRenderer {
 		for (let i = 0, l = children.length; i < l; i++) this._projectObject(children[i], camera, groupOrder, sortObjects, list);
 	}
 
+	/**
+	 * One loop over the scene's flat graph (parent before child). With `doUpdate` it does what `scene.updateMatrixWorld()`
+	 * does (recompose changed local matrices, remultiply world matrices whose local matrix, parent or `matrixWorldNeedsUpdate`
+	 * changed, honouring `matrixAutoUpdate` / `matrixWorldAutoUpdate`, calling subclass overrides of `updateMatrixWorld`
+	 * recursively for their subtree); with `project` it does what `_projectObject(scene)` does (visibility, layers, cull,
+	 * lights, LOD, sprites, items) into `list`, in the same order as the recursive walk.
+	 */
+	_flatPass(g, scene, camera, list, doUpdate, project, sortObjects) {
+		const objects = g.objects, parentIdx = g.parent, kind = g.kind, wv = g.wv, dirty = g.dirty, vis = g.vis, n = g.n;
+		const rec = this._rec, camMask = this._cameraLayerMask;
+		const ve = project ? camera.matrixWorldInverse.elements : null;
+		const zScratch = project ? list.zScratch : null;
+		const worldBefore = epochs.world;
+		let bumps = 0;
+		this._deferSkeletons = doUpdate && project;
+		for (let i = 0; i < n; i++) {
+			const o = objects[i];
+			const k = kind[i], p = parentIdx[i];
+			if (doUpdate && (k & K_INSUB) === 0) {
+				if ((k & K_CUSTOM) !== 0) {
+					// a class with its own updateMatrixWorld: let it update its subtree (entries below it are K_INSUB)
+					o.updateMatrixWorld(p >= 0 && dirty[p] === 1);
+					dirty[i] = 0;
+				} else if (p < 0 && o.parent !== null) {
+					// the graph root has a parent of its own (render(group) with the group inside another hierarchy)
+					const before = o._worldVersion;
+					o.updateWorldMatrix(false, false);
+					dirty[i] = before !== o._worldVersion ? 1 : 0;
+				} else {
+					let need = o.matrixWorldNeedsUpdate === true;
+					if (o.matrixAutoUpdate === true) {
+						// Object3D.updateMatrix inlined: recompose only when a TRS component differs from the snapshot
+						const pos = o.position, q = o.quaternion, sc = o.scale, d = o._snapData, so = o._snapOffset;
+						const px = pos.x, py = pos.y, pz = pos.z, x = q._x, y = q._y, z = q._z, w = q._w, sx = sc.x, sy = sc.y, sz = sc.z;
+						if (!(px === d[so] && py === d[so + 1] && pz === d[so + 2] &&
+							x === d[so + 3] && y === d[so + 4] && z === d[so + 5] && w === d[so + 6] &&
+							sx === d[so + 7] && sy === d[so + 8] && sz === d[so + 9])) {
+							d[so] = px; d[so + 1] = py; d[so + 2] = pz;
+							d[so + 3] = x; d[so + 4] = y; d[so + 5] = z; d[so + 6] = w;
+							d[so + 7] = sx; d[so + 8] = sy; d[so + 9] = sz;
+							const te = o._slabData, t = o._slabOffset;
+							const x2 = x + x, y2 = y + y, z2 = z + z;
+							const xx = x * x2, xy = x * y2, xz = x * z2;
+							const yy = y * y2, yz = y * z2, zz = z * z2;
+							const wx = w * x2, wy = w * y2, wz = w * z2;
+							te[t] = (1 - (yy + zz)) * sx; te[t + 1] = (xy + wz) * sx; te[t + 2] = (xz - wy) * sx; te[t + 3] = 0;
+							te[t + 4] = (xy - wz) * sy; te[t + 5] = (1 - (xx + zz)) * sy; te[t + 6] = (yz + wx) * sy; te[t + 7] = 0;
+							te[t + 8] = (xz + wy) * sz; te[t + 9] = (yz - wx) * sz; te[t + 10] = (1 - (xx + yy)) * sz; te[t + 11] = 0;
+							te[t + 12] = px; te[t + 13] = py; te[t + 14] = pz; te[t + 15] = 1;
+							need = true;
+						}
+					}
+					let pw = -1;
+					if (p >= 0) { pw = wv[p]; if (dirty[p] === 1 || pw !== o._parentWorldVersion) need = true; }
+					if (need) {
+						if (o.matrixWorldAutoUpdate === true) {
+							const s = o._slabData, lo = o._slabOffset, wo = lo + 16;
+							if (p < 0) {
+								for (let j = 0; j < 16; j++) s[wo + j] = s[lo + j];
+							} else {
+								// Matrix4.multiplyMatrices(parent.matrixWorld, this.matrix), same expression order
+								const pobj = objects[p], ae = pobj._slabData, ao = pobj._slabOffset + 16;
+								const a11 = ae[ao], a12 = ae[ao + 4], a13 = ae[ao + 8], a14 = ae[ao + 12];
+								const a21 = ae[ao + 1], a22 = ae[ao + 5], a23 = ae[ao + 9], a24 = ae[ao + 13];
+								const a31 = ae[ao + 2], a32 = ae[ao + 6], a33 = ae[ao + 10], a34 = ae[ao + 14];
+								const a41 = ae[ao + 3], a42 = ae[ao + 7], a43 = ae[ao + 11], a44 = ae[ao + 15];
+								const b11 = s[lo], b12 = s[lo + 4], b13 = s[lo + 8], b14 = s[lo + 12];
+								const b21 = s[lo + 1], b22 = s[lo + 5], b23 = s[lo + 9], b24 = s[lo + 13];
+								const b31 = s[lo + 2], b32 = s[lo + 6], b33 = s[lo + 10], b34 = s[lo + 14];
+								const b41 = s[lo + 3], b42 = s[lo + 7], b43 = s[lo + 11], b44 = s[lo + 15];
+								s[wo] = a11 * b11 + a12 * b21 + a13 * b31 + a14 * b41;
+								s[wo + 4] = a11 * b12 + a12 * b22 + a13 * b32 + a14 * b42;
+								s[wo + 8] = a11 * b13 + a12 * b23 + a13 * b33 + a14 * b43;
+								s[wo + 12] = a11 * b14 + a12 * b24 + a13 * b34 + a14 * b44;
+								s[wo + 1] = a21 * b11 + a22 * b21 + a23 * b31 + a24 * b41;
+								s[wo + 5] = a21 * b12 + a22 * b22 + a23 * b32 + a24 * b42;
+								s[wo + 9] = a21 * b13 + a22 * b23 + a23 * b33 + a24 * b43;
+								s[wo + 13] = a21 * b14 + a22 * b24 + a23 * b34 + a24 * b44;
+								s[wo + 2] = a31 * b11 + a32 * b21 + a33 * b31 + a34 * b41;
+								s[wo + 6] = a31 * b12 + a32 * b22 + a33 * b32 + a34 * b42;
+								s[wo + 10] = a31 * b13 + a32 * b23 + a33 * b33 + a34 * b43;
+								s[wo + 14] = a31 * b14 + a32 * b24 + a33 * b34 + a34 * b44;
+								s[wo + 3] = a41 * b11 + a42 * b21 + a43 * b31 + a44 * b41;
+								s[wo + 7] = a41 * b12 + a42 * b22 + a43 * b32 + a44 * b42;
+								s[wo + 11] = a41 * b13 + a42 * b23 + a43 * b33 + a44 * b43;
+								s[wo + 15] = a41 * b14 + a42 * b24 + a43 * b34 + a44 * b44;
+							}
+							o._worldVersion++;
+							if ((k & K_NOCOUNT) === 0) bumps++;
+						}
+						if (p >= 0) o._parentWorldVersion = pw; // noted for user-owned world matrices too (see Object3D.updateMatrixWorld)
+						o.matrixWorldNeedsUpdate = false;
+						dirty[i] = 1;
+					} else {
+						dirty[i] = 0;
+					}
+					if ((k & K_POST) !== 0) o._flatPostUpdate();
+				}
+			}
+			wv[i] = o._worldVersion;
+			if (project === false) continue;
+
+			// ---- _projectObject, flattened: visibility is inherited through vis[], the rest is per object
+			let v = o._visible === false ? 0 : 1;
+			if (p >= 0) v &= vis[p];
+			vis[i] = v;
+			if (v === 0 || (o.layers.mask & camMask) === 0) continue;
+			if ((k & K_RENDERABLE) !== 0) {
+				const geometry = o.geometry;
+				const material = o.material;
+				const inside = !o.frustumCulled || this._cullTest(o, geometry, _frustum, false);
+				const first = list.count;
+				if (rec !== null) {
+					rec.regGeometry(geometry);
+					if (o.isInstancedMesh) rec.regInstanced(o);
+					if (Array.isArray(material)) rec.reusable = false;
+				}
+				if (inside) {
+					if (sortObjects) this._itemDepth(o, ve, zScratch); else zScratch[0] = 0;
+					if (Array.isArray(material)) {
+						const groups = geometry.groups;
+						for (let j = 0, l = groups.length; j < l; j++) {
+							const group = groups[j];
+							const groupMaterial = material[group.materialIndex];
+							if (groupMaterial && groupMaterial.visible) this._pushItem(list, o, geometry, groupMaterial, group, false);
+						}
+					} else {
+						if (rec !== null) rec.regMaterial(material);
+						if (material.visible) this._pushItem(list, o, geometry, material, null, false);
+					}
+				}
+				if (rec !== null) rec.addCandidate(o, inside, list.count > first ? first : -1);
+			} else if ((k & K_LIGHT) !== 0) {
+				if (rec !== null) rec.lights.push(o);
+				this.lights.push(o);
+			} else if ((k & K_LOD) !== 0) {
+				if (rec !== null) rec.reusable = false;
+				if (o.autoUpdate === true) o.update(camera);
+			} else if ((k & K_SPRITE) !== 0) {
+				const inside = !o.frustumCulled || _frustum.intersectsSprite(o);
+				const first = list.count;
+				if (inside) {
+					const material = o.material;
+					if (rec !== null) rec.regMaterial(material);
+					if (material.visible) {
+						this._itemDepth(o, ve, zScratch);
+						this._pushItem(list, o, o.geometry, material, null, false);
+					}
+				}
+				if (rec !== null) rec.addCandidate(o, inside, list.count > first ? first : -1);
+			}
+		}
+		if (doUpdate) {
+			if (bumps > 0) epochs.world += bumps;
+			g.changed = epochs.world !== worldBefore;
+		}
+		if (this._deferSkeletons === true) {
+			this._deferSkeletons = false;
+			const pending = this._skinnedPending, frame = this._frameId;
+			for (let i = 0; i < pending.length; i++) { const sk = pending[i]; if (sk.frame !== frame) { sk.update(); sk.frame = frame; } }
+			pending.length = 0;
+		}
+	}
+
 	_pushItem(list, object, geometry, material, group, shadowPass) {
 		if (shadowPass === false) {
 			const override = this._currentScene !== null ? this._currentScene.overrideMaterial : null;
@@ -809,9 +1037,13 @@ class WebGLRenderer {
 		}
 		const variant = this._variantFor(object, geometry, material, shadowPass);
 		if (object.isSkinnedMesh === true) {
-			// bone matrices once per render call (the skeleton itself skips the work when no bone moved)
+			// bone matrices once per render call (the skeleton itself skips the work when no bone moved); during a merged flat
+			// pass the bones may not have been updated yet, so the update runs once the pass is over
 			const skeleton = object.skeleton;
-			if (skeleton !== undefined && skeleton.frame !== this._frameId) { skeleton.update(); skeleton.frame = this._frameId; }
+			if (skeleton !== undefined && skeleton.frame !== this._frameId) {
+				if (this._deferSkeletons === true) this._skinnedPending.push(skeleton);
+				else { skeleton.update(); skeleton.frame = this._frameId; }
+			}
 		}
 		this._noteRenderOrder(object.renderOrder);
 		// compact per-frame ids for materials and geometries (dense -> good key packing). A material that
