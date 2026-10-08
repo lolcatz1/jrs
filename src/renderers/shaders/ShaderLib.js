@@ -36,9 +36,11 @@ export const MATERIAL_SHADOW_DEPTH = 11; // internal: shadow map pass
 export const TEXTURE_UNITS = {
 	map: 0, alphaMap: 1, normalMap: 2, emissiveMap: 3, roughnessMap: 4, metalnessMap: 5, aoMap: 6, specularMap: 7,
 	bumpMap: 7, // shares with specularMap (never used together by one material type)
+	dfgLUT: 7, // Standard materials only (they have neither specularMap nor bumpMap): the DFG lookup table
 	dirShadowMap0: 8, dirShadowMap1: 9, dirShadowMap2: 10, dirShadowMap3: 11,
-	spotShadowMap0: 12, spotShadowMap1: 13, spotShadowMap2: 14, spotShadowMap3: 15,
-	objectMatrices: 15, // multi-draw matrix texture (spot shadow maps are capped at 3 when it is used)
+	spotShadowMap0: 12, spotShadowMap1: 13, spotShadowMap2: 14, // shadow-casting spot lights are capped at 3
+	envMap: 15, // environment map: samplerCube, or the sampler2D CubeUV (PMREM) layout
+	objectMatrices: 16, // batched draws' matrix texture; vertex-shader only, so it may sit above the 16 fragment units
 };
 export const MATRIX_TEXTURE_WIDTH = 1024; // texels
 export const TEXELS_PER_OBJECT = 8; // model matrix (4) + normal matrix columns (3) + spare -> 128 objects per row
@@ -88,21 +90,23 @@ layout(std140) uniform Material {
 	vec4 uvTransform0;   // mat3 columns, padded
 	vec4 uvTransform1;
 	vec4 uvTransform2;
+	vec4 envParams;      // envMapIntensity, reflectivity, refractionRatio, ior
+	mat3 envMapRotation; // three vec4 columns
 };
+#define envMapIntensity envParams.x
+#define reflectivity envParams.y
+#define refractionRatio envParams.z
 `;
-export const MATERIAL_BLOCK_SIZE = 16 * 8;
+export const MATERIAL_BLOCK_SIZE = 16 * 12;
 
+// three's <common> chunk: PI, pow2/pow4, saturate, F_Schlick, BRDF_Lambert, equirectUv and the
+// direction helpers the environment-map chunks rely on. The GLSL 1.00 sampler names are mapped
+// onto ES 3.00 so the chunks compile unchanged.
 const common = /* glsl */`
-#define PI 3.141592653589793
-#define RECIPROCAL_PI 0.3183098861837907
-#define EPSILON 1e-6
-float pow2( const in float x ) { return x*x; }
-float pow4( const in float x ) { float x2 = x*x; return x2*x2; }
-vec3 F_Schlick( const in vec3 f0, const in float f90, const in float dotVH ) {
-	float fresnel = exp2( ( - 5.55473 * dotVH - 6.98316 ) * dotVH );
-	return f0 * ( 1.0 - fresnel ) + ( f90 * fresnel );
-}
-vec3 BRDF_Lambert( const in vec3 diffuseColor ) { return RECIPROCAL_PI * diffuseColor; }
+#define texture2D texture
+#define textureCube texture
+#define texture2DGradEXT textureGrad
+#include <common>
 `;
 
 const vertexShader = /* glsl */`
@@ -177,6 +181,9 @@ out vec4 vColor;
 #ifdef USE_FOG
 out float vFogDepth;
 #endif
+#if defined( USE_ENVMAP ) && ! defined( ENV_WORLDPOS )
+out vec3 vReflect;
+#endif
 #if NUM_DIR_SHADOWS > 0
 out vec4 vDirShadowCoord[ NUM_DIR_SHADOWS ];
 #endif
@@ -222,6 +229,26 @@ void main() {
 		#else
 		vNormal = normalize( normalMatrix * normal );
 		#endif
+		#ifdef FLIP_SIDED
+		vNormal = - vNormal;
+		#endif
+	#endif
+	#if defined( USE_ENVMAP ) && ! defined( ENV_WORLDPOS )
+	{
+		// MeshBasicMaterial: the reflection vector is computed per vertex and interpolated, as in three.js
+		vec3 cameraToVertex;
+		if ( cameraPosition.w > 0.5 ) {
+			cameraToVertex = normalize( vec3( - viewMatrix[ 0 ][ 2 ], - viewMatrix[ 1 ][ 2 ], - viewMatrix[ 2 ][ 2 ] ) );
+		} else {
+			cameraToVertex = normalize( worldPosition.xyz - cameraPosition.xyz );
+		}
+		vec3 worldNormal = vNormal;
+		#ifdef ENVMAP_MODE_REFLECTION
+		vReflect = reflect( cameraToVertex, worldNormal );
+		#else
+		vReflect = refract( cameraToVertex, worldNormal, refractionRatio );
+		#endif
+	}
 	#endif
 	#ifdef USE_UV
 	vUv = ( mat3( uvTransform0.xyz, uvTransform1.xyz, uvTransform2.xyz ) * vec3( uv, 1.0 ) ).xy;
@@ -323,6 +350,34 @@ uniform sampler2D aoMap;
 #ifdef USE_SPECULARMAP
 uniform sampler2D specularMap;
 #endif
+#ifdef USE_ENVMAP
+	#ifdef ENVMAP_TYPE_CUBE
+	uniform samplerCube envMap;
+	#else
+	uniform sampler2D envMap;
+	#endif
+	#ifndef ENV_WORLDPOS
+	in vec3 vReflect;
+	#endif
+#endif
+#ifdef LIGHTING_STANDARD
+uniform sampler2D dfgLUT;
+#endif
+#include <cube_uv_reflection_fragment>
+#if defined( USE_ENVMAP ) && defined( ENVMAP_TYPE_CUBE_UV )
+// three.js <envmap_physical_pars_fragment> with world-space inputs (jrs lights in world space)
+vec3 getIBLIrradiance( const in vec3 worldNormal ) {
+	vec4 envMapColor = textureCubeUV( envMap, envMapRotation * worldNormal, 1.0 );
+	return PI * envMapColor.rgb * envMapIntensity;
+}
+vec3 getIBLRadiance( const in vec3 viewDir, const in vec3 normal, const in float roughness ) {
+	vec3 reflectVec = reflect( - viewDir, normal );
+	// Mixing the reflection with the normal is more accurate and keeps rough objects from gathering light from behind their tangent plane.
+	reflectVec = normalize( mix( reflectVec, normal, pow4( roughness ) ) );
+	vec4 envMapColor = textureCubeUV( envMap, envMapRotation * reflectVec, roughness );
+	return envMapColor.rgb * envMapIntensity;
+}
+#endif
 #if NUM_DIR_SHADOWS > 0
 in vec4 vDirShadowCoord[ NUM_DIR_SHADOWS ];
 uniform sampler2DShadow dirShadowMap[ NUM_DIR_SHADOWS ];
@@ -385,28 +440,98 @@ float getSpotAttenuation( const in float coneCosine, const in float penumbraCosi
 }
 
 #if defined( LIGHTING_STANDARD )
-float D_GGX( const in float alpha, const in float dotNH ) {
-	float a2 = pow2( alpha );
-	float denom = pow2( dotNH ) * ( a2 - 1.0 ) + 1.0;
-	return RECIPROCAL_PI * a2 / pow2( denom );
-}
+struct PhysicalMaterial {
+	vec3 diffuseColor;
+	vec3 diffuseContribution;
+	vec3 specularColor;
+	vec3 specularColorBlended;
+	float roughness;
+	float metalness;
+	float specularF90;
+	vec2 dfg;
+	vec3 multiScatteringCompensation;
+};
 float V_GGX_SmithCorrelated( const in float alpha, const in float dotNL, const in float dotNV ) {
 	float a2 = pow2( alpha );
 	float gv = dotNL * sqrt( a2 + ( 1.0 - a2 ) * pow2( dotNV ) );
 	float gl = dotNV * sqrt( a2 + ( 1.0 - a2 ) * pow2( dotNL ) );
 	return 0.5 / max( gv + gl, EPSILON );
 }
-vec3 BRDF_GGX( const in vec3 lightDir, const in vec3 viewDir, const in vec3 normal, const in vec3 f0, const in float f90, const in float roughness ) {
-	float alpha = pow2( roughness );
+float D_GGX( const in float alpha, const in float dotNH ) {
+	float a2 = pow2( alpha );
+	float denom = pow2( dotNH ) * ( a2 - 1.0 ) + 1.0; // avoid alpha = 0 with dotNH = 1
+	return RECIPROCAL_PI * a2 / pow2( denom );
+}
+vec3 BRDF_GGX( const in vec3 lightDir, const in vec3 viewDir, const in vec3 normal, const in PhysicalMaterial material ) {
+	vec3 f0 = material.specularColorBlended;
+	float f90 = material.specularF90;
+	float roughness = material.roughness;
+	float alpha = pow2( roughness ); // UE4's roughness
 	vec3 halfDir = normalize( lightDir + viewDir );
-	float dotNL = clamp( dot( normal, lightDir ), 0.0, 1.0 );
-	float dotNV = clamp( dot( normal, viewDir ), 0.0, 1.0 );
-	float dotNH = clamp( dot( normal, halfDir ), 0.0, 1.0 );
-	float dotVH = clamp( dot( viewDir, halfDir ), 0.0, 1.0 );
+	float dotNL = saturate( dot( normal, lightDir ) );
+	float dotNV = saturate( dot( normal, viewDir ) );
+	float dotNH = saturate( dot( normal, halfDir ) );
+	float dotVH = saturate( dot( viewDir, halfDir ) );
 	vec3 F = F_Schlick( f0, f90, dotVH );
 	float V = V_GGX_SmithCorrelated( alpha, dotNL, dotNV );
 	float D = D_GGX( alpha, dotNH );
 	return F * ( V * D );
+}
+// Fdez-Agüera's "Multiple-Scattering Microfacet Model for Real-Time Image Based Lighting"
+// Approximates multiscattering in order to preserve energy.
+// http://www.jcgt.org/published/0008/01/03/
+void computeMultiscattering( const in vec2 fab, const in vec3 specularColor, const in float specularF90, inout vec3 singleScatter, inout vec3 multiScatter ) {
+	vec3 Fr = specularColor;
+	vec3 FssEss = Fr * fab.x + specularF90 * fab.y;
+	float Ess = fab.x + fab.y;
+	float Ems = 1.0 - Ess;
+	vec3 Favg = Fr + ( 1.0 - Fr ) * 0.047619; // 1/21
+	vec3 Fms = FssEss * Favg / ( 1.0 - Ems * Favg );
+	singleScatter += FssEss;
+	multiScatter += Fms * Ems;
+}
+void RE_Direct_Physical( const in vec3 lightDir, const in vec3 irradiance, const in vec3 normal, const in vec3 viewDir, const in PhysicalMaterial material, inout vec3 directDiffuse, inout vec3 directSpecular ) {
+	vec3 specularBRDF = BRDF_GGX( lightDir, viewDir, normal, material );
+	directSpecular += irradiance * specularBRDF * material.multiScatteringCompensation;
+	// Light reflected by the specular interface is not available to the diffuse layer ( glTF fresnel_mix )
+	vec3 halfDir = normalize( lightDir + viewDir );
+	float dotVH = saturate( dot( viewDir, halfDir ) );
+	vec3 F = F_Schlick( material.specularColor, material.specularF90, dotVH );
+	directDiffuse += irradiance * BRDF_Lambert( material.diffuseContribution ) * ( 1.0 - F );
+}
+void RE_IndirectDiffuse_Physical( const in vec3 irradiance, const in PhysicalMaterial material, inout vec3 indirectDiffuse ) {
+	// Energy reflected by the specular lobe is not available to the diffuse layer
+	vec3 singleScattering = vec3( 0.0 );
+	vec3 multiScattering = vec3( 0.0 );
+	computeMultiscattering( material.dfg, material.specularColor, material.specularF90, singleScattering, multiScattering );
+	vec3 diffuse = irradiance * BRDF_Lambert( material.diffuseContribution ) * ( 1.0 - singleScattering - multiScattering );
+	indirectDiffuse += diffuse;
+}
+void RE_IndirectSpecular_Physical( const in vec3 radiance, const in vec3 irradiance, const in PhysicalMaterial material, inout vec3 indirectDiffuse, inout vec3 indirectSpecular ) {
+	// Both indirect specular and indirect diffuse light accumulate here
+	// Compute multiscattering separately for dielectric and metallic, then mix
+	vec3 singleScatteringDielectric = vec3( 0.0 );
+	vec3 multiScatteringDielectric = vec3( 0.0 );
+	vec3 singleScatteringMetallic = vec3( 0.0 );
+	vec3 multiScatteringMetallic = vec3( 0.0 );
+	computeMultiscattering( material.dfg, material.specularColor, material.specularF90, singleScatteringDielectric, multiScatteringDielectric );
+	computeMultiscattering( material.dfg, material.diffuseColor, material.specularF90, singleScatteringMetallic, multiScatteringMetallic );
+	// Mix based on metalness
+	vec3 singleScattering = mix( singleScatteringDielectric, singleScatteringMetallic, material.metalness );
+	vec3 multiScattering = mix( multiScatteringDielectric, multiScatteringMetallic, material.metalness );
+	// Diffuse energy conservation uses dielectric path
+	vec3 totalScatteringDielectric = singleScatteringDielectric + multiScatteringDielectric;
+	vec3 diffuse = material.diffuseContribution * ( 1.0 - totalScatteringDielectric );
+	vec3 cosineWeightedIrradiance = irradiance * RECIPROCAL_PI;
+	vec3 indirectSpecularAdd = radiance * singleScattering;
+	indirectSpecularAdd += multiScattering * cosineWeightedIrradiance;
+	vec3 indirectDiffuseAdd = diffuse * cosineWeightedIrradiance;
+	indirectSpecular += indirectSpecularAdd;
+	indirectDiffuse += indirectDiffuseAdd;
+}
+// ref: https://seblagarde.files.wordpress.com/2015/07/course_notes_moving_frostbite_to_pbr_v32.pdf
+float computeSpecularOcclusion( const in float dotNV, const in float ambientOcclusion, const in float roughness ) {
+	return saturate( pow( dotNV + ambientOcclusion, exp2( - 16.0 * roughness - 1.0 ) ) - 1.0 + ambientOcclusion );
 }
 #endif
 #if defined( LIGHTING_PHONG )
@@ -526,6 +651,7 @@ void main() {
 			normal *= faceDirection;
 			#endif
 		#endif
+		vec3 nonPerturbedNormal = normal;
 		#ifdef USE_NORMALMAP
 		vec3 mapN = texture( normalMap, vUv ).xyz * 2.0 - 1.0;
 		mapN.xy *= matParams2.xy;
@@ -539,6 +665,10 @@ void main() {
 	#endif
 
 	vec3 outgoingLight = vec3( 0.0 );
+	float specularStrength = 1.0;
+	#ifdef USE_SPECULARMAP
+	specularStrength = texture( specularMap, vUv ).r;
+	#endif
 
 	#if defined( LIGHTING_LAMBERT ) || defined( LIGHTING_PHONG ) || defined( LIGHTING_STANDARD )
 		// camera +Z axis in world space is the third row of the view matrix (no inverse needed)
@@ -552,25 +682,39 @@ void main() {
 		metalnessFactor *= texture( metalnessMap, vUv ).b;
 		#endif
 		#if defined( LIGHTING_STANDARD )
-		vec3 diffuseBase = diffuseColor.rgb * ( 1.0 - metalnessFactor );
-		vec3 specularF0 = mix( vec3( 0.04 ), diffuseColor.rgb, metalnessFactor );
-		float dxy = max( abs( dFdx( normal.z ) ), abs( dFdy( normal.z ) ) );
-		float geometryRoughness = min( max( dxy, 0.0525 ), 1.0 );
-		float roughness = max( roughnessFactor, 0.0525 );
-		roughness = min( roughness + geometryRoughness, 1.0 );
+		// three.js r186 <lights_physical_fragment> + the STANDARD part of <lights_fragment_begin>
+		PhysicalMaterial material;
+		material.diffuseColor = diffuseColor.rgb;
+		material.diffuseContribution = diffuseColor.rgb * ( 1.0 - metalnessFactor );
+		material.metalness = metalnessFactor;
+		// three.js measures the geometric roughness on the view-space normal; rotate ours into view space first
+		vec3 viewNonPerturbedNormal = mat3( viewMatrix ) * nonPerturbedNormal;
+		vec3 dxy = max( abs( dFdx( viewNonPerturbedNormal ) ), abs( dFdy( viewNonPerturbedNormal ) ) );
+		float geometryRoughness = max( max( dxy.x, dxy.y ), dxy.z );
+		material.roughness = max( roughnessFactor, 0.0525 ); // 0.0525 corresponds to the base mip of a 256 cubemap.
+		material.roughness += geometryRoughness;
+		material.roughness = min( material.roughness, 1.0 );
+		material.specularColor = vec3( 0.04 );
+		material.specularColorBlended = mix( material.specularColor, diffuseColor.rgb, metalnessFactor );
+		material.specularF90 = 1.0;
+		float dotNVms = saturate( dot( normal, viewDir ) );
+		material.dfg = texture2D( dfgLUT, vec2( material.roughness, dotNVms ) ).rg;
+		// Multi-scattering energy compensation for direct lighting
+		// Based on "Practical Multiple Scattering Compensation for Microfacet Models"
+		// https://blog.selfshadow.com/publications/turquin/ms_comp_final.pdf
+		float EssMs = material.dfg.x + material.dfg.y;
+		material.multiScatteringCompensation = 1.0 + material.specularColorBlended * ( 1.0 / EssMs - 1.0 );
 		#else
 		vec3 diffuseBase = diffuseColor.rgb;
 		#endif
 		#if defined( LIGHTING_PHONG )
 		vec3 specularColor = specular.rgb;
 		float shininess = specular.a;
-		float specularStrength = 1.0;
-			#ifdef USE_SPECULARMAP
-			specularStrength = texture( specularMap, vUv ).r;
-			#endif
 		#endif
 		vec3 directDiffuse = vec3( 0.0 );
 		vec3 directSpecular = vec3( 0.0 );
+		vec3 indirectDiffuse = vec3( 0.0 );
+		vec3 indirectSpecular = vec3( 0.0 );
 		vec3 irradiance;
 		vec3 L;
 		float dotNL;
@@ -578,18 +722,20 @@ void main() {
 		for ( int i = 0; i < ${MAX_DIR_LIGHTS}; i ++ ) {
 			if ( i >= lightCounts.x ) break;
 			L = dirLights[ i ].direction.xyz;
-			dotNL = clamp( dot( normal, L ), 0.0, 1.0 );
+			dotNL = saturate( dot( normal, L ) );
 			irradiance = dotNL * dirLights[ i ].color.rgb;
 			#if NUM_DIR_SHADOWS > 0
 			if ( i < NUM_DIR_SHADOWS ) {
 				irradiance *= dirShadowFactor( i );
 			}
 			#endif
-			directDiffuse += irradiance * BRDF_Lambert( diffuseBase );
 			#if defined( LIGHTING_STANDARD )
-			directSpecular += irradiance * BRDF_GGX( L, viewDir, normal, specularF0, 1.0, roughness );
-			#elif defined( LIGHTING_PHONG )
-			directSpecular += irradiance * BRDF_BlinnPhong( L, viewDir, normal, specularColor, shininess ) * specularStrength;
+			RE_Direct_Physical( L, irradiance, normal, viewDir, material, directDiffuse, directSpecular );
+			#else
+			directDiffuse += irradiance * BRDF_Lambert( diffuseBase );
+				#if defined( LIGHTING_PHONG )
+				directSpecular += irradiance * BRDF_BlinnPhong( L, viewDir, normal, specularColor, shininess ) * specularStrength;
+				#endif
 			#endif
 		}
 		// point
@@ -598,13 +744,17 @@ void main() {
 			vec3 lVector = pointLights[ i ].position.xyz - vWorldPosition;
 			L = normalize( lVector );
 			float lightDistance = length( lVector );
-			dotNL = clamp( dot( normal, L ), 0.0, 1.0 );
-			irradiance = dotNL * pointLights[ i ].color.rgb * getDistanceAttenuation( lightDistance, pointLights[ i ].params.x, pointLights[ i ].params.y );
-			directDiffuse += irradiance * BRDF_Lambert( diffuseBase );
+			vec3 lightColor = pointLights[ i ].color.rgb;
+			lightColor *= getDistanceAttenuation( lightDistance, pointLights[ i ].params.x, pointLights[ i ].params.y );
+			dotNL = saturate( dot( normal, L ) );
+			irradiance = dotNL * lightColor;
 			#if defined( LIGHTING_STANDARD )
-			directSpecular += irradiance * BRDF_GGX( L, viewDir, normal, specularF0, 1.0, roughness );
-			#elif defined( LIGHTING_PHONG )
-			directSpecular += irradiance * BRDF_BlinnPhong( L, viewDir, normal, specularColor, shininess ) * specularStrength;
+			RE_Direct_Physical( L, irradiance, normal, viewDir, material, directDiffuse, directSpecular );
+			#else
+			directDiffuse += irradiance * BRDF_Lambert( diffuseBase );
+				#if defined( LIGHTING_PHONG )
+				directSpecular += irradiance * BRDF_BlinnPhong( L, viewDir, normal, specularColor, shininess ) * specularStrength;
+				#endif
 			#endif
 		}
 		// spot
@@ -616,22 +766,27 @@ void main() {
 			float spotAttenuation = getSpotAttenuation( spotLights[ i ].params.z, spotLights[ i ].params.w, angleCos );
 			if ( spotAttenuation > 0.0 ) {
 				float lightDistance = length( lVector );
-				dotNL = clamp( dot( normal, L ), 0.0, 1.0 );
-				irradiance = dotNL * spotLights[ i ].color.rgb * spotAttenuation * getDistanceAttenuation( lightDistance, spotLights[ i ].params.x, spotLights[ i ].params.y );
+				vec3 lightColor = spotLights[ i ].color.rgb * spotAttenuation;
+				lightColor *= getDistanceAttenuation( lightDistance, spotLights[ i ].params.x, spotLights[ i ].params.y );
+				dotNL = saturate( dot( normal, L ) );
+				irradiance = dotNL * lightColor;
 				#if NUM_SPOT_SHADOWS > 0
 				if ( i < NUM_SPOT_SHADOWS ) {
 					irradiance *= spotShadowFactor( i );
 				}
 				#endif
-				directDiffuse += irradiance * BRDF_Lambert( diffuseBase );
 				#if defined( LIGHTING_STANDARD )
-				directSpecular += irradiance * BRDF_GGX( L, viewDir, normal, specularF0, 1.0, roughness );
-				#elif defined( LIGHTING_PHONG )
-				directSpecular += irradiance * BRDF_BlinnPhong( L, viewDir, normal, specularColor, shininess ) * specularStrength;
+				RE_Direct_Physical( L, irradiance, normal, viewDir, material, directDiffuse, directSpecular );
+				#else
+				directDiffuse += irradiance * BRDF_Lambert( diffuseBase );
+					#if defined( LIGHTING_PHONG )
+					directSpecular += irradiance * BRDF_BlinnPhong( L, viewDir, normal, specularColor, shininess ) * specularStrength;
+					#endif
 				#endif
 			}
 		}
-		// indirect (ambient + hemisphere)
+		// indirect: ambient + hemisphere (+ the environment's irradiance and radiance)
+		vec3 iblIrradiance = vec3( 0.0 );
 		vec3 indirectIrradiance = ambient.rgb;
 		for ( int i = 0; i < ${MAX_HEMI_LIGHTS}; i ++ ) {
 			if ( i >= lightCounts.w ) break;
@@ -639,7 +794,20 @@ void main() {
 			float hemiDiffuseWeight = 0.5 * dotNLh + 0.5;
 			indirectIrradiance += mix( hemiLights[ i ].ground.rgb, hemiLights[ i ].sky.rgb, hemiDiffuseWeight );
 		}
-		vec3 indirectDiffuse = indirectIrradiance * BRDF_Lambert( diffuseBase );
+		#if defined( USE_ENVMAP ) && defined( ENVMAP_TYPE_CUBE_UV )
+		iblIrradiance += getIBLIrradiance( normal );
+		#endif
+		#if defined( LIGHTING_STANDARD )
+		vec3 radiance = vec3( 0.0 );
+			#if defined( USE_ENVMAP ) && defined( ENVMAP_TYPE_CUBE_UV )
+			radiance += getIBLRadiance( viewDir, normal, material.roughness );
+			#endif
+		RE_IndirectDiffuse_Physical( indirectIrradiance, material, indirectDiffuse );
+		RE_IndirectSpecular_Physical( radiance, iblIrradiance, material, indirectDiffuse, indirectSpecular );
+		#else
+		indirectIrradiance += iblIrradiance;
+		indirectDiffuse += indirectIrradiance * BRDF_Lambert( diffuseBase );
+		#endif
 		#ifdef USE_AOMAP
 			#ifdef USE_UV1
 			float ambientOcclusion = ( texture( aoMap, vUv1 ).r - 1.0 ) * matParams.z + 1.0;
@@ -647,12 +815,24 @@ void main() {
 			float ambientOcclusion = ( texture( aoMap, vUv ).r - 1.0 ) * matParams.z + 1.0;
 			#endif
 		indirectDiffuse *= ambientOcclusion;
+			#if defined( USE_ENVMAP ) && defined( LIGHTING_STANDARD )
+			float dotNV = saturate( dot( normal, viewDir ) );
+			indirectSpecular *= computeSpecularOcclusion( dotNV, ambientOcclusion, material.roughness );
+			#endif
 		#endif
 		vec3 totalEmissive = emissive.rgb * matParams.w;
 		#ifdef USE_EMISSIVEMAP
 		totalEmissive *= texture( emissiveMap, vUv ).rgb;
 		#endif
-		outgoingLight = directDiffuse + indirectDiffuse + directSpecular + totalEmissive;
+		#if defined( LIGHTING_STANDARD )
+		vec3 totalDiffuse = directDiffuse + indirectDiffuse;
+		vec3 totalSpecular = directSpecular + indirectSpecular;
+		outgoingLight = totalDiffuse + totalSpecular + totalEmissive;
+		#elif defined( LIGHTING_PHONG )
+		outgoingLight = directDiffuse + indirectDiffuse + directSpecular + indirectSpecular + totalEmissive;
+		#else
+		outgoingLight = directDiffuse + indirectDiffuse + totalEmissive;
+		#endif
 	#else
 		// unlit
 		outgoingLight = diffuseColor.rgb;
@@ -664,6 +844,36 @@ void main() {
 			#endif
 		outgoingLight *= ambientOcclusion;
 		#endif
+	#endif
+
+	#if defined( USE_ENVMAP ) && defined( ENVMAP_TYPE_CUBE ) && ! defined( LIGHTING_STANDARD )
+	{
+		// three.js <envmap_fragment>: reflection / refraction of a cube map blended into the lit colour
+		#ifdef ENV_WORLDPOS
+		vec3 cameraToFrag;
+		if ( cameraPosition.w > 0.5 ) {
+			cameraToFrag = normalize( vec3( - viewMatrix[ 0 ][ 2 ], - viewMatrix[ 1 ][ 2 ], - viewMatrix[ 2 ][ 2 ] ) );
+		} else {
+			cameraToFrag = normalize( vWorldPosition - cameraPosition.xyz );
+		}
+		vec3 worldNormal = normal;
+			#ifdef ENVMAP_MODE_REFLECTION
+			vec3 reflectVec = reflect( cameraToFrag, worldNormal );
+			#else
+			vec3 reflectVec = refract( cameraToFrag, worldNormal, refractionRatio );
+			#endif
+		#else
+		vec3 reflectVec = vReflect;
+		#endif
+		vec4 envColor = textureCube( envMap, envMapRotation * reflectVec );
+		#ifdef ENVMAP_BLENDING_MULTIPLY
+		outgoingLight = mix( outgoingLight, outgoingLight * envColor.xyz, specularStrength * reflectivity );
+		#elif defined( ENVMAP_BLENDING_MIX )
+		outgoingLight = mix( outgoingLight, envColor.xyz, specularStrength * reflectivity );
+		#elif defined( ENVMAP_BLENDING_ADD )
+		outgoingLight += envColor.xyz * specularStrength * reflectivity;
+		#endif
+	}
 	#endif
 
 	fragColor = vec4( outgoingLight, diffuseColor.a );
@@ -709,6 +919,26 @@ function shadowFactorFunctions(numDir, numSpot) {
 
 const spriteUniform = 'uniform vec2 uSpriteCenter;\n';
 
+const ENVMAP_BLENDING = { 0: 'ENVMAP_BLENDING_MULTIPLY', 1: 'ENVMAP_BLENDING_MIX', 2: 'ENVMAP_BLENDING_ADD' }; // MultiplyOperation, MixOperation, AddOperation
+/** The environment-map #defines three.js's WebGLProgram emits for these parameters (fragment: all; vertex: USE_ENVMAP + mode). */
+function envMapDefines(p, vertex) {
+	if (!p.envMap) return [];
+	const out = ['#define USE_ENVMAP', '#define ' + (p.envMapRefraction ? 'ENVMAP_MODE_REFRACTION' : 'ENVMAP_MODE_REFLECTION')];
+	if (vertex) return out;
+	out.push('#define ' + (p.envMapCubeUV ? 'ENVMAP_TYPE_CUBE_UV' : 'ENVMAP_TYPE_CUBE'));
+	out.push('#define ' + (ENVMAP_BLENDING[p.combine] || 'ENVMAP_BLENDING_NONE'));
+	if (p.envMapCubeUV) {
+		// same arithmetic as three.js generateCubeUVSize, so the define strings match character for character
+		const imageHeight = p.envMapCubeUVHeight;
+		const maxMip = Math.log2(imageHeight) - 2;
+		const texelHeight = 1.0 / imageHeight;
+		const texelWidth = 1.0 / (3 * Math.max(Math.pow(2, maxMip), 7 * 16));
+		out.push('#define CUBEUV_TEXEL_WIDTH ' + texelWidth, '#define CUBEUV_TEXEL_HEIGHT ' + texelHeight, '#define CUBEUV_MAX_MIP ' + maxMip + '.0');
+	}
+	return out;
+}
+let _resolvedVertex = null, _resolvedFragment = null;
+
 /**
  * Build GLSL ES 3.00 sources for a built-in material program.
  * @param {object} p program parameters (see WebGLPrograms.getParameters)
@@ -717,6 +947,7 @@ export function buildBuiltinShader(p) {
 	const defines = [];
 	const d = (name, value) => defines.push(value === undefined ? `#define ${name}` : `#define ${name} ${value}`);
 	switch (p.materialType) {
+		case MATERIAL_BASIC: if (p.envMap) d('USE_NORMAL'); break; // per-vertex reflection vector needs the normal
 		case MATERIAL_LAMBERT: d('LIGHTING_LAMBERT'); d('USE_NORMAL'); break;
 		case MATERIAL_PHONG: d('LIGHTING_PHONG'); d('USE_NORMAL'); break;
 		case MATERIAL_STANDARD: d('LIGHTING_STANDARD'); d('USE_NORMAL'); break;
@@ -744,6 +975,11 @@ export function buildBuiltinShader(p) {
 	if (p.multiDraw) d('USE_MULTIDRAW');
 	if (p.flatShading) d('FLAT_SHADED');
 	if (p.doubleSided) d('DOUBLE_SIDED');
+	if (p.flipSided) d('FLIP_SIDED');
+	if (p.envMap) {
+		for (const line of envMapDefines(p, false)) defines.push(line);
+		if (p.envWorldPos) d('ENV_WORLDPOS');
+	}
 	if (p.fog) d('USE_FOG');
 	if (p.alphaTest) d('USE_ALPHATEST');
 	if (p.sizeAttenuation) d('SIZE_ATTENUATION');
@@ -756,13 +992,14 @@ export function buildBuiltinShader(p) {
 	d('NUM_SPOT_SHADOWS', p.numSpotShadows | 0);
 	const prefix = '#version 300 es\n' + defines.join('\n') + '\n';
 	const vsExtra = (p.multiDraw ? '#extension GL_ANGLE_multi_draw : require\n' : '') + (p.materialType === MATERIAL_SPRITE ? spriteUniform : '');
-	const vs = prefix + vsExtra + vertexShader;
+	if (_resolvedVertex === null) { _resolvedVertex = resolveIncludes(vertexShader); _resolvedFragment = resolveIncludes(fragmentShader); }
+	const vs = prefix + vsExtra + _resolvedVertex;
 	if (p.leanShadow) {
 		// depth-only caster: no varyings, no fragment work (the depth attachment is all that is written)
 		return { vertexShader: vs, fragmentShader: '#version 300 es\nprecision mediump float;\nlayout(location = 0) out vec4 fragColor;\nvoid main() { fragColor = vec4( 0.0 ); }\n' };
 	}
 	// insert shadow helper functions after sampleShadow definition
-	let fs = fragmentShader;
+	let fs = _resolvedFragment;
 	const helpers = shadowFactorFunctions(p.numDirShadows | 0, p.numSpotShadows | 0);
 	if (helpers !== '') fs = fs.replace('#ifdef USE_NORMALMAP\nvec3 perturbNormal2Arb', helpers + '#ifdef USE_NORMALMAP\nvec3 perturbNormal2Arb');
 	return { vertexShader: vs, fragmentShader: prefix + fs };
@@ -856,6 +1093,8 @@ export function buildCustomShader(material, p) {
 			p.vertexUv1s ? '#define USE_UV1' : '',
 			p.flatShading ? '#define FLAT_SHADED' : '',
 			p.doubleSided ? '#define DOUBLE_SIDED' : '',
+			p.flipSided ? '#define FLIP_SIDED' : '',
+			...envMapDefines(p, true),
 			p.sizeAttenuation ? '#define USE_SIZEATTENUATION' : '',
 			'uniform mat4 modelMatrix;',
 			'uniform mat4 modelViewMatrix;',
@@ -903,6 +1142,8 @@ export function buildCustomShader(material, p) {
 			p.vertexUv1s ? '#define USE_UV1' : '',
 			p.flatShading ? '#define FLAT_SHADED' : '',
 			p.doubleSided ? '#define DOUBLE_SIDED' : '',
+			p.flipSided ? '#define FLIP_SIDED' : '',
+			...envMapDefines(p, false),
 			p.premultipliedAlpha ? '#define PREMULTIPLIED_ALPHA' : '',
 			'uniform mat4 viewMatrix;',
 			'uniform vec3 cameraPosition;',

@@ -89,6 +89,7 @@ class WebGLTextures {
 		const p = this.properties.get(renderTarget);
 		if (p !== undefined) {
 			if (p.framebuffer) this.gl.deleteFramebuffer(p.framebuffer);
+			if (p.framebuffers) for (let i = 0; i < p.framebuffers.length; i++) this.gl.deleteFramebuffer(p.framebuffers[i]);
 			if (p.depthbuffer) this.gl.deleteRenderbuffer(p.depthbuffer);
 		}
 		const tp = this.properties.get(renderTarget.texture);
@@ -343,7 +344,7 @@ class WebGLTextures {
 		}
 		state.bindTexture(gl.TEXTURE_CUBE_MAP, p.webglTexture, slot);
 		const images = texture.image;
-		if (p.version === texture.version || !Array.isArray(images) || images.length < 6) return;
+		if (texture.isRenderTargetTexture === true || p.version === texture.version || !Array.isArray(images) || images.length < 6) return;
 		for (let i = 0; i < 6; i++) { const im = images[i]; if (!im || (im.complete === false)) return; }
 		gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, texture.flipY);
 		gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, texture.premultiplyAlpha);
@@ -366,12 +367,47 @@ class WebGLTextures {
 		if (texture.onUpdate) texture.onUpdate(texture);
 	}
 
-	/** Sets up (once) and binds a render target's framebuffer. */
-	setupRenderTarget(renderTarget) {
+	/** Sets up (once) and binds a render target's framebuffer (the face's framebuffer for cube targets). */
+	setupRenderTarget(renderTarget, activeCubeFace = 0) {
 		const gl = this.gl, state = this.state;
 		const p = this.get(renderTarget);
 		const texture = renderTarget.texture;
 		const tp = this.get(texture);
+		if (renderTarget.isWebGLCubeRenderTarget === true) {
+			if (p.framebuffers === undefined) {
+				renderTarget.addEventListener('dispose', this._onRenderTargetDispose);
+				texture.isRenderTargetTexture = true;
+				if (tp.webglTexture === undefined) { tp.webglTexture = gl.createTexture(); this.info.memory.textures++; }
+				state.bindTexture(gl.TEXTURE_CUBE_MAP, tp.webglTexture, 0);
+				this._setTextureParameters(gl.TEXTURE_CUBE_MAP, texture);
+				const glFormat = this.glFormat(texture.format), glType = this.glType(texture.type);
+				const glInternalFormat = this.glInternalFormat(texture.internalFormat, glFormat, glType, texture.colorSpace);
+				for (let i = 0; i < 6; i++) gl.texImage2D(gl.TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, glInternalFormat, renderTarget.width, renderTarget.height, 0, glFormat, glType, null);
+				if (this._textureNeedsMipmaps(texture)) gl.generateMipmap(gl.TEXTURE_CUBE_MAP);
+				if (renderTarget.depthBuffer) {
+					p.depthbuffer = gl.createRenderbuffer();
+					gl.bindRenderbuffer(gl.RENDERBUFFER, p.depthbuffer);
+					gl.renderbufferStorage(gl.RENDERBUFFER, renderTarget.stencilBuffer ? gl.DEPTH24_STENCIL8 : gl.DEPTH_COMPONENT24, renderTarget.width, renderTarget.height);
+					gl.bindRenderbuffer(gl.RENDERBUFFER, null);
+				}
+				p.framebuffers = [];
+				for (let i = 0; i < 6; i++) {
+					const fb = gl.createFramebuffer();
+					state.bindFramebuffer(fb);
+					gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_CUBE_MAP_POSITIVE_X + i, tp.webglTexture, 0);
+					if (p.depthbuffer) gl.framebufferRenderbuffer(gl.FRAMEBUFFER, renderTarget.stencilBuffer ? gl.DEPTH_STENCIL_ATTACHMENT : gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, p.depthbuffer);
+					const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+					if (status !== gl.FRAMEBUFFER_COMPLETE) console.error('WebGLTextures: cube render target framebuffer incomplete: 0x' + status.toString(16));
+					p.framebuffers.push(fb);
+				}
+				tp.version = texture.version;
+				p.width = renderTarget.width; p.height = renderTarget.height;
+			} else if (p.width !== renderTarget.width || p.height !== renderTarget.height) {
+				this._onRenderTargetDispose({ target: renderTarget });
+				return this.setupRenderTarget(renderTarget, activeCubeFace);
+			}
+			return p.framebuffers[activeCubeFace];
+		}
 		if (p.framebuffer === undefined) {
 			renderTarget.addEventListener('dispose', this._onRenderTargetDispose);
 			texture.isRenderTargetTexture = true;
@@ -434,9 +470,10 @@ class WebGLTextures {
 	updateRenderTargetMipmap(renderTarget) {
 		const texture = renderTarget.texture;
 		if (this._textureNeedsMipmaps(texture)) {
-			const tp = this.get(texture);
-			this.state.bindTexture(this.gl.TEXTURE_2D, tp.webglTexture, 0);
-			this.gl.generateMipmap(this.gl.TEXTURE_2D);
+			const gl = this.gl, tp = this.get(texture);
+			const target = renderTarget.isWebGLCubeRenderTarget === true ? gl.TEXTURE_CUBE_MAP : gl.TEXTURE_2D;
+			this.state.bindTexture(target, tp.webglTexture, 0);
+			gl.generateMipmap(target);
 		}
 	}
 }

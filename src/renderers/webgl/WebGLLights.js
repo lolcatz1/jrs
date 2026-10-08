@@ -57,7 +57,7 @@ class WebGLLights {
 			this.dir.sort(shadowCastingFirst);
 			this.spot.sort(shadowCastingFirst);
 			this.numDirShadows = Math.min(this.dirShadows.length, MAX_DIR_LIGHTS);
-			this.numSpotShadows = Math.min(this.spotShadows.length, MAX_SPOT_LIGHTS - 1); // texture unit 15 is shared with the multi-draw matrix texture
+			this.numSpotShadows = Math.min(this.spotShadows.length, MAX_SPOT_LIGHTS - 1); // texture units 12-14; unit 15 holds the environment map
 		} else {
 			this.numDirShadows = 0; this.numSpotShadows = 0;
 		}

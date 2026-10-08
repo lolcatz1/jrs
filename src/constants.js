@@ -81,6 +81,7 @@ export const CubeReflectionMapping = 301;
 export const CubeRefractionMapping = 302;
 export const EquirectangularReflectionMapping = 303;
 export const EquirectangularRefractionMapping = 304;
+export const CubeUVReflectionMapping = 306;
 
 // Wrapping
 export const RepeatWrapping = 1000;
@@ -130,6 +131,8 @@ export const RGBAIntegerFormat = 1033;
 export const NoColorSpace = '';
 export const SRGBColorSpace = 'srgb';
 export const LinearSRGBColorSpace = 'srgb-linear';
+export const LinearTransfer = 'linear';
+export const SRGBTransfer = 'srgb';
 
 // Loop modes etc. (parity only)
 export const LoopOnce = 2200;

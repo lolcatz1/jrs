@@ -47,10 +47,22 @@ async function main() {
 	report.glVersion = gl.getParameter(gl.VERSION);
 	$('env').textContent = `${report.gpu} · ${report.glVersion} · dpr ${devicePixelRatio}`;
 
+	// three.js for pixel-for-pixel comparisons: the local copy when served from the repo, else the CDN
+	let ctx = null;
+	try {
+		let THREE = null;
+		try { THREE = await import('/node_modules/three/build/three.module.js'); } catch (e) { THREE = await import('https://unpkg.com/three@0.186.1/build/three.module.js'); }
+		const c2 = document.createElement('canvas'); c2.width = c2.height = SIZE;
+		const threeRenderer = new THREE.WebGLRenderer({ canvas: c2, antialias: false, preserveDrawingBuffer: true, stencil: true });
+		threeRenderer.setPixelRatio(1); threeRenderer.setSize(SIZE, SIZE, false);
+		ctx = { THREE, threeRenderer };
+		report.threeVersion = THREE.REVISION;
+	} catch (e) { report.threeVersion = null; }
+
 	let pass = 0, fail = 0;
 	for (const t of conformanceTests()) {
 		let r;
-		try { r = t.run(JRS, renderer); } catch (e) { r = { pass: false, detail: 'threw: ' + (e && e.message) }; }
+		try { r = t.run(JRS, renderer, ctx); } catch (e) { r = { pass: false, detail: 'threw: ' + (e && e.message) + (e && e.stack ? ' ' + e.stack.split('\n').slice(0, 3).join(' | ') : '') }; }
 		const glErr = gl.getError();
 		if (glErr !== 0) { r.pass = false; r.detail += ` (GL error 0x${glErr.toString(16)})`; }
 		report.tests.push({ name: t.name, pass: r.pass, detail: r.detail });
@@ -67,12 +79,11 @@ async function main() {
 	$('results').lastChild.innerHTML = `<td>Benchmark: 2 000 boxes, jrs</td><td class="pass">${report.jrs.staticMs} ms static / ${report.jrs.animatedMs} ms animated</td><td>${report.jrs.drawCalls} draw call(s) per frame</td>`;
 	renderer.dispose();
 
-	// optional three.js comparison from a CDN
+	// optional three.js comparison
 	try {
-		const THREE = await import('https://unpkg.com/three@0.186.1/build/three.module.js');
-		const c2 = document.createElement('canvas'); c2.width = c2.height = SIZE;
-		const r2 = new THREE.WebGLRenderer({ canvas: c2, antialias: false }); r2.setPixelRatio(1); r2.setSize(SIZE, SIZE, false);
-		report.three = benchmarkScene(THREE, r2);
+		if (ctx === null) throw new Error('three.js unavailable');
+		const r2 = ctx.threeRenderer;
+		report.three = benchmarkScene(ctx.THREE, r2);
 		r2.dispose();
 		addRow('Benchmark: 2 000 boxes, three.js r186', 'pass', `${report.three.staticMs} ms static / ${report.three.animatedMs} ms animated, ${report.three.drawCalls} draw calls → jrs is ${(report.three.staticMs / report.jrs.staticMs).toFixed(1)}x (static) / ${(report.three.animatedMs / report.jrs.animatedMs).toFixed(1)}x (animated) faster here`);
 	} catch (e) {

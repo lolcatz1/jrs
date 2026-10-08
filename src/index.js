@@ -1,6 +1,8 @@
 export * from './constants.js';
 export { WebGLRenderer } from './renderers/WebGLRenderer.js';
 export { WebGLRenderTarget } from './renderers/WebGLRenderTarget.js';
+export { WebGLCubeRenderTarget } from './renderers/WebGLCubeRenderTarget.js';
+export { PMREMGenerator } from './extras/PMREMGenerator.js';
 export { ShaderLib } from './renderers/shaders/ThreeShaderLib.js';
 export { ShaderChunk } from './renderers/shaders/ShaderChunk.js';
 export { UniformsLib } from './renderers/shaders/UniformsLib.js';
@@ -46,6 +48,7 @@ export { PointLightShadow } from './lights/PointLightShadow.js';
 export { OrthographicCamera } from './cameras/OrthographicCamera.js';
 export { PerspectiveCamera } from './cameras/PerspectiveCamera.js';
 export { Camera } from './cameras/Camera.js';
+export { CubeCamera } from './cameras/CubeCamera.js';
 export { BufferGeometry } from './core/BufferGeometry.js';
 export { InstancedBufferGeometry } from './core/InstancedBufferGeometry.js';
 export { InstancedBufferAttribute } from './core/InstancedBufferAttribute.js';

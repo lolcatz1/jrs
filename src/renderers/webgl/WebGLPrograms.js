@@ -2,7 +2,7 @@ import {
 	MATERIAL_BASIC, MATERIAL_LAMBERT, MATERIAL_PHONG, MATERIAL_STANDARD, MATERIAL_NORMAL, MATERIAL_DEPTH, MATERIAL_LINE, MATERIAL_POINTS,
 	MATERIAL_SPRITE, MATERIAL_SHADER, MATERIAL_SHADOW_DEPTH, TEXTURE_UNITS, buildBuiltinShader, buildCustomShader
 } from '../shaders/ShaderLib.js';
-import { DoubleSide, NoToneMapping, SRGBColorSpace } from '../../constants.js';
+import { DoubleSide, BackSide, NoToneMapping, SRGBColorSpace, CubeUVReflectionMapping, CubeRefractionMapping } from '../../constants.js';
 
 export const BLOCK_FRAME = 0;
 export const BLOCK_LIGHTS = 1;
@@ -181,8 +181,11 @@ class WebGLPrograms {
 		this.programs = [];
 	}
 
-	/** Compute the integer key + parameters for a built-in material. */
-	getParameters(material, object, scene, lights, variant) {
+	/**
+	 * Compute the integer key + parameters for a material. `envMap` is the texture the material will
+	 * actually sample (resolved by the renderer from material.envMap / scene.environment), or null.
+	 */
+	getParameters(material, object, scene, lights, variant, envMap = null) {
 		const renderer = this.renderer;
 		const materialType = variant.shadowPass ? MATERIAL_SHADOW_DEPTH : materialTypeOf(material);
 		const geometry = object.geometry;
@@ -194,7 +197,7 @@ class WebGLPrograms {
 		// so those features are dropped from the key and every such caster shares one lean program.
 		const leanShadow = variant.shadowPass === true && !(material.alphaTest > 0);
 		const vertexColors = !leanShadow && material.vertexColors === true && attributes.color !== undefined;
-		const fog = scene.fog !== null && material.fog === true && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH;
+		const fog = scene.fog != null && material.fog === true && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH;
 		const map = !leanShadow && !!material.map;
 		const alphaMap = !leanShadow && !!material.alphaMap;
 		const emissiveMap = isLit && !!material.emissiveMap;
@@ -202,7 +205,12 @@ class WebGLPrograms {
 		const roughnessMap = materialType === MATERIAL_STANDARD && !!material.roughnessMap;
 		const metalnessMap = materialType === MATERIAL_STANDARD && !!material.metalnessMap;
 		const aoMap = (isLit || materialType === MATERIAL_BASIC) && !!material.aoMap;
-		const specularMap = materialType === MATERIAL_PHONG && !!material.specularMap;
+		if (variant.shadowPass || !(isLit || materialType === MATERIAL_BASIC || materialType === MATERIAL_SHADER)) envMap = null;
+		if (materialType === MATERIAL_STANDARD && envMap !== null && envMap.mapping !== CubeUVReflectionMapping) envMap = null; // Standard samples the PMREM layout only
+		const hasEnvMap = envMap !== null;
+		const envMapCubeUV = hasEnvMap && envMap.mapping === CubeUVReflectionMapping;
+		// specularMap modulates Phong's specular term and the env-map reflection of Basic / Lambert
+		const specularMap = (materialType === MATERIAL_PHONG || (hasEnvMap && (materialType === MATERIAL_BASIC || materialType === MATERIAL_LAMBERT))) && !!material.specularMap;
 		const useUv = hasUv && (map || alphaMap || emissiveMap || normalMap || roughnessMap || metalnessMap || aoMap || specularMap) && materialType !== MATERIAL_POINTS;
 		const useUv1 = hasUv1 && aoMap;
 		const receiveShadow = variant.receiveShadow && isLit && renderer.shadowMap.enabled;
@@ -224,7 +232,14 @@ class WebGLPrograms {
 			multiDraw: variant.multiDraw === true,
 			flatShading: isLit && material.flatShading === true,
 			doubleSided: !leanShadow && material.side === DoubleSide,
+			flipSided: !leanShadow && material.side === BackSide,
 			leanShadow,
+			envMap: hasEnvMap,
+			envMapCubeUV,
+			envMapRefraction: hasEnvMap && envMap.mapping === CubeRefractionMapping,
+			envMapCubeUVHeight: envMapCubeUV ? envMap.image.height : 0,
+			combine: hasEnvMap && material.combine !== undefined ? material.combine : 0,
+			envWorldPos: hasEnvMap && (materialType === MATERIAL_LAMBERT || materialType === MATERIAL_PHONG || normalMap),
 			fog, fogExp2: fog && scene.fog.isFogExp2 === true,
 			alphaTest: material.alphaTest > 0,
 			sizeAttenuation: (materialType === MATERIAL_POINTS || materialType === MATERIAL_SPRITE) && material.sizeAttenuation === true,
@@ -244,6 +259,8 @@ class WebGLPrograms {
 		key = key * 2 + (fog ? 1 : 0); key = key * 2 + (p.alphaTest ? 1 : 0); key = key * 2 + (p.sizeAttenuation ? 1 : 0); key = key * 2 + (p.premultipliedAlpha ? 1 : 0);
 		key = key * 2 + (p.dithering ? 1 : 0); key = key * 2 + (hasUv1 ? 1 : 0); key = key * 8 + toneMapping; key = key * 2 + (sRGBOutput ? 1 : 0);
 		key = key * 8 + numDirShadows; key = key * 8 + numSpotShadows; key = key * 2 + (p.multiDraw ? 1 : 0); key = key * 2 + (p.objectTexture ? 1 : 0); key = key * 2 + (leanShadow ? 1 : 0);
+		key = key * 2 + (p.flipSided ? 1 : 0); key = key * 2 + (hasEnvMap ? 1 : 0); key = key * 2 + (envMapCubeUV ? 1 : 0); key = key * 2 + (p.envMapRefraction ? 1 : 0);
+		key = key * 4 + (p.combine & 3); key = key * 16 + (envMapCubeUV ? (Math.log2(p.envMapCubeUVHeight) | 0) & 15 : 0);
 		p.key = key;
 		return p;
 	}
