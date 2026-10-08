@@ -2,6 +2,7 @@ import { Sphere } from '../math/Sphere.js';
 import { Ray } from '../math/Ray.js';
 import { Matrix4 } from '../math/Matrix4.js';
 import { Object3D } from '../core/Object3D.js';
+import { trackRenderProperty } from '../core/epochs.js';
 import { Vector3 } from '../math/Vector3.js';
 import { PointsMaterial } from '../materials/PointsMaterial.js';
 import { BufferGeometry } from '../core/BufferGeometry.js';
@@ -92,5 +93,9 @@ function testPoint(point, index, localThresholdSq, matrixWorld, raycaster, inter
 		intersects.push({ distance: distance, distanceToRay: Math.sqrt(rayPointDistanceSq), point: intersectPoint, index: index, face: null, faceIndex: null, barycoord: null, object: object });
 	}
 }
+
+// swapping geometry or material changes what is drawn: invalidates cached render lists
+trackRenderProperty(Points.prototype, 'geometry');
+trackRenderProperty(Points.prototype, 'material');
 
 export { Points };

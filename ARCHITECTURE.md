@@ -73,6 +73,27 @@ three.js takes. With that, the client-shaped benchmark scenes render pixel-ident
   are grouped by state rather than sorted front-to-back: with batching (§4) the state
   grouping is what removes CPU work, and early-z handles overdraw.
 
+### 3b. Render-list reuse (`src/renderers/webgl/WebGLRenderListCache.js`)
+
+Traversal, culling, key building, sorting and command building are pure functions of a small set of inputs, so a
+frame that has the same inputs as the previous frame of the same (scene, call depth, camera) skips all of them.
+`core/epochs.js` holds two global counters: `structure` (add / remove / attach, `visible`, `renderOrder`,
+`frustumCulled`, `receiveShadow`, `layers.mask`, a mesh's `geometry` / `material`, the first `onBeforeRender` /
+`onAfterRender` assignment) and `world` (a non-camera world matrix was recomputed). Alongside them the cache snapshots
+the camera's view and view-projection matrices, every consulted geometry (bounding sphere, layout version, index),
+material (`visible`, `transparent`, `wireframe`, `vertexColors`, `allowOverride`) and instanced mesh, and the program
+each (material, variant) pair resolved to. Unchanged -> the sorted lists, items and programs are reused and the lights,
+render-order ranks and per-frame ids are replayed. Camera moved only -> every candidate is re-culled; if no result
+flips the opaque list stays and the transparent keys are rebuilt from fresh depths (the same keys a full rebuild
+produces). Anything else -> a normal rebuild. Dependencies are recorded only on a build that follows an unchanged
+frame, so animated scenes pay for a signature copy. Draw commands are cached per list too and replayed when the
+matrix texture still holds that list's matrices (`renderer.debug.listReuse` counts rebuilds, reuses and replays).
+
+`renderer.reuseRenderLists = false` disables it; `renderer.debug.verifyListReuse = true` rebuilds every reused list
+from scratch and compares (`node bench/reuse-check.mjs` renders twin scenes through ~60 scene mutations that way).
+Material arrays and `LOD` objects are never reused. The epochs are global, so any change anywhere invalidates every
+cached list.
+
 ## 4. Automatic draw-call batching (`src/renderers/webgl/WebGLBatcher.js`)
 
 After sorting, consecutive items with the same geometry, material and program (and no
