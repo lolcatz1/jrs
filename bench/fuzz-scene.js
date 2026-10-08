@@ -33,6 +33,7 @@ export const FEATURES = {
 	hierarchy: 'nested groups with animated transforms',
 	cameraMoves: 'camera orbit, fov/zoom changes, orthographic camera',
 	renderTarget: 'a sub-scene rendered into a WebGLRenderTarget used as a map',
+	envMaps: 'procedural equirectangular environment: scene.environment (PMREM for Standard, irradiance for Lambert/Phong), material.envMap with reflection/refraction mapping, combine, reflectivity, envMapIntensity/rotation, textured scene.background with blurriness/intensity/rotation',
 	overrideMaterial: 'scene.overrideMaterial on some frames',
 	background: 'scene.background colour / clear colour',
 	toneMapping: 'tone mapping operators and exposure',
@@ -194,6 +195,47 @@ export function buildFuzzScene(T, seed, features = defaultFeatures(), opts = {})
 	};
 	const nTextures = features.maps ? 1 + rng.int(4) : 0;
 	for (let i = 0; i < nTextures; i++) makeTexture(rng.pick(['checker', 'wave', 'wave']));
+
+	// ---------- environment map (procedural equirectangular sky: gradient, horizon band, a sun blob, a few stripes) ----------
+	let envTextures = null;
+	if (features.envMaps && rng.chance(0.5)) {
+		const ew = rng.pick([32, 64]), eh = ew / 2;
+		const hue = rng(), sunU = rng(), sunV = rng.range(0.15, 0.5), bright = rng.range(0.6, 1), stripes = rng.int(5);
+		const sRGB = rng.chance(0.5);
+		const col = new T.Color(), sky = new T.Color().setHSL(hue, 0.6, 0.6), ground = new T.Color().setHSL((hue + 0.5) % 1, 0.4, 0.25);
+		const data = new Uint8Array(ew * eh * 4);
+		for (let y = 0; y < eh; y++) for (let x = 0; x < ew; x++) {
+			const u = (x + 0.5) / ew, v = (y + 0.5) / eh; // v = 0 bottom row
+			col.copy(ground).lerp(sky, v);
+			if (Math.abs(v - 0.5) < 0.04) col.setHSL(hue + 0.3, 0.8, 0.5);
+			const du = Math.min(Math.abs(u - sunU), 1 - Math.abs(u - sunU)), dv = Math.abs(v - sunV);
+			if (du * du + dv * dv < 0.01) col.setRGB(bright, bright, bright * 0.9);
+			if (stripes > 0 && Math.floor(u * stripes * 2) % 2 === 0 && v > 0.6) col.multiplyScalar(0.7);
+			const i = (y * ew + x) * 4;
+			data[i] = Math.round(col.r * 255); data[i + 1] = Math.round(col.g * 255); data[i + 2] = Math.round(col.b * 255); data[i + 3] = 255;
+		}
+		const makeEquirect = (mapping) => {
+			const t = new T.DataTexture(data, ew, eh);
+			t.mapping = mapping; t.minFilter = T.LinearFilter; t.magFilter = T.LinearFilter;
+			if (sRGB) t.colorSpace = T.SRGBColorSpace;
+			t.needsUpdate = true;
+			return t;
+		};
+		envTextures = { reflect: makeEquirect(T.EquirectangularReflectionMapping), refract: makeEquirect(T.EquirectangularRefractionMapping) };
+		const envNotes = [];
+		if (rng.chance(0.6)) {
+			scene.environment = envTextures.reflect; envNotes.push('scene.environment');
+			if (rng.chance(0.4)) { scene.environmentIntensity = rng.range(0.3, 2); envNotes.push('intensity ' + scene.environmentIntensity.toFixed(2)); }
+			if (rng.chance(0.3)) { scene.environmentRotation.set(0, rng.range(0, 6.28), 0); envNotes.push('rotation'); }
+		}
+		if (features.background && rng.chance(0.4)) {
+			scene.background = envTextures.reflect; background = null; envNotes.push('background texture');
+			if (rng.chance(0.5)) { scene.backgroundBlurriness = rng.range(0, 1); envNotes.push('blur ' + scene.backgroundBlurriness.toFixed(2)); }
+			if (rng.chance(0.4)) { scene.backgroundIntensity = rng.range(0.3, 2); envNotes.push('bg intensity'); }
+			if (rng.chance(0.3)) { scene.backgroundRotation.set(0, rng.range(0, 6.28), 0); envNotes.push('bg rotation'); }
+		}
+		note(`envmap ${ew}x${eh}${sRGB ? ' sRGB' : ''}${envNotes.length ? ': ' + envNotes.join(', ') : ''}`);
+	}
 
 	// ---------- render target (sub-scene rendered to a texture used as a map) ----------
 	let renderTarget = null, rtScene = null, rtCamera = null, rtAnim = null;
@@ -443,6 +485,12 @@ export function buildFuzzScene(T, seed, features = defaultFeatures(), opts = {})
 			}
 		}
 		if (kind === 'phong') { params.shininess = rng.range(1, 120); params.specular = new T.Color().setHSL(rng(), 0.2, rng.range(0.05, 0.5)); }
+		if (envTextures !== null && kind !== 'shader' && rng.chance(0.5)) {
+			params.envMap = rng.chance(0.75) ? envTextures.reflect : envTextures.refract;
+			if (kind === 'standard') params.envMapIntensity = rng.range(0.2, 2);
+			else { params.combine = rng.pick([T.MultiplyOperation, T.MixOperation, T.AddOperation]); params.reflectivity = rng.range(0, 1); params.refractionRatio = rng.range(0.5, 1); }
+			if (rng.chance(0.3)) params.envMapRotation = new T.Euler(0, rng.range(0, 6.28), 0);
+		}
 		if (kind === 'standard') { params.roughness = rng.range(0, 1); params.metalness = rng.range(0, 1); }
 		if ((kind === 'lambert' || kind === 'phong' || kind === 'standard') && rng.chance(0.2)) params.emissive = randomColor();
 		if (features.fog && rng.chance(0.15)) params.fog = false;
@@ -479,7 +527,7 @@ export function buildFuzzScene(T, seed, features = defaultFeatures(), opts = {})
 			mat.userData.stencilRef = ref;
 			sensitive = true;
 		}
-		mat.userData.kind = kind;
+		mat.userData.kind = kind + (params.envMap === undefined ? '' : params.envMap === envTextures.refract ? '+envRefract' : '+envMap');
 		if (sensitive) orderSensitive.add(mat);
 		return mat;
 	};
@@ -695,7 +743,11 @@ export function buildFuzzScene(T, seed, features = defaultFeatures(), opts = {})
 					else if (kind === 'fog' && features.fog) op = () => { if (scene.fog && scene.fog.isFog) { scene.fog.near = 2 + 6 * r1; scene.fog.far = 12 + 12 * r2; } else if (scene.fog) scene.fog.density = 0.02 + 0.07 * r1; else scene.fog = new T.Fog(new T.Color().setHSL(r1, 0.5, 0.5), 3, 20); };
 					else if (kind === 'background' && features.background) op = () => { scene.background = new T.Color().setHSL(r1, 0.5, 0.3); };
 					else if (kind === 'exposure' && features.toneMapping && toneMapping !== T.NoToneMapping) op = () => { renderer_.toneMappingExposure = 0.5 + 1.5 * r1; };
-					else if (kind === 'map' && mat && mat.map && textures.length) { const t = textures[rng.int(textures.length)]; op = () => { mat.map = t; mat.needsUpdate = true; if (mat.uniforms && mat.uniforms.tex) mat.uniforms.tex.value = t; }; }
+					else if (kind === 'map' && mat && mat.map && textures.length) {
+						const t = textures[rng.int(textures.length)];
+						// the extra maps that shared the old map's texture follow it (one uv transform per material in jrs, see perMapTransform)
+						op = () => { const old = mat.map; for (const k of ['alphaMap', 'emissiveMap', 'specularMap']) if (!features.perMapTransform && mat[k] === old) mat[k] = t; mat.map = t; mat.needsUpdate = true; if (mat.uniforms && mat.uniforms.tex) mat.uniforms.tex.value = t; };
+					}
 					else if (kind === 'instanceCount') { const ims = meshes.filter((x) => x.isInstancedMesh); if (ims.length) { const im = ims[rng.int(ims.length)]; op = () => { im.count = Math.max(1, Math.floor(im.instanceMatrix.count * (0.3 + 0.7 * r1))); }; } }
 					else if (kind === 'scale' && m) op = () => { m.scale.multiplyScalar(0.6 + 0.8 * r1); };
 					if (op) { ops.push(op); mutationLog.push(`f${f}:${kind}`); }

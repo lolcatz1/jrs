@@ -784,10 +784,15 @@ void main() {
 	#ifdef IS_POINTS
 	vec2 pointUv = gl_PointCoord;
 	#endif
+	#ifdef SHADOW_PASS
+	// three.js's shadow depth material alpha-tests map.a * alphaMap.g alone: no opacity, no vertex colours
+	vec4 diffuseColor = vec4( 1.0 );
+	#else
 	vec4 diffuseColor = vec4( diffuse.rgb, diffuse.a );
+	#endif
 	#ifdef IS_SPRITE
 	#endif
-	#if defined( USE_COLOR ) || defined( USE_INSTANCING_COLOR )
+	#if ( defined( USE_COLOR ) || defined( USE_INSTANCING_COLOR ) ) && !defined( SHADOW_PASS )
 	diffuseColor *= vColor;
 	#endif
 	#ifdef USE_MAP
@@ -1127,7 +1132,8 @@ export function buildBuiltinShader(p) {
 		case MATERIAL_PHONG: d('LIGHTING_PHONG'); d('USE_NORMAL'); break;
 		case MATERIAL_STANDARD: d('LIGHTING_STANDARD'); d('USE_NORMAL'); break;
 		case MATERIAL_NORMAL: d('IS_NORMAL_MATERIAL'); d('USE_NORMAL'); break;
-		case MATERIAL_DEPTH: case MATERIAL_SHADOW_DEPTH: d('IS_DEPTH'); break;
+		case MATERIAL_DEPTH: d('IS_DEPTH'); break;
+		case MATERIAL_SHADOW_DEPTH: d('IS_DEPTH'); d('SHADOW_PASS'); break;
 		case MATERIAL_POINTS: d('IS_POINTS'); break;
 		case MATERIAL_SPRITE: d('IS_SPRITE'); break;
 	}
