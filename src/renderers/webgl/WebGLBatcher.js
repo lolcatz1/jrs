@@ -31,14 +31,17 @@ class MatrixTextureSlot {
 class WebGLBatcher {
 	constructor(gl) {
 		this.gl = gl;
-		// matrix texture: RGBA32F, TEXELS_PER_OBJECT texels per entry (world matrix + normal matrix, or for ShaderMaterial
-		// batches that read modelViewMatrix / normalMatrix the view-space pair), rows of MATRICES_PER_ROW entries.
+		// matrix texture: RGBA32F, TEXELS_PER_OBJECT texels per object (world matrix + normal matrix), rows of MATRICES_PER_ROW objects.
 		// textureRows is the height the texture was last (re)defined with; see uploadTexture for why it is redefined per upload.
 		this.defaultSlot = new MatrixTextureSlot();
 		this.slot = this.defaultSlot;
 		this.texCapacity = MATRICES_PER_ROW * 8;
 		this.texData = new Float32Array(this.texCapacity * TEX_STRIDE_FLOATS);
 		this.texCount = 0; this.texHash = 0;
+		// what each stream position of texData was last filled with: an object that did not move since (same id, same
+		// _worldVersion, same material index) at the same position already has its 32 floats in place
+		this.texIds = new Int32Array(this.texCapacity).fill(-1);
+		this.texVersions = new Float64Array(this.texCapacity);
 		this.viewDependent = false; // some entry of the current fill holds view-space matrices (depends on the camera)
 		this._viewBits = new Float32Array(16); this._viewBitsU = new Uint32Array(this._viewBits.buffer);
 	}
@@ -56,7 +59,10 @@ class WebGLBatcher {
 			cap = Math.ceil(cap / MATRICES_PER_ROW) * MATRICES_PER_ROW;
 			const nd = new Float32Array(cap * TEX_STRIDE_FLOATS);
 			nd.set(this.texData);
-			this.texData = nd; this.texCapacity = cap;
+			this.texData = nd;
+			const ids = new Int32Array(cap).fill(-1); ids.set(this.texIds); this.texIds = ids;
+			const vers = new Float64Array(cap); vers.set(this.texVersions); this.texVersions = vers;
+			this.texCapacity = cap;
 		}
 	}
 	/**
@@ -65,31 +71,37 @@ class WebGLBatcher {
 	 * is single-material) goes into the spare eighth texel. Returns the object's index in the texture.
 	 */
 	addTex(object, materialIndex) {
-		const d = this.texData, o = this.texCount * TEX_STRIDE_FLOATS;
-		const s = object._slabData, so = object._slabOffset + 16;
-		for (let i = 0; i < 16; i++) d[o + i] = s[so + i];
-		if (object._normalVersion !== object._worldVersion) { computeNormalMatrix(s, object._slabOffset); object._normalVersion = object._worldVersion; }
-		const no = object._slabOffset + 32;
-		d[o + 16] = s[no]; d[o + 17] = s[no + 1]; d[o + 18] = s[no + 2]; d[o + 19] = 0;
-		d[o + 20] = s[no + 3]; d[o + 21] = s[no + 4]; d[o + 22] = s[no + 5]; d[o + 23] = 0;
-		d[o + 24] = s[no + 6]; d[o + 25] = s[no + 7]; d[o + 26] = s[no + 8]; d[o + 27] = 0;
-		d[o + 28] = materialIndex; d[o + 29] = 0; d[o + 30] = 0; d[o + 31] = 0;
+		const p = this.texCount, id = object.id, version = object._worldVersion;
+		const d = this.texData, o = p * TEX_STRIDE_FLOATS;
+		if (this.texIds[p] !== id || this.texVersions[p] !== version || d[o + 28] !== materialIndex) {
+			const s = object._slabData, so = object._slabOffset + 16;
+			for (let i = 0; i < 16; i++) d[o + i] = s[so + i];
+			if (object._normalVersion !== version) { computeNormalMatrix(s, object._slabOffset); object._normalVersion = version; }
+			const no = object._slabOffset + 32;
+			d[o + 16] = s[no]; d[o + 17] = s[no + 1]; d[o + 18] = s[no + 2]; d[o + 19] = 0;
+			d[o + 20] = s[no + 3]; d[o + 21] = s[no + 4]; d[o + 22] = s[no + 5]; d[o + 23] = 0;
+			d[o + 24] = s[no + 6]; d[o + 25] = s[no + 7]; d[o + 26] = s[no + 8]; d[o + 27] = 0;
+			d[o + 28] = materialIndex; d[o + 29] = 0; d[o + 30] = 0; d[o + 31] = 0;
+			this.texIds[p] = id; this.texVersions[p] = version;
+		}
 		// FNV-1a style mix of id, world version and material index: unchanged hash -> the upload is skipped
 		let h = this.texHash;
-		h = Math.imul(h ^ object.id, 16777619);
-		h = Math.imul(h ^ object._worldVersion, 16777619);
+		h = Math.imul(h ^ id, 16777619);
+		h = Math.imul(h ^ version, 16777619);
 		h = Math.imul(h ^ materialIndex, 16777619);
 		this.texHash = h;
-		return this.texCount++;
+		this.texCount = p + 1;
+		return p;
 	}
 	/**
 	 * Append an object's entry for a ShaderMaterial batch that reads `modelViewMatrix` / `normalMatrix`: the
 	 * model-view matrix and its normal matrix, computed exactly as the per-object uniform path computes them
 	 * (ShaderMaterialBatching.js LAYOUT_VIEW). With `both`, the world entry (`addTex`) follows (LAYOUT_BOTH).
-	 * Call `mixView(camera)` once per run before: the hash must change with the camera.
+	 * Call `mixView(camera)` once per run before: the hash must change with the camera. The entry is always
+	 * rewritten (it depends on the camera), and the position is marked so a later world entry there is too.
 	 */
 	addTexView(object, camera, both) {
-		const d = this.texData, o = this.texCount * TEX_STRIDE_FLOATS;
+		const p = this.texCount, d = this.texData, o = p * TEX_STRIDE_FLOATS;
 		_mv.multiplyMatrices(camera.matrixWorldInverse, object.matrixWorld);
 		_nm.getNormalMatrix(_mv);
 		const me = _mv.elements, ne = _nm.elements;
@@ -98,13 +110,14 @@ class WebGLBatcher {
 		d[o + 20] = ne[3]; d[o + 21] = ne[4]; d[o + 22] = ne[5]; d[o + 23] = 0;
 		d[o + 24] = ne[6]; d[o + 25] = ne[7]; d[o + 26] = ne[8]; d[o + 27] = 0;
 		d[o + 28] = 0; d[o + 29] = 0; d[o + 30] = 0; d[o + 31] = 0;
+		this.texIds[p] = -1;
 		let h = this.texHash;
 		h = Math.imul(h ^ object.id, 16777619);
 		h = Math.imul(h ^ object._worldVersion, 16777619);
 		this.texHash = h;
-		const index = this.texCount++;
+		this.texCount = p + 1;
 		if (both) this.addTex(object, 0);
-		return index;
+		return p;
 	}
 	/** Mixes the camera's view matrix (and the entry layout) into the hash of a run of view-space entries. */
 	mixView(camera, both) {

@@ -45,6 +45,7 @@ const V_HAS_UV = 16, V_HAS_UV1 = 32, V_HAS_COLOR = 64, V_COLOR_ALPHA = 128, V_MU
 const V_SKINNING = 2048, V_MORPH_POSITION = 4096, V_MORPH_NORMAL = 8192, V_MORPH_COLOR = 16384, V_MORPH_COUNT_SHIFT = 15; // morph target count in bits 15..22
 const V_SIDE_BACK = 1 << 23, V_SIDE_FRONT = 1 << 24; // two-pass transparent DoubleSide materials (three.js renders back faces, then front faces); above the morph-count bits
 
+const ITEM_BATCHABLE = 1, ITEM_MULTIDRAWABLE = 2; // list.flags bits, see _pushItem
 const defaultOnBeforeRender = Object3D.prototype.onBeforeRender;
 const defaultOnAfterRender = Object3D.prototype.onAfterRender;
 
@@ -249,6 +250,8 @@ class WebGLRenderer {
 		this.reuseRenderLists = true;
 		this._zTmp = new Float64Array(1);
 		this._rec = null;          // RenderListCache being recorded during a build, else null
+		this._buildSeq = 0;        // command builds so far (stamps geometries noted in _megaTouch)
+		this._touchMap = new Map(); // reused by every command build that records into a cache
 		this._megaTouch = null;    // Map geometry -> mega-buffer record touched while building commands, else null
 		this._verifyList = null;
 
@@ -844,9 +847,6 @@ class WebGLRenderer {
 			if (override !== null && override !== undefined && material.allowOverride === true) material = override;
 		}
 		let variant = this._variantFor(object, geometry, material, shadowPass);
-		// a batchable ShaderMaterial mesh resolves straight to the batched program variant, so the material compiles one program
-		if (material.isShaderMaterial === true && shadowPass === false && this.autoBatchShaderMaterials === true && this.autoBatch === true &&
-			group === null && !isTwoPass(material, shadowPass) && this._objectBatchable(object, geometry) && customShaderObjTexMode(material) !== 0) variant |= this._shaderBatchBits;
 		if (object.isSkinnedMesh === true) {
 			// bone matrices once per render call (the skeleton itself skips the work when no bone moved)
 			const skeleton = object.skeleton;
@@ -865,7 +865,26 @@ class WebGLRenderer {
 			else { if (bg._frameStamp !== frame) { bg._frameStamp = frame; bg._frameRid = this._materialCounter++; } material._frameRid = bg._frameRid; }
 		}
 		if (geometry._frameStamp !== frame) { geometry._frameStamp = frame; geometry._frameRid = this._geometryCounter++; }
-		list.push(object, geometry, material, group, material._frameRid, geometry._frameRid, variant, material._batchGroup);
+		// batching eligibility, decided once here (object, geometry and material are in hand) instead of per scan in _drawList
+		let flags = 0;
+		// a two-pass (back faces, then front faces) transparent material must stay per object: batching all
+		// back faces before all front faces composites overlapping objects differently from three.js
+		if (group === null && this._objectBatchable(object, geometry) && isTwoPass(material, shadowPass) === false) {
+			let ok = true;
+			if (material.isShaderMaterial === true) {
+				// a custom program batches through its batched variant (ShaderMaterialBatching.js), which the mesh resolves
+				// to right here so the material compiles one program; in a shadow pass the built-in depth program is used
+				ok = this.autoBatchShaderMaterials === true;
+				if (ok && shadowPass === false) { ok = this.autoBatch === true && customShaderObjTexMode(material) !== 0; if (ok) variant |= this._shaderBatchBits; }
+			}
+			if (ok) {
+				flags = ITEM_BATCHABLE;
+				// a sub-draw of a multi-draw covers the whole geometry: a drawRange takes the per-draw path
+				const dr = geometry.drawRange;
+				if (material.wireframe !== true && object.isSprite !== true && dr.start === 0 && dr.count === Infinity) flags |= ITEM_MULTIDRAWABLE;
+			}
+		}
+		list.push(object, geometry, material, group, material._frameRid, geometry._frameRid, variant, material._batchGroup, flags);
 		const rec = this._rec;
 		if (rec !== null && shadowPass === false) { rec.regMaterial(material); rec.regPair(material, variant, object); }
 	}
@@ -1110,16 +1129,6 @@ class WebGLRenderer {
 
 	// ------------------------------------------------------------------ drawing
 
-	_isBatchable(item) {
-		if (item.group !== null) return false;
-		// ShaderMaterial: only through a program whose object uniforms can come from the matrix texture (the batched
-		// variant it was resolved to in _pushItem; in a shadow pass the built-in depth program, which always can)
-		if (item.material.isShaderMaterial === true && (this.autoBatchShaderMaterials !== true || item.program.objTexMode === 0)) return false;
-		// a two-pass (back faces, then front faces) transparent material must stay per object: batching all
-		// back faces before all front faces composites overlapping objects differently from three.js
-		if (isTwoPass(item.material, this._listShadowPass)) return false;
-		return this._objectBatchable(item.object, item.geometry);
-	}
 	/**
 	 * A plain mesh without per-object hooks, instancing, skinning, morph targets or per-instance attributes, and
 	 * not mirrored (a negative-determinant world matrix flips the front face, which a batch cannot do per object).
@@ -1133,23 +1142,19 @@ class WebGLRenderer {
 	}
 
 	/**
-	 * Build draw commands (singles and batches) from a sorted key list, then execute them.
+	 * Mega-buffer record of a geometry (null: draw it the regular way), resolved once per geometry per frame
+	 * (`ensure` compares attribute layout and sizes). Geometries are also noted once per command build in the
+	 * touch map, which a draw-command cache uses to validate a replay.
 	 */
-	_isMultiDrawable(item) {
-		if (!this._isBatchable(item)) return false;
-		const object = item.object, material = item.material;
-		if (object.isMesh !== true || material.wireframe === true || object.isSprite === true) return false;
-		// a sub-draw of a multi-draw covers the whole geometry: a drawRange set after the mega-buffer record was
-		// built (ensure() only checks it when creating the record) must take the per-draw path
-		const dr = item.geometry.drawRange;
-		if (dr.start !== 0 || dr.count !== Infinity) return false;
-		const rec = this.megaBuffers.ensure(item.geometry);
-		if (this._megaTouch !== null) this._megaTouch.set(item.geometry, rec);
-		if (rec === null || rec.page === null) return false;
-		// the page must carry every custom attribute the (batched) program reads, at its fixed per-name location
-		if (!this.megaBuffers.supports(rec, item.program)) return false;
-		item.mdRecord = rec;
-		return true;
+	_mdRecordOf(geometry) {
+		let rec;
+		if (geometry._mdFrame !== this._frameId || (geometry._mdRec !== null && geometry._mdRec.layoutVersion !== geometry._layoutVersion)) {
+			geometry._mdFrame = this._frameId;
+			rec = geometry._mdRec = this.megaBuffers.ensure(geometry);
+			geometry._mdTouch = -1;
+		} else rec = geometry._mdRec;
+		if (this._megaTouch !== null && geometry._mdTouch !== this._buildSeq) { geometry._mdTouch = this._buildSeq; this._megaTouch.set(geometry, rec); }
+		return rec;
 	}
 
 	/**
@@ -1177,10 +1182,15 @@ class WebGLRenderer {
 		}
 		batcher.begin();
 		let cmdN = 0, mdN = 0;
-		const touch = commandCache !== null ? (this._megaTouch = new Map()) : null;
+		const touch = commandCache !== null ? (this._megaTouch = this._touchMap) : null;
+		if (touch !== null) touch.clear();
+		this._buildSeq++;
+		const items = list.items, flags = list.flags, megaBuffers = this.megaBuffers;
 		let i = 0;
 		while (i < n) {
-			const item = list.itemFromKey(keys[i]);
+			const itemIndex = keys[i];
+			const item = items[itemIndex];
+			const fl = flags[itemIndex];
 			const material = item.material, bg = item.batchGroup;
 			// a ShaderMaterial run of any length goes through the batched program variant (one program per material
 			// instead of switching between the per-object and the batched variant, which would re-send every uniform)
@@ -1188,17 +1198,24 @@ class WebGLRenderer {
 			let j = i + 1;
 			let kind = 0; // 0 single, 1 instanced run, 2 multi-draw run; +2 when the run spans several materials
 			let firstOtherMaterial = -1; // first item of the run whose material differs from `material` (same batch group)
-			if (multi && this._isMultiDrawable(item)) {
-				const page = item.mdRecord.page, indexed = item.mdRecord.indexed;
+			let rec0;
+			if (multi && (fl & ITEM_MULTIDRAWABLE) !== 0 && (rec0 = this._mdRecordOf(item.geometry)) !== null && megaBuffers.supports(rec0, item.program)) {
+				item.mdRecord = rec0;
+				const page = rec0.page, indexed = rec0.indexed, program = item.program, renderOrder = item.renderOrder;
 				let distinct = 1, lastGeometry = item.geometry, firstGroupEnd = -1;
 				while (j < n) {
-					const next = list.itemFromKey(keys[j]);
-					if ((next.material === material || (bg !== null && next.batchGroup === bg)) && next.program === item.program && next.renderOrder === item.renderOrder &&
-						this._isMultiDrawable(next) && next.mdRecord.page === page && next.mdRecord.indexed === indexed) {
-						if (next.geometry !== lastGeometry) { distinct++; lastGeometry = next.geometry; if (firstGroupEnd < 0) firstGroupEnd = j; }
-						if (firstOtherMaterial < 0 && next.material !== material) firstOtherMaterial = j;
-						j++;
-					} else break;
+					const nextIndex = keys[j];
+					const next = items[nextIndex];
+					if ((flags[nextIndex] & ITEM_MULTIDRAWABLE) === 0 || next.program !== program || next.renderOrder !== renderOrder) break;
+					if (next.material !== material && (bg === null || next.batchGroup !== bg)) break;
+					const geometry = next.geometry;
+					if (geometry !== lastGeometry || geometry._mdFrame !== this._frameId) {
+						const rec = this._mdRecordOf(geometry);
+						if (rec === null || rec.page !== page || rec.indexed !== indexed || !megaBuffers.supports(rec, program)) break;
+						if (geometry !== lastGeometry) { distinct++; lastGeometry = geometry; if (firstGroupEnd < 0) firstGroupEnd = j; }
+					}
+					if (firstOtherMaterial < 0 && next.material !== material) firstOtherMaterial = j;
+					j++;
 				}
 				if (firstGroupEnd < 0) firstGroupEnd = j;
 				// Cost model: a multi-draw costs one call plus a small per-sub-draw cost; an instanced draw
@@ -1206,11 +1223,13 @@ class WebGLRenderer {
 				// therefore drawn instanced, geometry-group by geometry-group; mostly-distinct runs use multi-draw.
 				if (distinct * 2 >= j - i) { if (j - i >= minRun) kind = 2; }
 				else { j = firstGroupEnd; if (j - i >= minRun) kind = 1; }
-			} else if (autoBatch && this._isBatchable(item)) {
+			} else if (autoBatch && (fl & ITEM_BATCHABLE) !== 0) {
+				const geometry = item.geometry, program = item.program, renderOrder = item.renderOrder;
 				while (j < n) {
-					const next = list.itemFromKey(keys[j]);
-					if (next.geometry === item.geometry && (next.material === material || (bg !== null && next.batchGroup === bg)) && next.program === item.program &&
-						next.renderOrder === item.renderOrder && this._isBatchable(next)) {
+					const nextIndex = keys[j];
+					const next = items[nextIndex];
+					if (next.geometry === geometry && (next.material === material || (bg !== null && next.batchGroup === bg)) && next.program === program &&
+						next.renderOrder === renderOrder && (flags[nextIndex] & ITEM_BATCHABLE) !== 0) {
 						if (firstOtherMaterial < 0 && next.material !== material) firstOtherMaterial = j;
 						j++;
 					} else break;
@@ -1232,11 +1251,11 @@ class WebGLRenderer {
 				this._cmdKind[cmdN] = multiMaterial ? 4 : 2;
 				this._cmdMdStart[cmdN] = mdN;
 				for (let k = i; k < j; k++) {
-					const it = list.itemFromKey(keys[k]);
+					const it = items[keys[k]];
 					if (layout === LAYOUT_WORLD) batcher.addTex(it.object, multiMaterial ? this._materialRecordIndex(it.material, windowBase) : 0);
 					else batcher.addTexView(it.object, camera, both);
-					const rec = it.mdRecord;
-					this.megaBuffers.queue(rec, it.geometry);
+					const geometry = it.geometry, rec = geometry._mdRec;
+					megaBuffers.queue(rec, geometry);
 					if (rec.indexed) { this._mdCounts[mdN] = rec.indexCount; this._mdOffsets[mdN] = rec.byteOffset; }
 					else { this._mdCounts[mdN] = rec.vertexCount; this._mdOffsets[mdN] = rec.baseVertex; }
 					mdN++;
@@ -1246,9 +1265,9 @@ class WebGLRenderer {
 				this._cmdOffset[cmdN] = batcher.texCount;
 				this._cmdCount[cmdN] = j - i;
 				this._cmdKind[cmdN] = multiMaterial ? 3 : 1;
-				if (multiMaterial) { for (let k = i; k < j; k++) { const it = list.itemFromKey(keys[k]); batcher.addTex(it.object, this._materialRecordIndex(it.material, windowBase)); } }
-				else if (layout === LAYOUT_WORLD) { for (let k = i; k < j; k++) batcher.addTex(list.itemFromKey(keys[k]).object, 0); }
-				else { for (let k = i; k < j; k++) batcher.addTexView(list.itemFromKey(keys[k]).object, camera, both); }
+				if (multiMaterial) { for (let k = i; k < j; k++) { const it = items[keys[k]]; batcher.addTex(it.object, this._materialRecordIndex(it.material, windowBase)); } }
+				else if (layout === LAYOUT_WORLD) { for (let k = i; k < j; k++) batcher.addTex(items[keys[k]].object, 0); }
+				else { for (let k = i; k < j; k++) batcher.addTexView(items[keys[k]].object, camera, both); }
 			} else {
 				j = i + 1;
 				this._cmdOffset[cmdN] = -1;
