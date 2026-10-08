@@ -708,8 +708,10 @@ void main() {
 		mapN.xy *= matParams2.xy;
 		#ifdef DOUBLE_SIDED
 		normal = perturbNormal2Arb( vWorldPosition - cameraPosition.xyz, normal, mapN, faceDirection );
+		#elif defined( FLIP_SIDED )
+		normal = perturbNormal2Arb( vWorldPosition - cameraPosition.xyz, normal, mapN, - 1.0 ); // back-side materials: the normal is flipped, the frame must follow
 		#else
-		normal = perturbNormal2Arb( vWorldPosition - cameraPosition.xyz, normal, mapN, 1.0 ); // three.js flips the tangent frame by faceDirection for DOUBLE_SIDED only
+		normal = perturbNormal2Arb( vWorldPosition - cameraPosition.xyz, normal, mapN, 1.0 );
 		#endif
 		#endif
 	#endif
