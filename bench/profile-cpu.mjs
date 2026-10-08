@@ -62,6 +62,8 @@ function phaseOf(lib, mod, fn) {
 	if (fn === '(garbage collector)') return 'GC';
 	if (fn === '(program)' || fn === '(idle)') return '(program)/VM';
 	if (mod === 'scenarios.js') return fn === 'update' || fn === 'frame' ? 'app update' : null;
+	if (mod === '(native)' && fn === 'doFrame') return 'app update'; // harness frame driver (scenario update() is usually inlined into it)
+	if (mod === 'Euler.js' || mod === 'Quaternion.js') return 'app update'; // only reached from scenario animation code in these scenes
 	if (lib === 'jrs') {
 		switch (mod) {
 			case 'Object3D.js': return /^(updateMatrixWorld|updateWorldMatrix|updateMatrix)$/.test(fn) ? 'scene graph update' : null;
