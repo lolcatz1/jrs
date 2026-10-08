@@ -296,6 +296,45 @@ No GC-caused stall was observed (heap deltas 0 KB in all worst frames; GC phase 
 The ordinary 8–14 ms "worst" frames in the jrs 10 k scenes are scavenges of the 1.2 MB/frame garbage
 (#1, #8) plus flow-control waits of a few ms.
 
-## 7. Run-to-run noise
+## 7. Run-to-run noise (`baseline-bench-1.txt`, `baseline-bench-2.txt`, `README`)
 
-_pending: `baseline-bench-2.txt` vs `baseline-bench-1.txt`_
+`npm run bench` medians, ms, same commit, ~1 h apart, plus the README's numbers from the authors' machine:
+
+| scenario | three run 1 | three run 2 | README three | jrs run 1 | jrs run 2 | README jrs | jrs worst run 1 / 2 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| shared-static | 29.1 | 19.2 | 12.6 | 4.3 | 4.8 | 3.6 | 9.6 / 8.9 |
+| shared-animated | 20.7 | 22.0 | 15.9 | 7.3 | 9.1 | 6.1 | 11.2 / 15.2 |
+| many-materials | 14.0 | 14.5 | 8.6 | 4.9 | 4.8 | 4.3 | 9.8 / **1 646** |
+| unique-geometries | 5.1 | 5.2 | 3.4 | 1.3 | 1.4 | 1.9 | 8.5 / 7.4 |
+| hierarchy-animated | 27.4 | 34.6 | 14.0 | 5.4 | 5.9 | 4.3 | 9.8 / 14.3 |
+| shader-client | 5.8 | 5.2 | 5.1 | 4.0 | 3.9 | 2.8 | 127 / 44.8 |
+| shader-client-static | 30.3 | 43.3 | 34.3 | 25.2 | 31.3 | 22.5 | 754 / 774 |
+| shadows | 77.8 | 100.0 | 7.6 | 1.8 | 2.9 | 1.5 | 3.3 / 4.0 |
+
+* jrs medians repeat within 10–25 % (shared-animated 7.3 vs 9.1, shadows 1.8 vs 2.9); three's within
+  10–50 % (shared-static 29 vs 19, shader-client-static 30 vs 43). Anything a worker claims under ~20 %
+  on a single run of this harness is unproven; use the draws-stubbed column of `profile-cpu.mjs`
+  (repeatable to ~5 %: shader-client jrs 1.2 / 1.2 / 1.3 across three runs today) or a 3-run median.
+* `shadows/three` is 10x the README's number here and `shader-client-static` is 1.0–1.4x in either
+  direction: both are GPU-process-bound scenes (section 0), so they measure this container's
+  SwiftShader throughput and core contention, not the libraries.
+* The worst-frame column is the GPU-process drain described in section 6 (1.6 s in many-materials jrs run 2
+  with a median of 4.8 ms).
+
+## 8. Suggested worker assignments
+
+1. **#1 + #8** (Object3D snapshot in a typed array, no boxed `z`): one worker, `src/core/Object3D.js`,
+   `TransformSlab.js`, `WebGLRenderer._projectObject`; verify with `node --expose-gc bench/micro/...`
+   (allocation must drop to ~0) and `profile-cpu.mjs shared-static` (heap bytes/frame < 5 KB).
+2. **#2 + #3 + #5 + #7** (draw-list build): one worker, `WebGLRenderer._drawList/_pushItem/_resolvePrograms`,
+   `WebGLMegaBuffers.ensure`, `WebGLBatcher.addTex`, `WebGLRenderLists.finish`; target `_drawList` self
+   < 0.8 ms on shared-static and `_update` ≈ 0.
+3. **#6 + #10 + #11** (ShaderMaterial per-draw path): one worker; target shader-client draws-stubbed
+   1.2 → ≤ 0.7 ms with `uniform*` counts unchanged (`traceUniforms`) and `--compare` pixel-identical.
+4. **#4 + #17 + #9 + #19** (static-frame skips): one worker; target shader-client-static draws-stubbed
+   0.7 → ≤ 0.4 ms and shared-static sort/cull ≈ 0 when nothing moves.
+5. **#12 + #16** (shadow caster cache, dirty-range matrix texture): one worker.
+6. **#13**, **#14**, **#15** are design tasks for a later round; each needs the compare harness on every
+   scenario and `npm test`.
+7. Harness worker (no `src/` change): GPU-synced timing column, canvas detached during timing, warm-up
+   until stable, 3-run medians. Without this the integrator cannot see rounds 1–5 in `npm run bench`.
