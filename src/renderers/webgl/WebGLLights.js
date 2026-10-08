@@ -1,6 +1,6 @@
 import { Vector3 } from '../../math/Vector3.js';
 import { Color } from '../../math/Color.js';
-import { MAX_DIR_LIGHTS, MAX_POINT_LIGHTS, MAX_SPOT_LIGHTS, MAX_HEMI_LIGHTS, LIGHTS_BLOCK_SIZE } from '../shaders/ShaderLib.js';
+import { MAX_DIR_LIGHTS, MAX_POINT_LIGHTS, MAX_SPOT_LIGHTS, MAX_HEMI_LIGHTS, MAX_POINT_SHADOWS, LIGHTS_BLOCK_SIZE, pointShadowUnit } from '../shaders/ShaderLib.js';
 
 const _v = /*@__PURE__*/ new Vector3();
 const _v2 = /*@__PURE__*/ new Vector3();
@@ -16,6 +16,8 @@ const OFF_DIR_SHADOW_MAT = OFF_HEMI + MAX_HEMI_LIGHTS * 48;
 const OFF_DIR_SHADOW_PARAMS = OFF_DIR_SHADOW_MAT + MAX_DIR_LIGHTS * 64;
 const OFF_SPOT_SHADOW_MAT = OFF_DIR_SHADOW_PARAMS + MAX_DIR_LIGHTS * 16;
 const OFF_SPOT_SHADOW_PARAMS = OFF_SPOT_SHADOW_MAT + MAX_SPOT_LIGHTS * 64;
+const OFF_POINT_SHADOW_PARAMS = OFF_SPOT_SHADOW_PARAMS + MAX_SPOT_LIGHTS * 16;
+const OFF_POINT_SHADOW_INFO = OFF_POINT_SHADOW_PARAMS + MAX_POINT_SHADOWS * 16;
 
 /**
  * Collects the scene's lights into one std140 buffer that is uploaded once
@@ -27,15 +29,15 @@ class WebGLLights {
 		this.ints = new Int32Array(this.data.buffer);
 		this.ambient = new Color(0, 0, 0);
 		this.dir = []; this.point = []; this.spot = []; this.hemi = [];
-		this.dirShadows = []; this.spotShadows = [];
-		this.numDirShadows = 0; this.numSpotShadows = 0;
+		this.dirShadows = []; this.spotShadows = []; this.pointShadows = [];
+		this.numDirShadows = 0; this.numSpotShadows = 0; this.numPointShadows = 0;
 		this.version = 0;
 		this.hash = '';
 	}
 	begin() {
 		this.ambient.setRGB(0, 0, 0);
 		this.dir.length = 0; this.point.length = 0; this.spot.length = 0; this.hemi.length = 0;
-		this.dirShadows.length = 0; this.spotShadows.length = 0;
+		this.dirShadows.length = 0; this.spotShadows.length = 0; this.pointShadows.length = 0;
 	}
 	push(light) {
 		if (light.isAmbientLight) {
@@ -44,7 +46,7 @@ class WebGLLights {
 		} else if (light.isDirectionalLight) {
 			if (this.dir.length < MAX_DIR_LIGHTS) { this.dir.push(light); if (light.castShadow) this.dirShadows.push(light); }
 		} else if (light.isPointLight) {
-			if (this.point.length < MAX_POINT_LIGHTS) this.point.push(light);
+			if (this.point.length < MAX_POINT_LIGHTS) { this.point.push(light); if (light.castShadow) this.pointShadows.push(light); }
 		} else if (light.isSpotLight) {
 			if (this.spot.length < MAX_SPOT_LIGHTS) { this.spot.push(light); if (light.castShadow) this.spotShadows.push(light); }
 		} else if (light.isHemisphereLight) {
@@ -52,16 +54,21 @@ class WebGLLights {
 		}
 	}
 	/** Shadow-casting lights come first within their type so sampler indices line up. */
-	end(shadowsEnabled) {
+	end(shadowsEnabled, pointShadowsEnabled = true) {
 		if (shadowsEnabled) {
 			this.dir.sort(shadowCastingFirst);
 			this.spot.sort(shadowCastingFirst);
+			this.point.sort(shadowCastingFirst);
 			this.numDirShadows = Math.min(this.dirShadows.length, MAX_DIR_LIGHTS);
 			this.numSpotShadows = Math.min(this.spotShadows.length, MAX_SPOT_LIGHTS - 1); // texture unit 15 is shared with the multi-draw matrix texture
+			// cube maps take the shadow texture units (8-14) the directional and spot maps leave free
+			let n = pointShadowsEnabled ? Math.min(this.pointShadows.length, MAX_POINT_SHADOWS) : 0;
+			while (n > 0 && pointShadowUnit(n - 1, this.numDirShadows, this.numSpotShadows) < 0) n--;
+			this.numPointShadows = n;
 		} else {
-			this.numDirShadows = 0; this.numSpotShadows = 0;
+			this.numDirShadows = 0; this.numSpotShadows = 0; this.numPointShadows = 0;
 		}
-		const hash = this.numDirShadows + ':' + this.numSpotShadows;
+		const hash = this.numDirShadows + ':' + this.numSpotShadows + ':' + this.numPointShadows;
 		if (hash !== this.hash) { this.hash = hash; this.version++; }
 	}
 	/** Write the collected lights into the std140 buffer image. Call after shadow matrices are updated. */
@@ -84,7 +91,7 @@ class WebGLLights {
 				const me = shadow.matrix.elements;
 				for (let k2 = 0; k2 < 16; k2++) d[mo + k2] = me[k2];
 				const po = (OFF_DIR_SHADOW_PARAMS + i * 16) / 4;
-				d[po] = shadow.bias; d[po + 1] = shadow.normalBias; d[po + 2] = shadow.radius; d[po + 3] = 1 / shadow.mapSize.x;
+				d[po] = shadow.bias; d[po + 1] = shadow.normalBias; d[po + 2] = shadow.radius / shadow.mapSize.x; d[po + 3] = shadow.intensity;
 			}
 		}
 		for (let i = 0; i < this.point.length; i++) {
@@ -94,6 +101,13 @@ class WebGLLights {
 			const c = light.color, k = light.intensity;
 			d[o + 4] = c.r * k; d[o + 5] = c.g * k; d[o + 6] = c.b * k; d[o + 7] = 0;
 			d[o + 8] = light.distance; d[o + 9] = light.decay; d[o + 10] = 0; d[o + 11] = 0;
+			if (i < this.numPointShadows) {
+				const shadow = light.shadow;
+				const po = (OFF_POINT_SHADOW_PARAMS + i * 16) / 4;
+				d[po] = shadow.bias; d[po + 1] = shadow.normalBias; d[po + 2] = shadow.radius; d[po + 3] = shadow.intensity;
+				const io = (OFF_POINT_SHADOW_INFO + i * 16) / 4;
+				d[io] = shadow.mapSize.x; d[io + 1] = shadow.camera.near; d[io + 2] = shadow.camera.far; d[io + 3] = 0;
+			}
 		}
 		for (let i = 0; i < this.spot.length; i++) {
 			const light = this.spot[i], o = (OFF_SPOT + i * 64) / 4;
@@ -111,7 +125,7 @@ class WebGLLights {
 				const me = shadow.matrix.elements;
 				for (let k2 = 0; k2 < 16; k2++) d[mo + k2] = me[k2];
 				const po = (OFF_SPOT_SHADOW_PARAMS + i * 16) / 4;
-				d[po] = shadow.bias; d[po + 1] = shadow.normalBias; d[po + 2] = shadow.radius; d[po + 3] = 1 / shadow.mapSize.x;
+				d[po] = shadow.bias; d[po + 1] = shadow.normalBias; d[po + 2] = shadow.radius / shadow.mapSize.x; d[po + 3] = shadow.intensity;
 			}
 		}
 		for (let i = 0; i < this.hemi.length; i++) {

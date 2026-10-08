@@ -288,6 +288,19 @@ compare). The main pass samples them through `sampler2DShadow` with 3x3 PCF. Sha
 go through the same sort + batch path as the main pass, so a thousand identical casters
 are one draw call in the shadow pass too.
 
+Point lights render into a cube depth map (`WebGLCubeRenderTarget` + `CubeDepthTexture`, as in three r186; three no longer
+uses the 4x2 "cube in a 2D map" layout or a distance-RGBA pass: the hardware depth of a 90 degree perspective face is the
+value compared). The six faces use three's `_cubeDirections` / `_cubeUps`. Casters are gathered once per light and culled
+against each face's frustum; each face goes through the same sort + batch path (and its matrix texture) as any other pass,
+and the per-light signature skip applies to the whole cube. The main pass samples the cube with `samplerCubeShadow` (PCF:
+five Vogel-disk taps rotated by interleaved gradient noise, the same code as three) or `samplerCube` plus a manual compare
+(`BasicShadowMap`). The vertex shader passes the light-to-fragment vector, so no matrix is stored per point shadow; the Lights
+block holds `pointShadowParams` (bias, normalBias, radius, intensity) and `pointShadowInfo` (mapSize, near, far).
+Capacity: 4 point shadows, and each cube map needs a texture unit, so they take the units of 8-14 left free by the
+directional (8..) and spot (12..) shadow maps (`pointShadowUnit`); a scene with 4 directional and 3 spot shadows has none left.
+Point lights are sorted shadow-casting first, so the i-th shadow is the i-th point light. `VSMShadowMap` is unsupported for
+point lights (three warns and skips them as well).
+
 ## 11. Skinning, morph targets and animation (`src/objects/Skeleton.js`, `src/renderers/webgl/WebGLMorphtargets.js`)
 
 The GPU side is three.js r186's: the built-in vertex shader includes the `skinning_*` and
@@ -322,7 +335,7 @@ and the change-detected `updateMatrix` picks it up.
 
 * Environment maps / image-based lighting, `MeshPhysicalMaterial`'s extra layers
   (the class exists; it renders as `MeshStandardMaterial`).
-* Point-light shadows (cube maps), VSM, `Scene.background` textures, `InstancedMesh`
+* VSM (and `BasicShadowMap` for directional/spot lights, which always use hardware PCF), `Scene.background` textures, `InstancedMesh`
   morph targets (`morphTexture`), clipping planes, WebGL1.
 * `ShaderMaterial` with `lights: true`: three.js fills light uniforms from the scene in
   view space; here lighting data lives in the `Lights` block, which custom shaders do not

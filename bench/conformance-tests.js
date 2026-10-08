@@ -171,7 +171,7 @@ export function conformanceTests() {
 				renderer.render(scene, camera); const a2 = probe();
 				d.intensity = 0.2; renderer.render(scene, camera); const b = probe();           // direct light mutation
 				d.color.r = 0; renderer.render(scene, camera); const c = probe();                // direct colour channel mutation
-				scene.fog = new T.Fog(0x000040, 1, 7); renderer.render(scene, camera); const e = probe();
+				scene.fog = new T.Fog(0x402000, 1, 7); renderer.render(scene, camera); const e = probe(); // fog colour != background: a fully fogged pixel must stay distinguishable
 				scene.fog.near = 0.1; scene.fog.far = 4.8; renderer.render(scene, camera); const f = probe();  // direct fog mutation
 				camera.position.x = 3; renderer.render(scene, camera); const g = probe();                    // camera move
 				const same = a.every((v, i) => v === a2[i]);
@@ -383,6 +383,41 @@ export function conformanceTests() {
 				const inShadow = readPixel(renderer, s[0], s[1]), lit = readPixel(renderer, l[0], l[1]);
 				renderer.shadowMap.enabled = false;
 				return { pass: lum(inShadow) < lum(lit) * 0.5 && lum(lit) > 120, detail: `in shadow ${fmt(inShadow)} vs lit floor ${fmt(lit)}` };
+			}
+		},
+		{
+			name: 'Point light shadow map (cube depth, PCF and BasicShadowMap)', run(T, renderer) {
+				const { scene, camera } = baseScene(T);
+				renderer.shadowMap.enabled = true;
+				const mat = () => new T.MeshLambertMaterial({ color: 0xffffff });
+				const floor = new T.Mesh(new T.PlaneGeometry(10, 10), mat());
+				floor.rotation.x = -Math.PI / 2; floor.position.y = -1; floor.receiveShadow = true; scene.add(floor);
+				const wall = new T.Mesh(new T.PlaneGeometry(10, 10), mat());
+				wall.position.z = -3; wall.receiveShadow = true; scene.add(wall);
+				const box = new T.Mesh(new T.BoxGeometry(1, 1, 1), mat()); box.castShadow = true; scene.add(box);
+				const lamp = new T.PointLight(0xffffff, 120); lamp.position.set(0, 3, 0); lamp.castShadow = true; lamp.shadow.bias = -0.001; scene.add(lamp);
+				scene.add(new T.AmbientLight(0xffffff, 0.3));
+				camera.position.set(4, 3, 6); camera.lookAt(0, -0.5, -1); camera.updateMatrixWorld();
+				const px = (x, y, z) => { const v = new T.Vector3(x, y, z).project(camera); return [Math.round((v.x + 1) * 128), Math.round((1 - v.y) * 128)]; };
+				const probe = (p) => readPixel(renderer, p[0], p[1]);
+				const under = px(0, -1, 0), lit = px(2.2, -1, 0.6);
+				const out = {};
+				for (const [label, type] of [['pcf', T.PCFShadowMap], ['basic', T.BasicShadowMap]]) {
+					renderer.shadowMap.type = type;
+					renderer.render(scene, camera);
+					out[label] = { shadow: probe(under), lit: probe(lit) };
+				}
+				// the light now sits in front of the box: its shadow falls on the wall behind (the -Z cube face)
+				lamp.position.set(0, 0.2, 3); renderer.shadowMap.type = T.PCFShadowMap; renderer.render(scene, camera);
+				const wallShadow = probe(px(0, 0.2, -3)), wallLit = probe(px(2.6, 0.2, -3));
+				// a second casting point light must not mix up the cube maps
+				const lamp2 = new T.PointLight(0xffffff, 120); lamp2.position.set(-3, 2, 3); lamp2.castShadow = true; scene.add(lamp2);
+				renderer.render(scene, camera);
+				const two = probe(px(0, 0.2, -3));
+				renderer.shadowMap.enabled = false; renderer.shadowMap.type = T.PCFShadowMap;
+				const ok = (r) => lum(r.shadow) < lum(r.lit) * 0.6 && lum(r.lit) > 60;
+				const wallOk = lum(wallShadow) < lum(wallLit) * 0.6 && lum(wallLit) > 40;
+				return { pass: ok(out.pcf) && ok(out.basic) && wallOk && lum(two) < lum(wallLit), detail: `PCF in shadow ${fmt(out.pcf.shadow)} vs lit ${fmt(out.pcf.lit)}; Basic ${fmt(out.basic.shadow)} vs ${fmt(out.basic.lit)}; wall shadow ${fmt(wallShadow)} vs lit ${fmt(wallLit)}; with a second casting light ${fmt(two)}` };
 			}
 		},
 		{
