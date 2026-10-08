@@ -19,6 +19,12 @@ render-target tone-mapping and OPAQUE fixes as fixes 1-2 here, so those hunks to
 text. One merge slip (a lost `#endif` between the per-map varyings and `vHighPrecisionZW`) broke every
 program and was caught by conformance / the fuzzer before the push; see the merge-fix commit.
 
+> Interim state (commit a9e6d0c): fix 5 below (this branch's per-map uv transforms) has been removed from the
+> code again at the integrator's request, because `swarm/per-map-transform` implements the same feature with a
+> different material-record layout and is being merged into the integration branch first. The description of
+> fix 5 is kept for the record; once the integration's implementation is merged here, seed 93 and the
+> `perMapTransform` seeds will be re-checked against it and this note replaced.
+
 ## Root causes fixed (one commit each, seeds in the message)
 
 1. **Opaque materials wrote the mapped alpha into the framebuffer** (seed 23; also seeds 93 and the rest
