@@ -57,8 +57,9 @@ class WebGLRenderList {
 			}
 			this.transparentKeys[this.transparentCount] = index; // depth resolved in finish()
 			this.transparentDepth[this.transparentCount] = z;
-			if (z < this.minDepth) this.minDepth = z;
-			if (z > this.maxDepth) this.maxDepth = z;
+			const zf = this.transparentDepth[this.transparentCount]; // the float32-rounded value: min/max must bound what finish() reads back
+			if (zf < this.minDepth) this.minDepth = zf;
+			if (zf > this.maxDepth) this.maxDepth = zf;
 			this.transparentCount++;
 		} else {
 			if (this.opaqueCount === this.opaqueKeys.length) {
@@ -97,7 +98,8 @@ class WebGLRenderList {
 			const item = items[index];
 			const rank = singleRank ? 0 : rankOf(item.renderOrder);
 			// larger z (farther) first -> smaller key
-			const depthKey = Math.round((this.maxDepth - td[i]) * scale);
+			let depthKey = Math.round((this.maxDepth - td[i]) * scale);
+			if (depthKey < 0) depthKey = 0; else if (depthKey > 67108863) depthKey = 67108863;
 			tk[i] = ((rank * 67108864 + depthKey) * INDEX_RANGE) + index;
 		}
 		this.transparentSorted = tk.subarray(0, tn);

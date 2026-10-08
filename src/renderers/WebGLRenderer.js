@@ -24,6 +24,7 @@ import { WebGLMegaBuffers } from './webgl/WebGLMegaBuffers.js';
 import { computeNormalMatrix } from '../core/TransformSlab.js';
 import { WebGLInfo } from './webgl/WebGLInfo.js';
 import { WebGLShadowMap } from './webgl/WebGLShadowMap.js';
+import { getDFGLUT } from './shaders/DFGLUTData.js';
 import { MATERIAL_SHADER, MATERIAL_SPRITE, MATERIAL_POINTS, FRAME_BLOCK_SIZE, LIGHTS_BLOCK_SIZE, MATERIAL_BLOCK_SIZE, TEXTURE_UNITS } from './shaders/ShaderLib.js';
 
 const _projScreenMatrix = /*@__PURE__*/ new Matrix4();
@@ -732,6 +733,7 @@ class WebGLRenderer {
 		if (material.metalnessMap) t.setTexture2D(material.metalnessMap, TEXTURE_UNITS.metalnessMap);
 		if (material.aoMap) t.setTexture2D(material.aoMap, TEXTURE_UNITS.aoMap);
 		if (material.specularMap) t.setTexture2D(material.specularMap, TEXTURE_UNITS.specularMap);
+		if (material.isMeshStandardMaterial) t.setTexture2D(getDFGLUT(), TEXTURE_UNITS.dfgLUT);
 	}
 
 	// ------------------------------------------------------------------ drawing

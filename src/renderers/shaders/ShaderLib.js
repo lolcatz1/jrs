@@ -36,6 +36,7 @@ export const MATERIAL_SHADOW_DEPTH = 11; // internal: shadow map pass
 export const TEXTURE_UNITS = {
 	map: 0, alphaMap: 1, normalMap: 2, emissiveMap: 3, roughnessMap: 4, metalnessMap: 5, aoMap: 6, specularMap: 7,
 	bumpMap: 7, // shares with specularMap (never used together by one material type)
+	dfgLUT: 7, // MeshStandardMaterial's DFG lookup table (Standard has no specularMap; bumpMap is not implemented)
 	dirShadowMap0: 8, dirShadowMap1: 9, dirShadowMap2: 10, dirShadowMap3: 11,
 	spotShadowMap0: 12, spotShadowMap1: 13, spotShadowMap2: 14, spotShadowMap3: 15,
 	objectMatrices: 15, // multi-draw matrix texture (spot shadow maps are capped at 3 when it is used)
@@ -319,6 +320,9 @@ uniform sampler2D aoMap;
 #ifdef USE_SPECULARMAP
 uniform sampler2D specularMap;
 #endif
+#if defined( LIGHTING_STANDARD )
+uniform sampler2D dfgLUT;
+#endif
 #if NUM_DIR_SHADOWS > 0
 in vec4 vDirShadowCoord[ NUM_DIR_SHADOWS ];
 uniform sampler2DShadow dirShadowMap[ NUM_DIR_SHADOWS ];
@@ -403,6 +407,26 @@ vec3 BRDF_GGX( const in vec3 lightDir, const in vec3 viewDir, const in vec3 norm
 	float V = V_GGX_SmithCorrelated( alpha, dotNL, dotNV );
 	float D = D_GGX( alpha, dotNH );
 	return F * ( V * D );
+}
+// three.js r186 lights_physical_pars_fragment: multiple-scattering split of the DFG term
+void computeMultiscattering( const in vec2 fab, const in vec3 specularColor, const in float specularF90, inout vec3 singleScatter, inout vec3 multiScatter ) {
+	vec3 Fr = specularColor;
+	vec3 FssEss = Fr * fab.x + specularF90 * fab.y;
+	float Ess = fab.x + fab.y;
+	float Ems = 1.0 - Ess;
+	vec3 Favg = Fr + ( 1.0 - Fr ) * 0.047619; // 1/21
+	vec3 Fms = FssEss * Favg / ( 1.0 - Ems * Favg );
+	singleScatter += FssEss;
+	multiScatter += Fms * Ems;
+}
+// three.js r186 RE_Direct_Physical (no clearcoat/sheen/iridescence/retroreflection): GGX specular with
+// multi-scattering energy compensation, and a diffuse term reduced by the Fresnel-reflected energy
+void RE_Direct_Standard( const in vec3 irradiance, const in vec3 L, const in vec3 V, const in vec3 N, const in vec3 f0Blended, const in float roughness, const in vec3 msComp, const in vec3 diffuseContribution, inout vec3 directDiffuse, inout vec3 directSpecular ) {
+	directSpecular += irradiance * BRDF_GGX( L, V, N, f0Blended, 1.0, roughness ) * msComp;
+	vec3 halfDir = normalize( L + V );
+	float dotVH = clamp( dot( V, halfDir ), 0.0, 1.0 );
+	vec3 F = F_Schlick( vec3( 0.04 ), 1.0, dotVH );
+	directDiffuse += irradiance * BRDF_Lambert( diffuseContribution ) * ( 1.0 - F );
 }
 #endif
 #if defined( LIGHTING_PHONG )
@@ -522,6 +546,7 @@ void main() {
 			normal *= faceDirection;
 			#endif
 		#endif
+		vec3 nonPerturbedNormal = normal;
 		#ifdef USE_NORMALMAP
 		vec3 mapN = texture( normalMap, vUv ).xyz * 2.0 - 1.0;
 		mapN.xy *= matParams2.xy;
@@ -550,10 +575,18 @@ void main() {
 		#if defined( LIGHTING_STANDARD )
 		vec3 diffuseBase = diffuseColor.rgb * ( 1.0 - metalnessFactor );
 		vec3 specularF0 = mix( vec3( 0.04 ), diffuseColor.rgb, metalnessFactor );
-		float dxy = max( abs( dFdx( normal.z ) ), abs( dFdy( normal.z ) ) );
-		float geometryRoughness = min( max( dxy, 0.0525 ), 1.0 );
+		// specular anti-aliasing term as in three.js (lights_physical_fragment): derivative of the
+		// view-space unperturbed normal, largest component; zero on flat surfaces
+		vec3 viewNormal = mat3( viewMatrix ) * nonPerturbedNormal;
+		vec3 dxy = max( abs( dFdx( viewNormal ) ), abs( dFdy( viewNormal ) ) );
+		float geometryRoughness = max( max( dxy.x, dxy.y ), dxy.z );
 		float roughness = max( roughnessFactor, 0.0525 );
 		roughness = min( roughness + geometryRoughness, 1.0 );
+		// DFG lookup (three.js lights_fragment_begin) and direct-light multi-scattering compensation
+		float dotNVms = clamp( dot( normal, viewDir ), 0.0, 1.0 );
+		vec2 dfg = texture( dfgLUT, vec2( roughness, dotNVms ) ).rg;
+		float EssMs = dfg.x + dfg.y;
+		vec3 msComp = 1.0 + specularF0 * ( 1.0 / EssMs - 1.0 );
 		#else
 		vec3 diffuseBase = diffuseColor.rgb;
 		#endif
@@ -581,10 +614,12 @@ void main() {
 				irradiance *= dirShadowFactor( i );
 			}
 			#endif
-			directDiffuse += irradiance * BRDF_Lambert( diffuseBase );
 			#if defined( LIGHTING_STANDARD )
-			directSpecular += irradiance * BRDF_GGX( L, viewDir, normal, specularF0, 1.0, roughness );
-			#elif defined( LIGHTING_PHONG )
+			RE_Direct_Standard( irradiance, L, viewDir, normal, specularF0, roughness, msComp, diffuseBase, directDiffuse, directSpecular );
+			#else
+			directDiffuse += irradiance * BRDF_Lambert( diffuseBase );
+			#endif
+			#if defined( LIGHTING_PHONG )
 			directSpecular += irradiance * BRDF_BlinnPhong( L, viewDir, normal, specularColor, shininess ) * specularStrength;
 			#endif
 		}
@@ -596,10 +631,12 @@ void main() {
 			float lightDistance = length( lVector );
 			dotNL = clamp( dot( normal, L ), 0.0, 1.0 );
 			irradiance = dotNL * pointLights[ i ].color.rgb * getDistanceAttenuation( lightDistance, pointLights[ i ].params.x, pointLights[ i ].params.y );
-			directDiffuse += irradiance * BRDF_Lambert( diffuseBase );
 			#if defined( LIGHTING_STANDARD )
-			directSpecular += irradiance * BRDF_GGX( L, viewDir, normal, specularF0, 1.0, roughness );
-			#elif defined( LIGHTING_PHONG )
+			RE_Direct_Standard( irradiance, L, viewDir, normal, specularF0, roughness, msComp, diffuseBase, directDiffuse, directSpecular );
+			#else
+			directDiffuse += irradiance * BRDF_Lambert( diffuseBase );
+			#endif
+			#if defined( LIGHTING_PHONG )
 			directSpecular += irradiance * BRDF_BlinnPhong( L, viewDir, normal, specularColor, shininess ) * specularStrength;
 			#endif
 		}
@@ -619,10 +656,12 @@ void main() {
 					irradiance *= spotShadowFactor( i );
 				}
 				#endif
-				directDiffuse += irradiance * BRDF_Lambert( diffuseBase );
 				#if defined( LIGHTING_STANDARD )
-				directSpecular += irradiance * BRDF_GGX( L, viewDir, normal, specularF0, 1.0, roughness );
-				#elif defined( LIGHTING_PHONG )
+				RE_Direct_Standard( irradiance, L, viewDir, normal, specularF0, roughness, msComp, diffuseBase, directDiffuse, directSpecular );
+				#else
+				directDiffuse += irradiance * BRDF_Lambert( diffuseBase );
+				#endif
+				#if defined( LIGHTING_PHONG )
 				directSpecular += irradiance * BRDF_BlinnPhong( L, viewDir, normal, specularColor, shininess ) * specularStrength;
 				#endif
 			}
@@ -635,7 +674,15 @@ void main() {
 			float hemiDiffuseWeight = 0.5 * dotNLh + 0.5;
 			indirectIrradiance += mix( hemiLights[ i ].ground.rgb, hemiLights[ i ].sky.rgb, hemiDiffuseWeight );
 		}
+		#if defined( LIGHTING_STANDARD )
+		// three.js RE_IndirectDiffuse_Physical: energy reflected by the specular lobe is not available to the diffuse layer
+		vec3 singleScattering = vec3( 0.0 );
+		vec3 multiScattering = vec3( 0.0 );
+		computeMultiscattering( dfg, vec3( 0.04 ), 1.0, singleScattering, multiScattering );
+		vec3 indirectDiffuse = indirectIrradiance * BRDF_Lambert( diffuseBase ) * ( 1.0 - singleScattering - multiScattering );
+		#else
 		vec3 indirectDiffuse = indirectIrradiance * BRDF_Lambert( diffuseBase );
+		#endif
 		#ifdef USE_AOMAP
 			#ifdef USE_UV1
 			float ambientOcclusion = ( texture( aoMap, vUv1 ).r - 1.0 ) * matParams.z + 1.0;
