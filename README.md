@@ -62,8 +62,8 @@ over 60 frames after 10 warm-up frames, 320x240 (median frame time, so single ga
 | unique-geometries: a distinct geometry per mesh (multi-draw over the mega-buffer) | 2,000 | 3.4 ms | 0.5 ms | **6.8x** | 15 → 1 ms | 2000 → 1 | 0 / 0 |
 | hierarchy-animated: 200 chains of 40 nested objects, roots rotating | 8,000 | 12.6 ms | 3.9 ms | **3.2x** | 30 → 2428 ms | 8000 → 1 | 0 / 0 |
 | instanced-100k: one InstancedMesh, 100 000 instances | 100,000 | 0.1 ms | 0.0 ms | n/a (both < 0.1 ms) | 0 → 0 ms | 1 → 1 | 0 / 0 |
-| shader-client: 1,313 meshes, all ShaderMaterial, 12 shaders × 2 material instances sharing one 30-uniform object, 2D/3D/array/cube samplers, custom attributes, opaque + transparent (custom programs instanced automatically) | 1,313 | 3.9 ms | 2.9 ms | **1.3x** | 45 → 57 ms | 1313 → 1313 | 0 / 0 |
-| shader-client-static: same materials, fixed camera, nothing moving, 3 passes per frame (2 shadow render targets with `scene.overrideMaterial`, main pass with stencil shadow volumes), ~215 draws per pass | 211 | 34.1 ms | 25.8 ms | **1.3x** | 650 → 546 ms | 217 → 217 | 0 / 0 |
+| shader-client: 1,313 meshes, all ShaderMaterial, 12 shaders × 2 material instances sharing one 30-uniform object, 2D/3D/array/cube samplers, custom attributes, opaque + transparent (custom programs instanced automatically) | 1,313 | 4.7 ms | 0.9 ms | **5.2x** | 8 → 5 ms | 1313 → 297 | 0 / 0 |
+| shader-client-static: same materials, fixed camera, nothing moving, 3 passes per frame (2 shadow render targets with `scene.overrideMaterial`, main pass with stencil shadow volumes), ~215 draws per pass | 211 | 46.2 ms | 0.6 ms | **77.0x** | 728 → 4 ms | 217 → 53 | 0 / 0 |
 | shadows: 2 000 casters/receivers, 1024² directional shadow map | 2,000 | 79.1 ms | 0.3 ms | **263.7x** | 206 → 1 ms | 4001 → 2 | 0.134 / 33 |
 | shadows-animated: same scene, every third caster moving each frame | 2,000 | 72.3 ms | 1.2 ms | **60.2x** | 171 → 6 ms | 4001 → 3 | 0.121 / 31 |
 | skinned-crowd: 200 skinned meshes, 20 bones each, every bone animated by an `AnimationMixer` | 200 | 3.5 ms | 3.7 ms | **0.9x** | 6 → 724 ms | 200 → 200 | 0 / 2 |

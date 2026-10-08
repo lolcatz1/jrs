@@ -119,7 +119,87 @@ client frame all six lists replay every frame and nothing is uploaded.
 
 ## Numbers
 
-RESULTS_PLACEHOLDER
+Headless Chromium / SwiftShader, 320x240, 60 timed frames after 10 warm-up frames, `node bench/run.mjs
+--compare --frames=60`. "Before" is this branch's parent (`18d9f52`, integration branch at session
+start) measured in this session; "after" is the better of two full runs on the branch merged with
+the current integration branch (the host is noisy: three.js's own medians moved by 2x between runs).
+
+### Target scenarios
+
+| | before (jrs) | after (jrs) | three.js | pixel diff (mean / max) |
+|---|---:|---:|---:|---|
+| **shader-client** median | 4.3 ms (1,313 draws) | **0.9 ms (297 draws: 132 instanced / single + 165 multi-draw)** | 4.7-26 ms | 0 / 0 -> 0 / 0 |
+| shader-client mean / worst | 19.7 / 675 ms | 1.3 / 5 ms | 25 / 726 ms | |
+| **shader-client-static** median (3 passes) | 28.7 ms (217 draws per pass) | **0.6 ms (20 + 20 + 9 draws; every list replays)** | 46 ms | 0 / 0 -> 0 / 0 |
+| shader-client-static mean / worst | 44.7 / 812 ms | 0.7 / 4 ms | 49 / 728 ms | |
+
+GL calls per frame, shader-client (three -> jrs before -> jrs after): total 3,804 -> 3,320 -> **955**;
+`uniform*` 1,054 -> 1,055 -> **481**; `bindVertexArray` 1,248 -> 763 -> **147**; context `draw*` calls
+1,313 -> 1,313 -> **132** (plus 165 `multiDrawElementsWEBGL` on the extension object, which the GL
+counter does not see; `renderer.info.render.calls` = 297); `useProgram` 13 -> 13 -> 13;
+`bindTexture` 171 -> 171 -> 177 (the matrix texture is re-bound per batch through the state cache).
+The remaining 481 uniform calls are the materials' own uniforms re-sent on every program switch
+(24 material instances x ~20 changed values: `drawBase` per batch, the per-material samplers'
+`bindTexture`s, and the two animated shared uniforms), i.e. the per-material cost the uniform-list
+report identified as the floor.
+
+shader-client-static, per pass (three -> jrs after): shadow RT `uniform*` 147 -> 25, draws 217 -> 20,
+`bindVertexArray` 214 -> 23; near shadow RT 147 -> 25, 217 -> 20; main pass 184 -> 94, 217 -> 9,
+`bindTexture` 44 -> 49; total GL calls 1,869 -> **373** (was 1,620). Lists replay every frame, so the
+matrix textures are never re-filled or re-uploaded.
+
+Draw-call anatomy of shader-client (per frame): the 442 pre-merged chunks (unique geometries, the
+`BATCHED` shader that reads no object matrix) become **2 multi-draws** (one per material instance);
+the 11 opaque groups of plastic / textured / diamondplate / ... over 20 shared geometries become 134
+draws (the existing cost model picks instanced-per-geometry for runs whose geometries repeat, so the
+large groups are 20 draws per material instance and the small ones one multi-draw each); the 150
+depth-sorted transparent meshes (two shaders x two instances interleaved by depth) become ~160
+multi-draws of 1-3 sub-draws each. Opaque draws: 1,163 -> ~137; transparent: 150 -> ~160 (unchanged
+count, but each is now a multi-draw with the matrices in the texture, so no per-object uniform
+uploads). Merging the two material instances of each shader (follow-up below) would bring the
+transparent list to a handful of draws.
+
+### All scenarios, both runs (merged code)
+
+| Scenario | three.js median | jrs run 2 | jrs run 3 | draws (three -> jrs) | pixel diff (mean / max) | reference (latest.json before) |
+|---|---:|---:|---:|---|---|---|
+| dynamic-geometry-large | 2.0 ms | 2.0 ms | 2.0 ms | 12 -> 12 | 0 / 0 | 0 / 0 |
+| dynamic-geometry | 1.2 ms | 1.3 ms | 1.2 ms | 200 -> 200 | 0 / 0 | 0 / 0 |
+| shared-static | 17.2 ms | 0.9 ms | 1.0 ms | 10000 -> 1 | 0.347 / 8 | 0.347 / 8 |
+| shared-animated | 19.7 ms | 7.9 ms | 9.6 ms | 10000 -> 1 | 0.346 / 9 | 0.346 / 9 |
+| many-materials | 16.3 ms | 0.6 ms | 0.6 ms | 5000 -> 3 | 0 / 0 | 0 / 0 |
+| unique-geometries | 6.3 ms | 0.6 ms | 0.8 ms | 2000 -> 1 | 0 / 0 | 0 / 0 |
+| transparent-sort | 21.8 ms | 5.9 ms | 6.2 ms | 10000 -> 1 | 0 / 0 | 0 / 0 |
+| hierarchy-animated | 29.3 ms | 5.4 ms | 6.7 ms | 8000 -> 1 | 0 / 0 | 0 / 0 |
+| instanced-100k | 0.0 ms | 0.1 ms | 0.0 ms | 1 -> 1 | 0 / 0 | 0 / 0 |
+| **shader-client** | 4.7 ms | **0.9 ms** | **0.9 ms** | 1313 -> 297 | 0 / 0 | 0 / 0 |
+| **shader-client-static** | 46.2 ms | **0.6 ms** | **0.6 ms** | 217 -> 53 | 0 / 0 | 0 / 0 |
+| skinned-crowd | 3.8 ms | 4.9 ms | 5.2 ms | 200 -> 200 | 0 / 2 | 0 / 2 |
+| shadows | 89.8 ms | 0.3 ms | 0.6 ms | 4001 -> 2 | 0.134 / 33 | 0.134 / 33 |
+| shadows-animated | 92.5 ms | 1.8 ms | 1.6 ms | 4001 -> 3 | 0.121 / 31 | 0.121 / 31 |
+| shadows-point | 94.9 ms | 0.3 ms | 0.5 ms | 4001 -> 2 | 0 / 0 | 0 / 0 (point-shadows report) |
+| shadows-point-animated | 78.0 ms | 2.0 ms | 2.1 ms | 4001 -> 3 | 0 / 0 | 0 / 0 (point-shadows report) |
+| shadows-point-multi | 60.7 ms | 0.4 ms | 0.3 ms | 2031 -> 2 | 0.193 / 41 | 0.193 / 41 (point-shadows report) |
+
+Every scenario keeps its reference pixel difference. The skinned-crowd and shared-animated medians
+are noisy on this host (the branch does not touch skinning; shared-animated re-uploads 1.3 MB of
+matrices per frame as before and sits inside its run-to-run spread of 4.5-9.6 ms across this
+session's runs). The per-list matrix texture also helps scenes with both opaque and transparent
+batches: the opaque list of `transparent-sort` replays now instead of refilling every frame.
+
+### Validation
+
+`npm test` 139/139 (133 before the merge); `node bench/conformance.mjs` all pass including the new
+"ShaderMaterial batching: 50 instances reading modelViewMatrix / normalMatrix" check (76 -> 3
+draws, max diff 0 vs individual draws, 0 / 0 vs three.js, hooked mesh keeps its per-object uniform);
+`node bench/addons.mjs` and `node bench/smoke.mjs` pass with GL error 0; `bench/fuzz.mjs` does not
+exist on this branch. Edge-case script (scratchpad, not committed): 8 shader kinds x 10 frames
+(orbiting camera, rotating objects, a uniform changed without `needsUpdate`, an attribute update,
+visibility toggles, the flag toggled off and on mid-run, an `InstancedBufferGeometry` mesh, a
+mirrored mesh, an `onBeforeRender` hook, wireframe, transparent, RawShaderMaterial GLSL3, chunk-based,
+a `gl_InstanceID` user, and an `overrideMaterial` depth pass into a render target): batched vs
+unbatched max pixel difference **0** in every frame; vs three.js mean 0.000, max 1-4 on a handful of
+pixels (the pre-existing float32-matrix noise; identical with the feature off).
 
 ## Risks
 
