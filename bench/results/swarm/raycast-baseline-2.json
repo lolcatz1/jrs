@@ -1,0 +1,115 @@
+{
+  "results": [
+    {
+      "name": "a-small-meshes",
+      "desc": "10000 small meshes (<=80 tris), 1000 rays via intersectObjects(scene.children, true)",
+      "errors": [],
+      "three": {
+        "msPer1000": 2242.572689999999,
+        "minMsPer1000": 1813.719967,
+        "raysTimed": 1000,
+        "firstRunMs": 2916.469803,
+        "hits": 0.472
+      },
+      "jrs": {
+        "msPer1000": 2408.2633069999974,
+        "minMsPer1000": 1847.9780030000002,
+        "raysTimed": 1000,
+        "firstRunMs": 2275.623885000001,
+        "hits": 0.472
+      },
+      "identical": true
+    },
+    {
+      "name": "b-1M-triangles",
+      "desc": "one SphereGeometry(708x708) mesh (~1M tris), 1000 rays; three.js timed on 20 rays and scaled",
+      "errors": [],
+      "three": {
+        "msPer1000": 124541.39714999983,
+        "minMsPer1000": 116551.80360000013,
+        "raysTimed": 20,
+        "firstRunMs": 2452.819911999999,
+        "hits": 1.9
+      },
+      "jrs": {
+        "msPer1000": 21.601589999998396,
+        "minMsPer1000": 18.433563999999024,
+        "raysTimed": 1000,
+        "firstRunMs": 1007.8995050000012,
+        "hits": 1.934
+      },
+      "identical": true
+    },
+    {
+      "name": "c-moving-meshes",
+      "desc": "2000 meshes whose transforms change every frame, 200 rays/frame, 10 frames, updateMatrixWorld excluded from timing",
+      "errors": [],
+      "three": {
+        "msPer1000": 332.3299290000032,
+        "minMsPer1000": 315.820013499997,
+        "raysTimed": 200,
+        "firstRunMs": 658.2036260000023,
+        "hits": 0.12
+      },
+      "jrs": {
+        "msPer1000": 236.00252049999835,
+        "minMsPer1000": 210.7406114999976,
+        "raysTimed": 200,
+        "firstRunMs": 560.4329499999949,
+        "hits": 0.12
+      },
+      "identical": true
+    },
+    {
+      "name": "c2-hierarchy",
+      "desc": "200 moving groups x 10 child meshes, 200 rays/frame, 10 frames",
+      "errors": [],
+      "three": {
+        "msPer1000": 292.8073125000046,
+        "minMsPer1000": 286.04089399999793,
+        "raysTimed": 200,
+        "firstRunMs": 572.7394319999948,
+        "hits": 0.431
+      },
+      "jrs": {
+        "msPer1000": 295.34241899999324,
+        "minMsPer1000": 250.68984149999963,
+        "raysTimed": 200,
+        "firstRunMs": 605.3508189999993,
+        "hits": 0.431
+      },
+      "identical": true
+    },
+    {
+      "name": "d-instanced",
+      "desc": "InstancedMesh with 1000 sphere instances, 1000 rays via intersectObject (SkinnedMesh: not supported by jrs, skipped)",
+      "errors": [],
+      "three": {
+        "msPer1000": 248.12061699999322,
+        "minMsPer1000": 171.82180499999959,
+        "raysTimed": 1000,
+        "firstRunMs": 270.6457620000001,
+        "hits": 0.115
+      },
+      "jrs": {
+        "msPer1000": 242.79405400000542,
+        "minMsPer1000": 230.07147900000564,
+        "raysTimed": 1000,
+        "firstRunMs": 276.8523059999934,
+        "hits": 0.115
+      },
+      "identical": true
+    }
+  ],
+  "buildTimes": {
+    "100k tris": {
+      "tris": 99904,
+      "ms": 67.6452300000019
+    },
+    "1M tris": {
+      "tris": 1001112,
+      "ms": 681.6666789999945
+    }
+  },
+  "maxRel": 7.114840976377241e-7
+}
