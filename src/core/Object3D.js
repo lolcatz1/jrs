@@ -119,7 +119,7 @@ class Object3D extends EventDispatcher {
 		if (this.matrixAutoUpdate) this.updateMatrix();
 		this._matrix.premultiply(matrix);
 		this._matrix.decompose(this.position, this.quaternion, this.scale);
-		this._snapData[this._snapOffset] = NaN; // force the next updateMatrix() to recompose from TRS, as three.js does
+		this._forceRecompose(); // the next updateMatrix() recomposes from TRS, as in three.js
 		this.matrixWorldNeedsUpdate = true;
 	}
 	applyQuaternion(q) { this.quaternion.premultiply(q); return this; }
@@ -255,6 +255,8 @@ class Object3D extends EventDispatcher {
 		const parent = this.parent;
 		if (parent !== null) { callback(parent); parent.traverseAncestors(callback); }
 	}
+
+	_forceRecompose() { this._snapData[this._snapOffset] = NaN; }
 
 	_snapshot() {
 		const p = this.position, q = this.quaternion, s = this.scale, d = this._snapData, o = this._snapOffset;

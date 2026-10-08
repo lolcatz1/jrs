@@ -302,6 +302,16 @@ export const scenarios = {
 		n: 200,
 		build(T, n) { return buildSkinnedCrowd(T, n); }
 	},
+	// Larger rigs: 1000 skinned characters with 40 bones each (40 000 bones animated per frame).
+	'skinned-crowd-large': {
+		n: 1000,
+		build(T, n) { return buildSkinnedCrowd(T, n, { bones: 40, height: 8, spacing: 1.6, camera: [0, 22, 61] }); }
+	},
+	// Morph targets: 500 meshes sharing one geometry with 8 position + normal targets, influences animated every frame.
+	'morph-crowd': {
+		n: 500,
+		build(T, n) { return buildMorphCrowd(T, n); }
+	},
 	// Shadows: 2000 casters/receivers under a shadow-casting directional light.
 	'shadows': {
 		n: 2000,
@@ -341,14 +351,14 @@ export const scenarios = {
 	},
 };
 
-function buildSkinnedCrowd(T, n) {
+function buildSkinnedCrowd(T, n, opts = {}) {
 	const scene = new T.Scene();
 	scene.background = new T.Color(0x202830);
 	const camera = new T.PerspectiveCamera(60, 4 / 3, 0.1, 500);
-	camera.position.set(0, 14, 34); camera.lookAt(0, 2, 0);
+	camera.position.set(...(opts.camera || [0, 14, 34])); camera.lookAt(0, 2, 0);
 	scene.add(new T.AmbientLight(0xffffff, 0.5));
 	const sun = new T.DirectionalLight(0xffffff, 2); sun.position.set(1, 2, 3); scene.add(sun);
-	const bones = 20, height = 6;
+	const bones = opts.bones || 20, height = opts.height || 6, spacing = opts.spacing || 2.2;
 	// one shared geometry: a tapered tube, every vertex weighted over 4 consecutive bones of a chain along Y
 	const geometry = new T.CylinderGeometry(0.35, 0.5, height, 10, bones * 2);
 	const position = geometry.attributes.position, count = position.count;
@@ -388,7 +398,7 @@ function buildSkinnedCrowd(T, n) {
 			bone.position.y = b === 0 ? -height / 2 : height / (bones - 1);
 			parent.add(bone); chain.push(bone); parent = bone;
 		}
-		mesh.position.set(((i % side) - side / 2) * 2.2, height / 2 - 1, (Math.floor(i / side) - side / 2) * 2.2);
+		mesh.position.set(((i % side) - side / 2) * spacing, height / 2 - 1, (Math.floor(i / side) - side / 2) * spacing);
 		mesh.rotation.y = i * 0.37;
 		mesh.updateMatrixWorld(true);
 		mesh.bind(new T.Skeleton(chain));
@@ -400,6 +410,51 @@ function buildSkinnedCrowd(T, n) {
 		mixers.push(mixer);
 	}
 	return { scene, camera, update: (f) => { for (let i = 0; i < mixers.length; i++) mixers[i].update(1 / 60); } };
+}
+
+function buildMorphCrowd(T, n) {
+	const scene = new T.Scene();
+	scene.background = new T.Color(0x202830);
+	const camera = new T.PerspectiveCamera(60, 4 / 3, 0.1, 500);
+	camera.position.set(0, 18, 40); camera.lookAt(0, 0, 0);
+	scene.add(new T.AmbientLight(0xffffff, 0.5));
+	const sun = new T.DirectionalLight(0xffffff, 2); sun.position.set(1, 2, 3); scene.add(sun);
+	const geometry = new T.SphereGeometry(0.8, 24, 16);
+	const position = geometry.attributes.position, normal = geometry.attributes.normal, count = position.count;
+	const targets = 8, morphPos = [], morphNor = [];
+	for (let t = 0; t < targets; t++) {
+		const p = new Float32Array(count * 3), nn = new Float32Array(count * 3);
+		for (let i = 0; i < count; i++) {
+			const x = position.getX(i), y = position.getY(i), z = position.getZ(i);
+			const k = 0.35 * Math.sin((t + 1) * 1.7 + y * 3.1 + x * (t + 2)) + 0.25 * (t % 2 ? x : z);
+			p[i * 3] = x * (1 + k * 0.5) - x; p[i * 3 + 1] = y * (1 + 0.4 * Math.cos(t + z * 2)) - y; p[i * 3 + 2] = z * (1 - k * 0.4) - z;
+			nn[i * 3] = normal.getX(i) * 0.2 * Math.sin(t + i); nn[i * 3 + 1] = normal.getY(i) * 0.2; nn[i * 3 + 2] = normal.getZ(i) * 0.2 * Math.cos(t);
+		}
+		morphPos.push(new T.BufferAttribute(p, 3)); morphNor.push(new T.BufferAttribute(nn, 3));
+	}
+	geometry.morphAttributes.position = morphPos; geometry.morphAttributes.normal = morphNor;
+	geometry.morphTargetsRelative = true;
+	const materials = [];
+	for (let i = 0; i < 8; i++) materials.push(new T.MeshLambertMaterial({ color: new T.Color().setHSL(i / 8, 0.5, 0.55) }));
+	const side = Math.ceil(Math.sqrt(n)), meshes = [];
+	for (let i = 0; i < n; i++) {
+		const mesh = new T.Mesh(geometry, materials[i % materials.length]);
+		mesh.position.set(((i % side) - side / 2) * 2.1, 0, (Math.floor(i / side) - side / 2) * 2.1);
+		mesh.updateMatrix();
+		scene.add(mesh);
+		meshes.push(mesh);
+	}
+	let frame = 0;
+	return {
+		scene, camera,
+		update: () => {
+			frame++;
+			for (let i = 0; i < meshes.length; i++) {
+				const inf = meshes[i].morphTargetInfluences;
+				for (let t = 0; t < targets; t++) inf[t] = 0.5 + 0.5 * Math.sin(frame * 0.05 * (1 + t * 0.15) + i * 0.37 + t);
+			}
+		}
+	};
 }
 
 function buildShadows(T, n, animated, point = false) {

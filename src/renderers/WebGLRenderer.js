@@ -850,7 +850,14 @@ class WebGLRenderer {
 			else { if (bg._frameStamp !== frame) { bg._frameStamp = frame; bg._frameRid = this._materialCounter++; } material._frameRid = bg._frameRid; }
 		}
 		if (geometry._frameStamp !== frame) { geometry._frameStamp = frame; geometry._frameRid = this._geometryCounter++; }
-		list.push(object, geometry, material, group, material._frameRid, geometry._frameRid, variant, material._batchGroup);
+		// skinned / morphed meshes are never batched: sort them by their own material (not the batch group's shared id) so
+		// equal materials draw back to back and the material block is bound once per material, not once per draw
+		let materialRid = material._frameRid;
+		if (object.isSkinnedMesh === true || object.morphTargetInfluences !== undefined) {
+			if (material._soloStamp !== frame) { material._soloStamp = frame; material._soloRid = this._materialCounter++; }
+			materialRid = material._soloRid;
+		}
+		list.push(object, geometry, material, group, materialRid, geometry._frameRid, variant, material._batchGroup);
 		const rec = this._rec;
 		if (rec !== null && shadowPass === false) { rec.regMaterial(material); rec.regPair(material, variant, object); }
 	}

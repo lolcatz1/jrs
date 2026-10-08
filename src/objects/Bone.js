@@ -1,31 +1,53 @@
 import { Object3D } from '../core/Object3D.js';
 import { epochs } from '../core/epochs.js';
+import { SlabVector3, SlabQuaternion, SlabEuler, TRS_VERSION, TRS_MATRIX_SEEN, TRS_EULER_SEEN } from '../core/SlabTransform.js';
 
 /**
  * A bone of a Skeleton; an Object3D that is part of the bone hierarchy.
  *
- * `updateMatrix` / `updateMatrixWorld` are behaviourally Object3D's, written out again here on purpose: a
- * rig of N bones is N identical objects, and a separate function body gets its own type feedback, so inside
- * it every property load sees one hidden class (Object3D's copy is shared by lights, meshes, cameras, ...
- * and runs megamorphic). Matrices are read and written straight in the transform slab page.
+ * Position, quaternion, scale and rotation are slab-resident (see core/SlabTransform.js): the transform record
+ * holds the live values plus a write version, so `updateMatrix` is a version compare instead of ten value compares
+ * against scattered heap objects, and AnimationMixer can write a bone's quaternion without touching the bone.
+ *
+ * `updateMatrix` / `updateMatrixWorld` are otherwise Object3D's, written out again here on purpose: a rig of N bones
+ * is N identical objects, and a separate function body gets its own type feedback, so inside it every property load
+ * sees one hidden class (Object3D's copy is shared by lights, meshes, cameras, ... and runs megamorphic). Matrices
+ * are read and written straight in the transform slab page.
  */
 class Bone extends Object3D {
 	constructor() {
 		super();
 		this.isBone = true;
 		this.type = 'Bone';
+		const d = this._snapData, o = this._snapOffset;
+		d[o] = 0; d[o + 1] = 0; d[o + 2] = 0; d[o + 3] = 0; d[o + 4] = 0; d[o + 5] = 0; d[o + 6] = 1; d[o + 7] = 1; d[o + 8] = 1; d[o + 9] = 1;
+		d[o + TRS_VERSION] = 0; d[o + TRS_MATRIX_SEEN] = 0; d[o + TRS_EULER_SEEN] = 0; d[o + 13] = 0;
+		const position = new SlabVector3(this, d, o, 0);
+		const quaternion = new SlabQuaternion(this, d, o);
+		const scale = new SlabVector3(this, d, o, 7);
+		const rotation = new SlabEuler(this, d, o);
+		rotation._source = quaternion;
+		// Euler -> quaternion keeps the angles as written (they are marked in sync); quaternion -> Euler is lazy (SlabEuler._stale)
+		rotation._onChange(() => { quaternion.setFromEuler(rotation, false); d[o + TRS_EULER_SEEN] = d[o + TRS_VERSION]; });
+		Object.defineProperties(this, {
+			position: { configurable: true, enumerable: true, value: position },
+			rotation: { configurable: true, enumerable: true, value: rotation },
+			quaternion: { configurable: true, enumerable: true, value: quaternion },
+			scale: { configurable: true, enumerable: true, value: scale },
+		});
 	}
 
+	_forceRecompose() { this._snapData[this._snapOffset + TRS_MATRIX_SEEN] = -1; }
+
+	/** The local matrix was copied from elsewhere together with the TRS: it is in sync with the current values. */
+	_snapshot() { const d = this._snapData, o = this._snapOffset; d[o + TRS_MATRIX_SEEN] = d[o + TRS_VERSION]; }
+
 	updateMatrix() {
-		const p = this.position, q = this.quaternion, s = this.scale, d = this._snapData, o = this._snapOffset;
-		const px = p.x, py = p.y, pz = p.z, x = q._x, y = q._y, z = q._z, w = q._w, sx = s.x, sy = s.y, sz = s.z;
-		if (px === d[o] && py === d[o + 1] && pz === d[o + 2] && x === d[o + 3] && y === d[o + 4] && z === d[o + 5] && w === d[o + 6] &&
-			sx === d[o + 7] && sy === d[o + 8] && sz === d[o + 9]) {
-			return false;
-		}
-		d[o] = px; d[o + 1] = py; d[o + 2] = pz;
-		d[o + 3] = x; d[o + 4] = y; d[o + 5] = z; d[o + 6] = w;
-		d[o + 7] = sx; d[o + 8] = sy; d[o + 9] = sz;
+		const d = this._snapData, o = this._snapOffset;
+		const version = d[o + TRS_VERSION];
+		if (version === d[o + TRS_MATRIX_SEEN]) return false;
+		d[o + TRS_MATRIX_SEEN] = version;
+		const px = d[o], py = d[o + 1], pz = d[o + 2], x = d[o + 3], y = d[o + 4], z = d[o + 5], w = d[o + 6], sx = d[o + 7], sy = d[o + 8], sz = d[o + 9];
 
 		const te = this._slabData, l = this._slabOffset;
 		const x2 = x + x, y2 = y + y, z2 = z + z;

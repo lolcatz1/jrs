@@ -1,4 +1,5 @@
 // Ported from three.js r186 (MIT, Copyright 2010-2026 three.js authors).
+import { noopOnChange } from '../core/SlabTransform.js';
 const warn = (...a) => console.warn(...a);
 const error = (...a) => console.error(...a);
 // Characters [].:/ are reserved for track binding syntax.
@@ -115,6 +116,11 @@ class PropertyBinding {
 		this.node = PropertyBinding.findNode( rootNode, this.parsedPath.nodeName );
 
 		this.rootNode = rootNode;
+
+		// bone transform fast path (see bind())
+		this._slabData = null;
+		this._slabIndex = 0;
+		this._slabVersion = 0;
 
 		// initial state of these methods that calls 'bind'
 		this.getValue = this._getValue_unbound;
@@ -373,6 +379,22 @@ class PropertyBinding {
 	}
 
 	// HasToFromArray
+
+	_setValue_slab3( buffer, offset ) {
+
+		const d = this._slabData, i = this._slabIndex;
+		d[ i ] = buffer[ offset ]; d[ i + 1 ] = buffer[ offset + 1 ]; d[ i + 2 ] = buffer[ offset + 2 ];
+		d[ this._slabVersion ] ++;
+
+	}
+
+	_setValue_slab4( buffer, offset ) {
+
+		const d = this._slabData, i = this._slabIndex;
+		d[ i ] = buffer[ offset ]; d[ i + 1 ] = buffer[ offset + 1 ]; d[ i + 2 ] = buffer[ offset + 2 ]; d[ i + 3 ] = buffer[ offset + 3 ];
+		d[ this._slabVersion ] ++;
+
+	}
 
 	_setValue_fromArray( buffer, offset ) {
 
@@ -636,6 +658,18 @@ class PropertyBinding {
 		// select getter / setter
 		this.getValue = this.GetterByBindingType[ bindingType ];
 		this.setValue = this.SetterByBindingTypeAndVersioning[ bindingType ][ versioning ];
+
+		// bone position / quaternion / scale live in the transform slab: write the record directly (no object access,
+		// no matrixWorldNeedsUpdate flag: the write version makes Bone.updateMatrix recompose)
+		if ( bindingType === this.BindingType.HasFromToArray && nodeProperty.isSlabTransform === true &&
+			versioning === this.Versioning.MatrixWorldNeedsUpdate && nodeProperty._onChangeCallback === noopOnChange ) {
+
+			this._slabData = nodeProperty._d;
+			this._slabIndex = nodeProperty._b;
+			this._slabVersion = nodeProperty._v;
+			this.setValue = nodeProperty.isQuaternion === true ? this._setValue_slab4 : this._setValue_slab3;
+
+		}
 
 	}
 
