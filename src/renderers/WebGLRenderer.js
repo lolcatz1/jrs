@@ -20,7 +20,9 @@ import { WebGLRenderLists } from './webgl/WebGLRenderLists.js';
 import { WebGLLights } from './webgl/WebGLLights.js';
 import { WebGLBindingStates } from './webgl/WebGLBindingStates.js';
 import { WebGLBatcher } from './webgl/WebGLBatcher.js';
-import { WebGLMegaBuffers } from './webgl/WebGLMegaBuffers.js';
+import { WebGLMegaBuffers, KIND_TRIANGLES, KIND_LINE_STRIP, KIND_LINE_LOOP, KIND_LINE_SEGMENTS, KIND_POINTS } from './webgl/WebGLMegaBuffers.js';
+
+const KIND_SPRITE = 5;
 import { computeNormalMatrix } from '../core/TransformSlab.js';
 import { WebGLInfo } from './webgl/WebGLInfo.js';
 import { WebGLShadowMap } from './webgl/WebGLShadowMap.js';
@@ -796,9 +798,17 @@ class WebGLRenderer {
 	_isBatchable(item) {
 		if (item.material.isShaderMaterial === true || item.group !== null) return false;
 		const object = item.object;
-		return object.isMesh === true && object.isInstancedMesh !== true && object.isSkinnedMesh !== true &&
+		return (object.isMesh === true ? object.isInstancedMesh !== true && object.isSkinnedMesh !== true : (object.isSprite === true || object.isLine === true || object.isPoints === true)) &&
 			object.morphTargetInfluences === undefined &&
 			object.onBeforeRender === defaultOnBeforeRender && object.onAfterRender === defaultOnAfterRender;
+	}
+
+	/** Primitive kind of a batchable object; one instanced run draws a single kind (a Line and a LineLoop sharing a geometry are different draws). */
+	_batchKind(object) {
+		if (object.isMesh === true) return KIND_TRIANGLES;
+		if (object.isLine === true) return object.isLineSegments === true ? KIND_LINE_SEGMENTS : object.isLineLoop === true ? KIND_LINE_LOOP : KIND_LINE_STRIP;
+		if (object.isPoints === true) return KIND_POINTS;
+		return KIND_SPRITE;
 	}
 
 	/**
@@ -807,8 +817,8 @@ class WebGLRenderer {
 	_isMultiDrawable(item) {
 		if (!this._isBatchable(item)) return false;
 		const object = item.object, material = item.material;
-		if (object.isMesh !== true || material.wireframe === true || object.isSprite === true) return false;
-		const rec = this.megaBuffers.ensure(item.geometry);
+		if (object.isMesh === true ? material.wireframe === true : object.isSprite === true) return false;
+		const rec = this.megaBuffers.ensure(item.geometry, this._batchKind(object));
 		if (rec === null || rec.page === null) return false;
 		item.mdRecord = rec;
 		return true;
@@ -834,12 +844,12 @@ class WebGLRenderer {
 			let j = i + 1;
 			let kind = 0; // 0 single, 1 instanced run, 2 multi-draw run
 			if (multi && this._isMultiDrawable(item)) {
-				const page = item.mdRecord.page, indexed = item.mdRecord.indexed;
+				const page = item.mdRecord.page, indexed = item.mdRecord.indexed, mode = item.mdRecord.mode;
 				let distinct = 1, lastGeometry = item.geometry, firstGroupEnd = -1;
 				while (j < n) {
 					const next = list.itemFromKey(keys[j]);
 					if (next.material === item.material && next.program === item.program && next.renderOrder === item.renderOrder &&
-						this._isMultiDrawable(next) && next.mdRecord.page === page && next.mdRecord.indexed === indexed) {
+						this._isMultiDrawable(next) && next.mdRecord.page === page && next.mdRecord.indexed === indexed && next.mdRecord.mode === mode) {
 						if (next.geometry !== lastGeometry) { distinct++; lastGeometry = next.geometry; if (firstGroupEnd < 0) firstGroupEnd = j; }
 						j++;
 					} else break;
@@ -851,10 +861,11 @@ class WebGLRenderer {
 				if (distinct * 2 >= j - i) { if (j - i >= minimum) kind = 2; }
 				else { j = firstGroupEnd; if (j - i >= minimum) kind = 1; }
 			} else if (autoBatch && this._isBatchable(item)) {
+				const kindOf = this._batchKind(item.object);
 				while (j < n) {
 					const next = list.itemFromKey(keys[j]);
 					if (next.geometry === item.geometry && next.material === item.material && next.program === item.program &&
-						next.renderOrder === item.renderOrder && this._isBatchable(next)) j++;
+						next.renderOrder === item.renderOrder && this._isBatchable(next) && this._batchKind(next.object) === kindOf) j++;
 					else break;
 				}
 				if (j - i >= minimum) kind = 1;
@@ -925,12 +936,12 @@ class WebGLRenderer {
 		const ext = this.multiDrawExt;
 		let primitives = 0;
 		if (rec.indexed) {
-			ext.multiDrawElementsWEBGL(gl.TRIANGLES, this._mdCounts, mdStart, gl.UNSIGNED_INT, this._mdOffsets, mdStart, count);
+			ext.multiDrawElementsWEBGL(rec.mode, this._mdCounts, mdStart, gl.UNSIGNED_INT, this._mdOffsets, mdStart, count);
 		} else {
-			ext.multiDrawArraysWEBGL(gl.TRIANGLES, this._mdOffsets, mdStart, this._mdCounts, mdStart, count);
+			ext.multiDrawArraysWEBGL(rec.mode, this._mdOffsets, mdStart, this._mdCounts, mdStart, count);
 		}
 		for (let k = 0; k < count; k++) primitives += this._mdCounts[mdStart + k];
-		this.info.update(primitives, gl.TRIANGLES, 1);
+		this.info.update(primitives, rec.mode, 1);
 		this.info.render.batches++;
 		this.info.render.instances += count;
 	}

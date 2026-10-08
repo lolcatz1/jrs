@@ -206,7 +206,11 @@ void main() {
 		#ifndef SIZE_ATTENUATION
 		if ( projectionMatrix[ 2 ][ 3 ] == - 1.0 ) scale *= - mvPosition.z;
 		#endif
-		vec2 aligned = ( position.xy - ( uSpriteCenter - vec2( 0.5 ) ) ) * scale;
+		vec2 spriteCenter = uSpriteCenter;
+		#ifdef USE_OBJECT_TEXTURE
+		spriteCenter = texelFetch( objectMatrices, objectTexel + ivec2( 7, 0 ), 0 ).xy;
+		#endif
+		vec2 aligned = ( position.xy - ( spriteCenter - vec2( 0.5 ) ) ) * scale;
 		float c = cos( matParams2.w ), s = sin( matParams2.w );
 		vec2 rotated = vec2( c * aligned.x - s * aligned.y, s * aligned.x + c * aligned.y );
 		mvPosition.xy += rotated;

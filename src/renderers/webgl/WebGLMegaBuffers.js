@@ -11,6 +11,13 @@ import { ATTRIBUTE_LOCATIONS } from './WebGLBindingStates.js';
 
 const PAGE_VERTICES = 1 << 18; // 262,144 vertices per page per layout
 const PAGE_INDEX_RATIO = 4;
+// Geometries larger than this are drawn on their own: a multi-draw run gains nothing from a huge sub-draw
+// and a private copy of a million-vertex buffer would double its GPU memory.
+const MAX_VERTICES = 1 << 16;
+
+/** What a record draws as. Strips, loops and segments of a Line are expanded to indexed LINES so any mix shares one multi-draw. */
+export const KIND_TRIANGLES = 0, KIND_LINE_STRIP = 1, KIND_LINE_LOOP = 2, KIND_LINE_SEGMENTS = 3, KIND_POINTS = 4;
+const KIND_COUNT = 5;
 
 function glTypeOf(gl, array) {
 	if (array instanceof Float32Array) return gl.FLOAT;
@@ -66,14 +73,20 @@ class WebGLMegaBuffers {
 		this.state = state;
 		this.info = info;
 		this.layouts = new Map(); // signature -> { signature, attributes:[{name,itemSize,glType,bytes,normalized,location}], indexed, pages: [] }
-		this.records = new WeakMap(); // geometry -> allocation record
+		this.records = new WeakMap(); // geometry -> [record per kind] (undefined = not tried yet, null = not eligible)
 		this._scratchIndex = new Uint32Array(1 << 16);
 		this._onGeometryDispose = this._onGeometryDispose.bind(this);
 	}
 
-	/** Returns the allocation record for a geometry (allocating/updating as needed), or null if not eligible. */
-	ensure(geometry) {
-		let rec = this.records.get(geometry);
+	/** Returns the allocation record for a geometry drawn as `kind` (allocating/updating as needed), or null if not eligible. */
+	ensure(geometry, kind = KIND_TRIANGLES) {
+		let recs = this.records.get(geometry);
+		if (recs === undefined) {
+			recs = new Array(KIND_COUNT).fill(undefined);
+			this.records.set(geometry, recs);
+			geometry.addEventListener('dispose', this._onGeometryDispose);
+		}
+		let rec = recs[kind];
 		if (rec !== undefined) {
 			if (rec === null) return null;
 			if (rec.layoutVersion === geometry._layoutVersion) {
@@ -81,19 +94,17 @@ class WebGLMegaBuffers {
 				return rec;
 			}
 			this._free(rec);
-			this.records.delete(geometry);
 		}
-		rec = this._allocate(geometry);
-		this.records.set(geometry, rec);
-		if (rec !== null) geometry.addEventListener('dispose', this._onGeometryDispose);
+		rec = this._allocate(geometry, kind);
+		recs[kind] = rec;
 		return rec;
 	}
 
 	_onGeometryDispose(event) {
 		const geometry = event.target;
 		geometry.removeEventListener('dispose', this._onGeometryDispose);
-		const rec = this.records.get(geometry);
-		if (rec) this._free(rec);
+		const recs = this.records.get(geometry);
+		if (recs) for (let k = 0; k < recs.length; k++) if (recs[k]) this._free(recs[k]);
 		this.records.delete(geometry);
 	}
 
@@ -102,7 +113,7 @@ class WebGLMegaBuffers {
 		rec.page = null;
 	}
 
-	_layoutOf(geometry) {
+	_layoutOf(geometry, kind) {
 		const attributes = geometry.attributes;
 		if (attributes.position === undefined || attributes.position.isInterleavedBufferAttribute) return null;
 		const list = [];
@@ -117,22 +128,34 @@ class WebGLMegaBuffers {
 			list.push({ name, itemSize: a.itemSize, glType, bytes: a.array.BYTES_PER_ELEMENT, normalized: a.normalized === true, location });
 		}
 		list.sort((x, y) => x.location - y.location);
-		const indexed = geometry.index !== null;
+		const indexed = geometry.index !== null || kind !== KIND_TRIANGLES && kind !== KIND_POINTS;
 		const signature = list.map((a) => `${a.name}:${a.itemSize}:${a.glType}:${a.normalized ? 1 : 0}`).join('|') + (indexed ? '|i' : '');
 		let layout = this.layouts.get(signature);
 		if (layout === undefined) { layout = { signature, attributes: list, indexed, pages: [] }; this.layouts.set(signature, layout); }
 		return layout;
 	}
 
-	_allocate(geometry) {
+	/** Number of indices a record of `kind` needs (0 when the geometry cannot be drawn as that kind). */
+	_indexCountOf(geometry, kind) {
+		const m = geometry.index !== null ? geometry.index.count : geometry.attributes.position.count;
+		switch (kind) {
+			case KIND_LINE_STRIP: return m >= 2 ? 2 * (m - 1) : 0;
+			case KIND_LINE_LOOP: return m >= 2 ? 2 * m : 0;
+			case KIND_LINE_SEGMENTS: return m & ~1;
+			default: return geometry.index !== null ? m : 0;
+		}
+	}
+
+	_allocate(geometry, kind) {
 		// groups only matter for material arrays, which never reach the batch path; drawRange must be the whole geometry
 		if (geometry.drawRange.start !== 0 || geometry.drawRange.count !== Infinity) return null;
 		if (geometry.morphAttributes && Object.keys(geometry.morphAttributes).length > 0) return null;
-		const layout = this._layoutOf(geometry);
+		if (geometry.attributes.position === undefined || geometry.attributes.position.count > MAX_VERTICES) return null;
+		const layout = this._layoutOf(geometry, kind);
 		if (layout === null) return null;
 		const vertexCount = geometry.attributes.position.count;
-		const indexCount = layout.indexed ? geometry.index.count : 0;
-		if (vertexCount === 0) return null;
+		const indexCount = layout.indexed ? this._indexCountOf(geometry, kind) : 0;
+		if (vertexCount === 0 || (layout.indexed && indexCount === 0)) return null;
 		let page = null;
 		for (let i = 0; i < layout.pages.length; i++) {
 			const p = layout.pages[i];
@@ -148,6 +171,7 @@ class WebGLMegaBuffers {
 		const rec = {
 			page, layout, baseVertex: page.usedVertices, vertexCount, indexStart: page.usedIndices, indexCount,
 			byteOffset: page.usedIndices * 4, versions: {}, indexVersion: -1, layoutVersion: geometry._layoutVersion, indexed: layout.indexed,
+			kind, mode: kind === KIND_TRIANGLES ? this.gl.TRIANGLES : kind === KIND_POINTS ? this.gl.POINTS : this.gl.LINES,
 		};
 		page.usedVertices += vertexCount;
 		page.usedIndices += indexCount;
@@ -172,17 +196,36 @@ class WebGLMegaBuffers {
 		}
 		if (rec.indexed) {
 			const index = geometry.index;
-			if (force || rec.indexVersion !== index.version) {
-				if (index.count !== rec.indexCount) { rec.layoutVersion = -1; return; }
+			const version = index !== null ? index.version : 0;
+			if (force || rec.indexVersion !== version) {
+				if (this._indexCountOf(geometry, rec.kind) !== rec.indexCount) { rec.layoutVersion = -1; return; }
 				if (this._scratchIndex.length < rec.indexCount) this._scratchIndex = new Uint32Array(Math.max(rec.indexCount, this._scratchIndex.length * 2));
-				const src = index.array, dst = this._scratchIndex, base = rec.baseVertex;
-				for (let k = 0; k < rec.indexCount; k++) dst[k] = src[k] + base;
+				this._fillIndices(geometry, rec, this._scratchIndex);
 				// the element buffer is VAO state: bind this page's VAO while uploading
 				this.state.bindVertexArray(page.vao);
 				gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, page.indexBuffer);
-				gl.bufferSubData(gl.ELEMENT_ARRAY_BUFFER, rec.indexStart * 4, dst, 0, rec.indexCount);
-				rec.indexVersion = index.version;
+				gl.bufferSubData(gl.ELEMENT_ARRAY_BUFFER, rec.indexStart * 4, this._scratchIndex, 0, rec.indexCount);
+				rec.indexVersion = version;
 			}
+		}
+	}
+
+	/** Write the record's indices (rebased to the page) into `dst`. Lines become independent LINES pairs. */
+	_fillIndices(geometry, rec, dst) {
+		const base = rec.baseVertex, index = geometry.index, src = index !== null ? index.array : null;
+		const m = src !== null ? index.count : rec.vertexCount;
+		switch (rec.kind) {
+			case KIND_LINE_STRIP: case KIND_LINE_LOOP: {
+				let k = 0;
+				for (let i = 0; i < m - 1; i++) { dst[k++] = (src !== null ? src[i] : i) + base; dst[k++] = (src !== null ? src[i + 1] : i + 1) + base; }
+				if (rec.kind === KIND_LINE_LOOP) { dst[k++] = (src !== null ? src[m - 1] : m - 1) + base; dst[k++] = (src !== null ? src[0] : 0) + base; }
+				break;
+			}
+			case KIND_LINE_SEGMENTS:
+				for (let k = 0, l = rec.indexCount; k < l; k++) dst[k] = (src !== null ? src[k] : k) + base;
+				break;
+			default:
+				for (let k = 0; k < rec.indexCount; k++) dst[k] = src[k] + base;
 		}
 	}
 

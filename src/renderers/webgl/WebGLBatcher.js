@@ -13,6 +13,7 @@ import { computeNormalMatrix } from '../../core/TransformSlab.js';
 
 const TEX_STRIDE_FLOATS = TEXELS_PER_OBJECT * 4; // model matrix (4 texels) + normal matrix columns (3 texels) + spare
 const MATRICES_PER_ROW = MATRIX_TEXTURE_WIDTH / TEXELS_PER_OBJECT;
+const _f32 = new Float32Array(2), _i32 = new Int32Array(_f32.buffer);
 
 class WebGLBatcher {
 	constructor(gl) {
@@ -40,15 +41,24 @@ class WebGLBatcher {
 		const d = this.texData, o = this.texCount * TEX_STRIDE_FLOATS;
 		const s = object._slabData, so = object._slabOffset + 16;
 		for (let i = 0; i < 16; i++) d[o + i] = s[so + i];
-		if (object._normalVersion !== object._worldVersion) { computeNormalMatrix(s, object._slabOffset); object._normalVersion = object._worldVersion; }
-		const no = object._slabOffset + 32;
-		d[o + 16] = s[no]; d[o + 17] = s[no + 1]; d[o + 18] = s[no + 2]; d[o + 19] = 0;
-		d[o + 20] = s[no + 3]; d[o + 21] = s[no + 4]; d[o + 22] = s[no + 5]; d[o + 23] = 0;
-		d[o + 24] = s[no + 6]; d[o + 25] = s[no + 7]; d[o + 26] = s[no + 8]; d[o + 27] = 0;
 		// FNV-1a style mix of id and world version: unchanged hash -> the upload is skipped
 		let h = this.texHash;
 		h = Math.imul(h ^ object.id, 16777619);
 		h = Math.imul(h ^ object._worldVersion, 16777619);
+		if (object.isMesh === true) {
+			if (object._normalVersion !== object._worldVersion) { computeNormalMatrix(s, object._slabOffset); object._normalVersion = object._worldVersion; }
+			const no = object._slabOffset + 32;
+			d[o + 16] = s[no]; d[o + 17] = s[no + 1]; d[o + 18] = s[no + 2]; d[o + 19] = 0;
+			d[o + 20] = s[no + 3]; d[o + 21] = s[no + 4]; d[o + 22] = s[no + 5]; d[o + 23] = 0;
+			d[o + 24] = s[no + 6]; d[o + 25] = s[no + 7]; d[o + 26] = s[no + 8]; d[o + 27] = 0;
+		} else if (object.isSprite === true) {
+			// sprites have no normal matrix; their anchor (a plain mutable Vector2) travels in the spare texel
+			const c = object.center;
+			d[o + 28] = c.x; d[o + 29] = c.y;
+			_f32[0] = c.x; _f32[1] = c.y;
+			h = Math.imul(h ^ _i32[0], 16777619);
+			h = Math.imul(h ^ _i32[1], 16777619);
+		}
 		this.texHash = h;
 		return this.texCount++;
 	}
@@ -81,6 +91,7 @@ class WebGLBatcher {
 		}
 		if (this.texCount === 0) return;
 		if (this.textureHash === this.texHash && this.textureCount === this.texCount) return;
+		state.activeTexture(unit); // the cached binding can make bindTexture a no-op while another unit is active; texImage2D targets the active unit
 		gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
 		gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
 		gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, MATRIX_TEXTURE_WIDTH, rows, 0, gl.RGBA, gl.FLOAT, this.texData, 0);

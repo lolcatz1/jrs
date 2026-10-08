@@ -208,7 +208,7 @@ class WebGLRenderList {
 			const program = item.program._frameRid & 63;
 			const mat = item.materialRid & 1023;
 			const geo = item.geometryRid & 511;
-			const indexed = item.geometry.index !== null ? 1 : 0; // keeps geometries of one mega-buffer layout adjacent
+			const indexed = item.geometry.index !== null || item.object.isLine === true ? 1 : 0; // keeps geometries of one mega-buffer layout adjacent (lines are always indexed there)
 			ohi[i] = (((rank * 64 + program) * 1024 + mat) * 2 + indexed) * 512 + geo;
 		}
 		this.opaqueSorted = os.finish(sortObjects);
