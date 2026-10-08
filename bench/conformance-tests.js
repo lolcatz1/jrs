@@ -79,7 +79,7 @@ export function conformanceTests() {
 				renderer.render(scene, camera); const a2 = probe();
 				d.intensity = 0.2; renderer.render(scene, camera); const b = probe();           // direct light mutation
 				d.color.r = 0; renderer.render(scene, camera); const c = probe();                // direct colour channel mutation
-				scene.fog = new T.Fog(0x000040, 1, 7); renderer.render(scene, camera); const e = probe();
+				scene.fog = new T.Fog(0x402000, 1, 7); renderer.render(scene, camera); const e = probe();
 				scene.fog.near = 0.1; scene.fog.far = 4.8; renderer.render(scene, camera); const f = probe();  // direct fog mutation
 				camera.position.x = 3; renderer.render(scene, camera); const g = probe();                    // camera move
 				const same = a.every((v, i) => v === a2[i]);
@@ -364,8 +364,8 @@ export function conformanceTests() {
 				renderer.render(scene, camera);
 				const c = readPixel(renderer, 128, 128);
 				// colour = (0.125, 1.5 -> 1, 0), fog factor smoothstep(1, 20, 5) = 0.114 toward the scene fog colour,
-				// which stays linear (0.0144 blue) because the shader does not include <colorspace_fragment>, as in three.js
-				return { pass: near(c, [27, 226, 1], 4), detail: `centre ${fmt(c)} expected [27,226,1] (scene fog colour applied, struct/array uniforms summed)` };
+				// which three.js uploads converted to the output colour space (0x000040 -> blue 64/255), verified against three r186
+				return { pass: near(c, [28, 226, 7], 4), detail: `centre ${fmt(c)} expected [28,226,7] (scene fog colour applied, struct/array uniforms summed)` };
 			}
 		},
 		{

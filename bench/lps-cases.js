@@ -148,3 +148,17 @@ export const cases = {
 		for (let i = 0; i < 6; i++) { const o = new T.Sprite(i % 2 ? a : b); o.position.set(i * 0.8 - 2, 0, -i); o.scale.setScalar(3); o.renderOrder = (i * 7) % 4; s.scene.add(o); } return s;
 	},
 };
+
+// ShaderMaterial that includes the fog chunks: its fog colour uniform is converted like the built-in materials'
+cases['shadermaterial-fog'] = (T) => {
+	const s = setup(T, { fog: true });
+	const mat = new T.ShaderMaterial({
+		fog: true,
+		uniforms: T.UniformsUtils.merge([T.UniformsLib.fog]),
+		vertexShader: '#include <common>\n#include <fog_pars_vertex>\nvoid main(){ vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); gl_Position = projectionMatrix * mvPosition;\n#include <fog_vertex>\n}',
+		fragmentShader: '#include <common>\n#include <fog_pars_fragment>\nvoid main(){ gl_FragColor = vec4(0.9, 0.9, 0.3, 1.0);\n#include <fog_fragment>\n}',
+	});
+	const g = new T.BoxGeometry(2, 2, 2);
+	scatter(T, 30, 5, [20, 14, 40], (i, r, p) => { const o = new T.Mesh(g, mat); o.position.set(...p); s.scene.add(o); });
+	return s;
+};
