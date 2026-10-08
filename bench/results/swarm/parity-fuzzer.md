@@ -131,7 +131,8 @@ default feature set, `--continue`.
 | Tip d38333a + fixes 21-24, fresh range | 501-600 | 92 pass; 8 small failures, means ≤ 0.035 except 557 (0.092, 18 px, orthographic + blurred background texture), all ≤ 48 px over 33 (edge-pixel kinds) |
 | Tip a178964 (perMapTransform on) | 1-100 | 99 pass; 14 (0.058, wireframe class) |
 | Tip a178964, `--enable=points,lines` | 1-40 | 39 pass; 14 (0.169 / 0.281 at frame 3: the same wireframe-class grouped boxes) after the Points-under-override generator fix (before it, seed 2 was non-deterministic in three.js itself: 9.6 / 5.2 / 0.8 on three runs) |
-| Tip a178964, points + lines on by default (final generator) | 1-100 | 95 pass; 14 (0.169, wireframe class), 58 (1.58, Open), 59 (0.19, Open), 81 / 90 (≤ 0.009, 14-15 edge pixels) |
+| Tip a178964, points + lines on by default | 1-100 | 95 pass; 14 (0.169, wireframe class), 58 (1.58 → fix 25), 59 (0.19, Open), 81 / 90 (≤ 0.009, 14-15 edge pixels) |
+| Tip a178964 + fix 25 (final code of this cycle) | 1-100 | **96 pass**; 14 (wireframe class), 59 (Open), 81 / 90 (edge pixels) |
 
 Feature-isolated batches with the final code (30 seeds each, `--only=basic,<feature>` plus
 `lambert,lights` where lighting is needed): fog, transparency, side, wireframe+drawRange, stencil,
@@ -174,7 +175,7 @@ Merge log (the branch keeps absorbing the integration tip; each row is one merge
 | 646caba | ad397c3 | 130/130, 33/33, ok, ok | all 12 scenes 0 mean (max 0; shared-animated 1 px, skinned-crowd 3 px ≤ 2) | 89 pass with the new mutation feature on; the 11 residuals are a subset of the known set (seed 78 now passes) | two real regressions/bugs, fixed in 8716722 (fixes 18, 19): material-array batches left their record window bound for the next plain batch of the same material (frame 0 of about 1 in 15 scenes with shared materials), and multi-draw ignored a drawRange set after the record was built (only reachable with the new per-frame mutations) |
 | 6858f51 | fc9e2b7 | 139/139, 34/34, ok, ok | all 17 scenes 0 mean (max ≤ 2 on ≤ 5 px; the three new point-shadow scenes 0 / 0, 0 / 0, 1 on 5 px) | 87 pass (point shadows + mutations on, so seeds no longer map to the earlier set); 11 residuals of the known kinds plus seed 2 (0.467) and seed 14 (0.05), both logged under Open | one compile failure (fix 20, d8f1052); point-light shadows added to the generator and pixel-identical |
 | d38333a (ShaderMaterial batching, envmaps/PMREM/CubeCamera/textured backgrounds, flat scene update, draw-list build, page VAOs) | fast-forward (this branch was already merged into the tip) | 152/152, 44/44, ok, ok | all 18 scenes 0 mean (max ≤ 2 on ≤ 5 px; the new pbr-envmap scene 0 / 0; instanced-100k 0 / 0 when its compare page loads: on this container that page times out at `page.goto` about every other run, on the untouched tip as well, so the row has to be re-run alone) | first run (envMaps on) 89 pass, 11 failing: the 5 ortho-background seeds (fix 22), 65 / 75 / 94 (fix 23), 12 / 14 / 97 (Open) → after fixes 21-23: 97 pass → after fix 24: **99 pass**, the one residual (14, 0.06) is the wireframe-line class | no merge regression: every parity fix is in place (fix 19's drawRange check now lives at push time as `ITEM_MULTIDRAWABLE`); the generator gained `envMaps` for the new environment code (identical on every seed tried); fixes 21-24 (shadow-pass alpha test, sticky clear colour, OPAQUE alpha, no tone mapping into render targets) are pre-existing mismatches the new seeds exposed; they also close the custom-blend and render-target residual classes of the earlier generator |
-| a178964 (per-map uv transforms, lines/points/sprites parity, skinning perf, dispose/leak sweep; this branch's fixes 21-24 already in) | fast-forward | 179/179, 45/45, ok, ok | all 23 scenes 0 mean (max ≤ 2 on ≤ 5 px on the mesh scenes; the new lines-many 17 on 2 px, points-cloud 3 on 4 px, sprites-many 11 on 30 px, skinned-crowd-large 10 on 9 px, morph-crowd 1 on 4 px); run per scene, the harness now retries a failed page load itself | 95 pass with points + lines on by default (seeds re-map again): 14 (wireframe class), 81 / 90 (edge pixels, ≤ 0.009), and two new Lines-containing scenes 58 (1.58) and 59 (0.19), both pre-existing (same on 015b35f) and logged under Open | no merge regression; `perMapTransform` is on by default now (the per-map-transform worker switched it on, the limitation is gone); `points` and `lines` switched on by default here after 39/40 seeds with `--enable=points,lines` passed (the one failure is the wireframe class); one generator fix: Points under a `scene.overrideMaterial` frame have an undefined `gl_PointSize` (a mesh material never writes it) and render differently from run to run even in three.js, so they are hidden on override frames |
+| a178964 (per-map uv transforms, lines/points/sprites parity, skinning perf, dispose/leak sweep; this branch's fixes 21-24 already in) | fast-forward | 179/179, 45/45, ok, ok | all 23 scenes 0 mean (max ≤ 2 on ≤ 5 px on the mesh scenes; the new lines-many 17 on 2 px, points-cloud 3 on 4 px, sprites-many 11 on 30 px, skinned-crowd-large 10 on 9 px, morph-crowd 1 on 4 px); run per scene, the harness now retries a failed page load itself | 95 pass with points + lines on by default (seeds re-map again): 14 (wireframe class), 81 / 90 (edge pixels, ≤ 0.009), and two new Lines-containing scenes 58 (1.58: fix 25, a stale-geometry bug of the VAO cache when a geometry is drawn plainly and by an InstancedMesh; 96 pass after it) and 59 (0.19, Open), both pre-existing (same on 015b35f) | no merge regression; `perMapTransform` is on by default now (the per-map-transform worker switched it on, the limitation is gone); `points` and `lines` switched on by default here after 39/40 seeds with `--enable=points,lines` passed (the one failure is the wireframe class); one generator fix: Points under a `scene.overrideMaterial` frame have an undefined `gl_PointSize` (a mesh material never writes it) and render differently from run to run even in three.js, so they are hidden on override frames |
 
 ## Mismatches found and what was done
 
@@ -300,6 +301,16 @@ each with the reasoning.
     and 97 of the current one are identical now, 27 is 0.015 and 145 is 0.082 (from 0.165). Found by
     narrowing `--only=phong,renderTarget,maps,lights` plus one feature at a time (only `toneMapping`
     moved the worst mean).
+25. **A geometry update was skipped when the geometry is drawn both plainly and as an InstancedMesh**
+    (`WebGLBindingStates`, 86192ad): the VAO cache validates a geometry by the sum of its attribute
+    versions, but that sum is mode-specific (mode 1 adds the InstancedMesh's `instanceMatrix` /
+    `instanceColor` versions) and was stored in one field. After a plain bind (sum 0) and an instanced bind
+    (sum 1) the next frame's `position.needsUpdate` made the plain sum 1, equal to the stored instanced
+    value, so the plain-mode draws (batched runs and single draws of the same geometry) kept the stale
+    vertex data while the InstancedMesh got the new one (seed 58 of the points + lines generator, 1.58:
+    triangles of a rescaled custom geometry drawn at their old size). The sum is now stored per mode.
+    Found with a bind-by-bind trace of the version sums (`scratchpad/bindprobe.mjs` pattern: wrap
+    `bindingStates.bind` and log stored vs recomputed sums).
 
 ### Open (found, not fixed tonight)
 
@@ -320,16 +331,14 @@ each with the reasoning.
   `bench/fuzz-glerr.mjs 14 jrs` finds no erroring call alone): something a previous renderer on the page
   leaves behind in a module-level object. Open.
 * ~~Seed 12 (envMaps generator, 0.125)~~: identical after fix 24.
-* **Seed 58 (points + lines generator, mean 1.58 at frame 3)**: a `MeshPhongMaterial` floor lit by a
-  spot light renders white (saturated) in three.js and grey in jrs on the frame where a custom
-  non-indexed geometry's position attribute is rescaled (`needsUpdate`, the `geometry` mutation); frames
-  0-2 are identical. `autoBatch = false` or `autoBatchMinimum = 1000` makes the frame identical, so it is
-  the batched re-upload path; removing any of the three meshes that share the rescaled geometry (Basic
-  map DoubleSide, Standard with a render-target map) also clears it. Pre-existing (identical on
-  015b35f, 1.80); the scene has a `LineSegments` object, and no subset without `lines` has reproduced it.
-* **Seed 59 (points + lines generator, 0.19 at frame 4, 2.9 on 015b35f)**: independent of batching;
-  four shadow lights, two InstancedMeshes, a Lines object, mutations `order` + `transparent` on frame 4;
-  not isolated yet.
+* ~~Seed 58 (points + lines generator, 1.58 at frame 3)~~: fix 25 (the stale geometry was the
+  triangle soup itself, not the floor: the diff pixels sat where the rescaled triangles moved).
+* **Seed 59 (points + lines generator, 0.19 at frame 4, 2.9 on 015b35f)**: frame 3 is identical; on
+  frame 4 (mutations: a material's `transparent` toggled with `needsUpdate`, a mesh's `renderOrder`
+  changed) three grouped DoubleSide meshes composite differently (removing any one of objects 18, 20
+  or 22 clears it: Basic map + alphaTest + Additive premultiplied transparent, and a Standard
+  alphaMap/emissiveMap DoubleSide); `--noshadow`, `autoBatch=false` and `reuseRenderLists=false` change
+  nothing. Likely the two-pass / list placement of a material whose `transparent` changed mid-run; open.
 * **Seed 145 of the earlier generator** (`--seed=145 --disable=envMaps`): 0.082 after fix 24 (was
   0.165); the ShaderMaterial-after-overrideMaterial part remains.
 * **Seed 14 (0.05)**: `MeshPhongMaterial` wireframe lines textured with a render target sample about
