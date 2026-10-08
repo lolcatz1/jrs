@@ -21222,7 +21222,7 @@ var WebGLBindingStates = class {
   _entry(geometry) {
     let entry = this.cache.get(geometry);
     if (entry === void 0) {
-      entry = { vaos: [null, null, null], layoutVersion: -1, instancedFor: null, hadInstanceColor: false, custom: null, attrList: null, versionSum: -1, epoch: -1, epochMode: -1 };
+      entry = { vaos: [null, null, null], layoutVersion: -1, instancedFor: null, hadInstanceColor: false, custom: null, attrList: null, versionSums: [-1, -1, -1], epoch: -1, epochMode: -1 };
       this.cache.set(geometry, entry);
       this.live.add(entry);
       geometry.addEventListener("dispose", this._onGeometryDispose);
@@ -21258,7 +21258,7 @@ var WebGLBindingStates = class {
           sum2 += instancedObject.instanceMatrix.version;
           if (instancedObject.instanceColor !== null) sum2 += instancedObject.instanceColor.version + 1000003;
         }
-        valid = sum2 === entry.versionSum;
+        valid = sum2 === entry.versionSums[mode];
         if (valid) {
           entry.epoch = attributeEpoch.value;
           entry.epochMode = mode;
@@ -21365,7 +21365,7 @@ var WebGLBindingStates = class {
       if (instancedObject.instanceColor !== null) sum += instancedObject.instanceColor.version + 1000003;
     }
     entry.attrList = list;
-    entry.versionSum = sum;
+    entry.versionSums[mode] = sum;
     entry.epoch = attributeEpoch.value;
     entry.epochMode = mode;
     return record;
