@@ -167,6 +167,7 @@ class Object3D extends EventDispatcher {
 			object.parent = this;
 			this.children.push(object);
 			epochs.structure++;
+			if (object.isBone === true || this.isBone === true) epochs.bones++;
 			object.matrixWorldNeedsUpdate = true;
 			object.dispatchEvent(_addedEvent);
 			_childaddedEvent.child = object;
@@ -187,6 +188,7 @@ class Object3D extends EventDispatcher {
 			object.parent = null;
 			this.children.splice(index, 1);
 			epochs.structure++;
+			if (object.isBone === true || this.isBone === true) epochs.bones++;
 			object.dispatchEvent(_removedEvent);
 			_childremovedEvent.child = object;
 			this.dispatchEvent(_childremovedEvent);
@@ -208,6 +210,7 @@ class Object3D extends EventDispatcher {
 		object.parent = this;
 		this.children.push(object);
 		epochs.structure++;
+		if (object.isBone === true || this.isBone === true) epochs.bones++;
 		object.updateWorldMatrix(false, true);
 		object.dispatchEvent(_addedEvent);
 		_childaddedEvent.child = object;

@@ -1,6 +1,7 @@
 import { Object3D } from '../core/Object3D.js';
 import { epochs } from '../core/epochs.js';
-import { SlabVector3, SlabQuaternion, SlabEuler, TRS_VERSION, TRS_MATRIX_SEEN, TRS_EULER_SEEN } from '../core/SlabTransform.js';
+import { SlabVector3, SlabQuaternion, SlabEuler, TRS_VERSION, TRS_MATRIX_SEEN, TRS_QUAT_VERSION, TRS_WORLD_VERSION, TRS_PARENT_WORLD_VERSION, TRS_FLAGS, FLAG_NEEDS_UPDATE, FLAG_MATRIX_AUTO, FLAG_WORLD_AUTO } from '../core/SlabTransform.js';
+import { RigPlan } from './RigPlan.js';
 
 /**
  * A bone of a Skeleton; an Object3D that is part of the bone hierarchy.
@@ -21,20 +22,37 @@ class Bone extends Object3D {
 		this.type = 'Bone';
 		const d = this._snapData, o = this._snapOffset;
 		d[o] = 0; d[o + 1] = 0; d[o + 2] = 0; d[o + 3] = 0; d[o + 4] = 0; d[o + 5] = 0; d[o + 6] = 1; d[o + 7] = 1; d[o + 8] = 1; d[o + 9] = 1;
-		d[o + TRS_VERSION] = 0; d[o + TRS_MATRIX_SEEN] = 0; d[o + TRS_EULER_SEEN] = 0; d[o + 13] = 0;
+		d[o + TRS_VERSION] = 0; d[o + TRS_MATRIX_SEEN] = 0; d[o + TRS_QUAT_VERSION] = 0;
+		this._plan = null; // RigPlan, when this bone is the root of a bone hierarchy
 		const position = new SlabVector3(this, d, o, 0);
 		const quaternion = new SlabQuaternion(this, d, o);
 		const scale = new SlabVector3(this, d, o, 7);
 		const rotation = new SlabEuler(this, d, o);
 		rotation._source = quaternion;
 		// Euler -> quaternion keeps the angles as written (they are marked in sync); quaternion -> Euler is lazy (SlabEuler._stale)
-		rotation._onChange(() => { quaternion.setFromEuler(rotation, false); d[o + TRS_EULER_SEEN] = d[o + TRS_VERSION]; });
+		rotation._onChange(() => { quaternion.setFromEuler(rotation, false); rotation._seen = d[o + TRS_QUAT_VERSION]; });
 		Object.defineProperties(this, {
 			position: { configurable: true, enumerable: true, value: position },
 			rotation: { configurable: true, enumerable: true, value: rotation },
 			quaternion: { configurable: true, enumerable: true, value: quaternion },
 			scale: { configurable: true, enumerable: true, value: scale },
 		});
+	}
+
+	// Scene-graph state kept in the transform record (written by Object3D's constructor through these setters too)
+	get _worldVersion() { return this._snapData[this._snapOffset + TRS_WORLD_VERSION]; }
+	set _worldVersion(value) { this._snapData[this._snapOffset + TRS_WORLD_VERSION] = value; }
+	get _parentWorldVersion() { return this._snapData[this._snapOffset + TRS_PARENT_WORLD_VERSION]; }
+	set _parentWorldVersion(value) { this._snapData[this._snapOffset + TRS_PARENT_WORLD_VERSION] = value; }
+	get matrixWorldNeedsUpdate() { return (this._snapData[this._snapOffset + TRS_FLAGS] & FLAG_NEEDS_UPDATE) !== 0; }
+	set matrixWorldNeedsUpdate(value) { this._setFlag(FLAG_NEEDS_UPDATE, value); }
+	get matrixAutoUpdate() { return (this._snapData[this._snapOffset + TRS_FLAGS] & FLAG_MATRIX_AUTO) !== 0; }
+	set matrixAutoUpdate(value) { this._setFlag(FLAG_MATRIX_AUTO, value); }
+	get matrixWorldAutoUpdate() { return (this._snapData[this._snapOffset + TRS_FLAGS] & FLAG_WORLD_AUTO) !== 0; }
+	set matrixWorldAutoUpdate(value) { this._setFlag(FLAG_WORLD_AUTO, value); }
+	_setFlag(bit, value) {
+		const d = this._snapData, i = this._snapOffset + TRS_FLAGS;
+		d[i] = value ? d[i] | bit : d[i] & ~bit;
 	}
 
 	_forceRecompose() { this._snapData[this._snapOffset + TRS_MATRIX_SEEN] = -1; }
@@ -64,8 +82,14 @@ class Bone extends Object3D {
 	}
 
 	updateMatrixWorld(force) {
-		if (this.matrixAutoUpdate) this.updateMatrix();
 		const parent = this.parent;
+		if (parent === null || parent.isBone !== true) {
+			// root of a bone hierarchy: update the whole rig from flat arrays (see RigPlan)
+			let plan = this._plan;
+			if (plan === null || plan.epoch !== epochs.bones) plan = this._plan = new RigPlan(this, Bone);
+			if (plan.enabled) { plan.update(force); return; }
+		}
+		if (this.matrixAutoUpdate) this.updateMatrix();
 		if (this.matrixWorldNeedsUpdate || force || (parent !== null && parent._worldVersion !== this._parentWorldVersion)) {
 			if (this.matrixWorldAutoUpdate === true) {
 				const te = this._slabData, l = this._slabOffset;

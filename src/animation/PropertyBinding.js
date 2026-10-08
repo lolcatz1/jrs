@@ -392,7 +392,7 @@ class PropertyBinding {
 
 		const d = this._slabData, i = this._slabIndex;
 		d[ i ] = buffer[ offset ]; d[ i + 1 ] = buffer[ offset + 1 ]; d[ i + 2 ] = buffer[ offset + 2 ]; d[ i + 3 ] = buffer[ offset + 3 ];
-		d[ this._slabVersion ] ++;
+		d[ this._slabVersion ] ++; d[ this._slabVersion + 2 ] ++; // TRS version and quaternion version
 
 	}
 
