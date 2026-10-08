@@ -9,6 +9,7 @@
  */
 
 import { attributeEpoch } from '../../core/attributeEpoch.js';
+import { LiveSet } from './LiveSet.js';
 
 const LOC_POSITION = 0, LOC_NORMAL = 1, LOC_UV = 2, LOC_COLOR = 3, LOC_UV1 = 4, LOC_INSTANCE_COLOR = 5, LOC_SKIN_INDEX = 6, LOC_SKIN_WEIGHT = 7, LOC_INSTANCE_MATRIX = 8, LOC_LINE_DISTANCE = 6;
 const ATTRIBUTE_LOCATIONS = { position: LOC_POSITION, normal: LOC_NORMAL, uv: LOC_UV, color: LOC_COLOR, uv1: LOC_UV1, skinIndex: LOC_SKIN_INDEX, skinWeight: LOC_SKIN_WEIGHT, lineDistance: LOC_LINE_DISTANCE };
@@ -21,6 +22,43 @@ class WebGLBindingStates {
 		this.info = info;
 		this.cache = new WeakMap(); // geometry -> { plain, instanced, batched }
 		this._onGeometryDispose = this._onGeometryDispose.bind(this);
+		this._onInstancedMeshDispose = this._onInstancedMeshDispose.bind(this);
+		this._watched = new WeakSet(); // instanced meshes whose 'dispose' event is hooked
+		this.live = new LiveSet();
+	}
+
+	/** Deletes every VAO still alive (renderer.dispose()). */
+	releaseAll() {
+		const gl = this.gl;
+		this.live.drain((entry) => {
+			for (const key in entry.vaos) { const v = entry.vaos[key]; if (v) gl.deleteVertexArray(v.vao); }
+			if (entry.custom !== null) for (const r of entry.custom.values()) gl.deleteVertexArray(r.vao);
+			entry.vaos = [null, null, null]; entry.custom = null;
+		});
+		this.cache = new WeakMap();
+		this._watched = new WeakSet();
+	}
+
+	/** An InstancedMesh's own attributes (matrix, colour) and the VAOs that point at them go with the mesh (as in three.js). */
+	_onInstancedMeshDispose(event) {
+		const mesh = event.target;
+		mesh.removeEventListener('dispose', this._onInstancedMeshDispose);
+		this._watched.delete(mesh);
+		if (mesh.instanceMatrix) this.attributes.remove(mesh.instanceMatrix);
+		if (mesh.instanceColor) this.attributes.remove(mesh.instanceColor);
+		const entry = this.cache.get(mesh.geometry);
+		if (entry !== undefined && entry.instancedFor === mesh) {
+			const v = entry.vaos[1];
+			if (v) { this.gl.deleteVertexArray(v.vao); entry.vaos[1] = null; }
+			if (entry.custom !== null) for (const [key, r] of entry.custom) if ((key & 3) === 1) { this.gl.deleteVertexArray(r.vao); entry.custom.delete(key); }
+			entry.instancedFor = null;
+			if (this.state.currentVAO !== null) { this.gl.bindVertexArray(null); this.state.currentVAO = null; }
+		}
+	}
+	_watchInstanced(mesh) {
+		if (this._watched.has(mesh)) return;
+		this._watched.add(mesh);
+		mesh.addEventListener('dispose', this._onInstancedMeshDispose);
 	}
 
 	_onGeometryDispose(event) {
@@ -31,6 +69,7 @@ class WebGLBindingStates {
 			for (const key in entry.vaos) { const v = entry.vaos[key]; if (v) this.gl.deleteVertexArray(v.vao); }
 			if (entry.custom !== null) for (const r of entry.custom.values()) this.gl.deleteVertexArray(r.vao);
 			this.cache.delete(geometry);
+			this.live.delete(entry);
 			if (this.info !== null) this.info.memory.geometries--;
 		}
 		for (const name in geometry.attributes) this.attributes.remove(geometry.attributes[name]);
@@ -42,6 +81,7 @@ class WebGLBindingStates {
 		if (entry === undefined) {
 			entry = { vaos: [null, null, null], layoutVersion: -1, instancedFor: null, hadInstanceColor: false, custom: null, attrList: null, versionSum: -1, epoch: -1, epochMode: -1 };
 			this.cache.set(geometry, entry);
+			this.live.add(entry);
 			geometry.addEventListener('dispose', this._onGeometryDispose);
 			if (this.info !== null) this.info.memory.geometries++;
 		}
@@ -94,6 +134,7 @@ class WebGLBindingStates {
 			if (attributes.update(attribute, gl.ARRAY_BUFFER).buffer !== beforeBuffer) rebuild = true;
 		}
 		if (mode === 1) {
+			this._watchInstanced(instancedObject);
 			const im = instancedObject.instanceMatrix;
 			const before = attributes.get(im);
 			const beforeBuffer = before !== undefined ? before.buffer : null;

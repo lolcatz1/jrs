@@ -68,6 +68,13 @@ class WebGLShadowMap {
 		this.skipped = 0; this.rendered = 0;
 	}
 
+	/** Forgets every per-light record and list; the depth maps themselves are render targets released with the textures. */
+	dispose() {
+		this.lists = new WeakMap(); this.records = new WeakMap();
+		this._epoch++;
+		this._renderOrders.clear(); this._casterCount = 0; this._casters.length = 0;
+	}
+
 	render(lights, scene, camera) {
 		const renderer = this.renderer;
 		if (this.enabled === false) return;
