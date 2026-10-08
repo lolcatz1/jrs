@@ -85,6 +85,7 @@ class WebGLBatcher {
 		} else {
 			state.bindTexture(gl.TEXTURE_2D, this.texture, unit);
 		}
+		state.activeTexture(unit); // texSubImage2D targets the ACTIVE unit: a cached binding alone does not select it
 		if (this.texCount === 0) return;
 		if (this.textureHash === this.texHash && this.textureCount === this.texCount) return;
 		// texImage2D targets the *active* unit: when the cached bind above was a no-op (the texture was

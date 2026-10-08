@@ -127,13 +127,15 @@ class WebGLState {
 						case NormalBlending: gl.blendFuncSeparate(gl.ONE, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA); break;
 						case AdditiveBlending: gl.blendFunc(gl.ONE, gl.ONE); break;
 						case SubtractiveBlending: gl.blendFuncSeparate(gl.ZERO, gl.ONE_MINUS_SRC_COLOR, gl.ZERO, gl.ONE); break;
-						case MultiplyBlending: gl.blendFuncSeparate(gl.ZERO, gl.SRC_COLOR, gl.ZERO, gl.SRC_ALPHA); break;
+						case MultiplyBlending: gl.blendFuncSeparate(gl.DST_COLOR, gl.ONE_MINUS_SRC_ALPHA, gl.ZERO, gl.ONE); break;
 						default: console.error('WebGLState: Invalid blending: ', blending);
 					}
 				} else {
 					switch (blending) {
 						case NormalBlending: gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA); break;
-						case AdditiveBlending: gl.blendFunc(gl.SRC_ALPHA, gl.ONE); break;
+						case AdditiveBlending: gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE, gl.ONE, gl.ONE); break;
+						// three.js only logs an error for Subtractive/Multiply without premultipliedAlpha (and keeps the
+						// previous blend function); jrs applies the documented non-premultiplied equivalents instead
 						case SubtractiveBlending: gl.blendFuncSeparate(gl.ZERO, gl.ONE_MINUS_SRC_COLOR, gl.ZERO, gl.ONE); break;
 						case MultiplyBlending: gl.blendFunc(gl.ZERO, gl.SRC_COLOR); break;
 						default: console.error('WebGLState: Invalid blending: ', blending);
@@ -198,6 +200,23 @@ class WebGLState {
 			this.setStencilOp(material.stencilFail, material.stencilZFail, material.stencilZPass);
 		}
 		this.currentMaterialWord = word;
+	}
+	/** Shadow pass state: three.js renders casters with its own MeshDepthMaterial, so the caster's depth, blend,
+	 *  stencil and polygon-offset settings do not apply; only the (flipped) side does. */
+	setShadowPassMaterial(frontFaceCW, side) {
+		const gl = this.gl;
+		side === DoubleSide ? this.disable(gl.CULL_FACE) : this.enable(gl.CULL_FACE);
+		let flipSided = (side === BackSide);
+		if (frontFaceCW) flipSided = !flipSided;
+		this.setFlipSided(flipSided);
+		this.setBlending(NoBlending);
+		this.setDepthFunc(LessEqualDepth);
+		this.setDepthTest(true);
+		this.setDepthMask(true);
+		this.setColorMask(true);
+		this.setPolygonOffset(false, 0, 0);
+		this.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
+		this.setStencilTest(false);
 	}
 	setStencilTest(stencilTest) {
 		if (this.currentStencilTest === stencilTest) return;

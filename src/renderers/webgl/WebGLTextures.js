@@ -801,7 +801,7 @@ class WebGLTextures {
 			// color (reuse a texture object created earlier by a sampler binding of this texture)
 			if (renderTarget.depthOnly !== true) {
 				if (tp.webglTexture === undefined) { tp.webglTexture = gl.createTexture(); this.info.memory.textures++; }
-				state.bindTexture(gl.TEXTURE_2D, tp.webglTexture, 0);
+				state.bindTexture(gl.TEXTURE_2D, tp.webglTexture, 0); state.activeTexture(0);
 				this._setTextureParameters(gl.TEXTURE_2D, texture);
 				const glFormat = this.glFormat(texture.format, texture.colorSpace), glType = this.glType(texture.type);
 				const glInternalFormat = this.glInternalFormat(texture.internalFormat, glFormat, glType, texture.normalized, texture.colorSpace);
@@ -819,7 +819,7 @@ class WebGLTextures {
 				if (dp.webglTexture === undefined) { dp.webglTexture = gl.createTexture(); this.info.memory.textures++; }
 				else { gl.deleteTexture(dp.webglTexture); dp.webglTexture = gl.createTexture(); } // immutable storage: fresh object
 				dt.isRenderTargetTexture = true;
-				state.bindTexture(gl.TEXTURE_2D, dp.webglTexture, 0);
+				state.bindTexture(gl.TEXTURE_2D, dp.webglTexture, 0); state.activeTexture(0);
 				this._setTextureParameters(gl.TEXTURE_2D, dt);
 				const glInternalFormat = this.glInternalDepthFormat(dt.format === DepthStencilFormat, dt.type);
 				gl.texStorage2D(gl.TEXTURE_2D, 1, glInternalFormat, renderTarget.width, renderTarget.height);
@@ -870,7 +870,7 @@ class WebGLTextures {
 		p.cubeFace = -1;
 		if (renderTarget.depthOnly !== true) {
 			tp.webglTexture = gl.createTexture(); this.info.memory.textures++;
-			state.bindTexture(gl.TEXTURE_CUBE_MAP, tp.webglTexture, 0);
+			state.bindTexture(gl.TEXTURE_CUBE_MAP, tp.webglTexture, 0); state.activeTexture(0);
 			this._setTextureParameters(gl.TEXTURE_CUBE_MAP, texture);
 			const glFormat = this.glFormat(texture.format, texture.colorSpace), glType = this.glType(texture.type);
 			const glInternalFormat = this.glInternalFormat(texture.internalFormat, glFormat, glType, texture.normalized, texture.colorSpace);
@@ -886,7 +886,7 @@ class WebGLTextures {
 			if (dp.webglTexture !== undefined) gl.deleteTexture(dp.webglTexture); else this.info.memory.textures++;
 			dp.webglTexture = gl.createTexture();
 			dt.isRenderTargetTexture = true;
-			state.bindTexture(gl.TEXTURE_CUBE_MAP, dp.webglTexture, 0);
+			state.bindTexture(gl.TEXTURE_CUBE_MAP, dp.webglTexture, 0); state.activeTexture(0);
 			this._setTextureParameters(gl.TEXTURE_CUBE_MAP, dt);
 			const glInternalFormat = this.glInternalDepthFormat(dt.format === DepthStencilFormat, dt.type);
 			gl.texStorage2D(gl.TEXTURE_CUBE_MAP, 1, glInternalFormat, size, size);
@@ -924,7 +924,7 @@ class WebGLTextures {
 		if (this._textureNeedsMipmaps(texture)) {
 			const tp = this.get(texture);
 			const target = renderTarget.isWebGLCubeRenderTarget === true ? this.gl.TEXTURE_CUBE_MAP : this.gl.TEXTURE_2D;
-			this.state.bindTexture(target, tp.webglTexture, 0);
+			this.state.bindTexture(target, tp.webglTexture, 0); this.state.activeTexture(0);
 			this.gl.generateMipmap(target);
 		}
 	}
