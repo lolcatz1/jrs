@@ -98,6 +98,26 @@ export function conformanceTests() {
 			}
 		},
 		{
+			name: 'Multi-draw of different geometries renders identically to individual draws', run(T, renderer) {
+				if (!renderer.multiDrawExt) return { pass: true, detail: 'skipped: WEBGL_multi_draw not available on this device (instanced batching is used instead)' };
+				const { scene, camera } = baseScene(T);
+				const d = new T.DirectionalLight(0xffffff, 2); d.position.set(1, 2, 3); scene.add(d);
+				scene.add(new T.AmbientLight(0xffffff, 0.3));
+				const geos = [new T.BoxGeometry(0.15, 0.15, 0.15), new T.SphereGeometry(0.1, 8, 6), new T.ConeGeometry(0.08, 0.2, 7), new T.TorusGeometry(0.08, 0.03, 6, 10), new T.PlaneGeometry(0.2, 0.2).toNonIndexed()];
+				const mat = new T.MeshStandardMaterial({ color: 0xcc8844, roughness: 0.5 }), mat2 = new T.MeshLambertMaterial({ color: 0x4488cc });
+				for (let i = 0; i < 300; i++) { const m = new T.Mesh(geos[i % 5], i % 7 === 0 ? mat2 : mat); m.position.set((i % 20 - 10) * 0.2, (Math.floor(i / 20) - 7.5) * 0.2, 0); m.rotation.set(i, i * 0.3, 0); m.scale.set(1 + (i % 3) * 0.2, 1, 1 + (i % 2) * 0.3); scene.add(m); }
+				renderer.autoMultiDraw = true; renderer.render(scene, camera);
+				const a = readAll(renderer), callsA = renderer.info.render.calls;
+				renderer.autoMultiDraw = false; renderer.autoBatch = false; renderer.render(scene, camera);
+				const b = readAll(renderer), callsB = renderer.info.render.calls;
+				renderer.autoMultiDraw = true; renderer.autoBatch = true;
+				let maxd = 0, bad = 0;
+				for (let i = 0; i < a.length; i++) { const dd = Math.abs(a[i] - b[i]); if (dd > maxd) maxd = dd; if (dd > 16) bad++; }
+				const glErr = renderer.getContext().getError();
+				return { pass: callsA <= 8 && callsB === 300 && bad / a.length < 0.002 && glErr === 0, detail: `draw calls ${callsB} -> ${callsA} (5 geometries, 2 materials, indexed and non-indexed); max pixel diff ${maxd}, ${(100 * bad / a.length).toFixed(3)}% of pixels differ by >16` };
+			}
+		},
+		{
 			name: 'InstancedMesh', run(T, renderer) {
 				const { scene, camera } = baseScene(T);
 				scene.add(new T.AmbientLight(0xffffff, 3));

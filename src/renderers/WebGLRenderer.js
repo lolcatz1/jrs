@@ -20,6 +20,7 @@ import { WebGLRenderLists } from './webgl/WebGLRenderLists.js';
 import { WebGLLights } from './webgl/WebGLLights.js';
 import { WebGLBindingStates } from './webgl/WebGLBindingStates.js';
 import { WebGLBatcher } from './webgl/WebGLBatcher.js';
+import { WebGLMegaBuffers } from './webgl/WebGLMegaBuffers.js';
 import { WebGLInfo } from './webgl/WebGLInfo.js';
 import { WebGLShadowMap } from './webgl/WebGLShadowMap.js';
 import { MATERIAL_SHADER, MATERIAL_SPRITE, MATERIAL_POINTS, FRAME_BLOCK_SIZE, LIGHTS_BLOCK_SIZE, MATERIAL_BLOCK_SIZE, TEXTURE_UNITS } from './shaders/ShaderLib.js';
@@ -32,7 +33,7 @@ const _emptyScene = { fog: null, environment: null, background: null, overrideMa
 
 // variant bits for program selection
 const V_INSTANCING = 1, V_INSTANCING_COLOR = 2, V_RECEIVE_SHADOW = 4, V_SHADOW_PASS = 8;
-const V_HAS_UV = 16, V_HAS_UV1 = 32, V_HAS_COLOR = 64, V_COLOR_ALPHA = 128;
+const V_HAS_UV = 16, V_HAS_UV1 = 32, V_HAS_COLOR = 64, V_COLOR_ALPHA = 128, V_MULTIDRAW = 256;
 
 const defaultOnBeforeRender = Object3D.prototype.onBeforeRender;
 const defaultOnAfterRender = Object3D.prototype.onAfterRender;
@@ -71,6 +72,12 @@ class WebGLRenderer {
 		this.autoBatch = true;
 		/** Smallest run of identical geometry+material that is drawn as one instanced call (shorter runs draw individually, avoiding a program switch to the instanced variant). */
 		this.autoBatchMinimum = 4;
+		/**
+		 * Draw runs of built-in-material meshes with DIFFERENT geometries as one multiDrawElements call
+		 * (geometries are packed into shared buffers; matrices come from a per-frame matrix texture).
+		 * Requires WEBGL_multi_draw; falls back to instanced batching of identical geometries otherwise.
+		 */
+		this.autoMultiDraw = true;
 		this.clippingPlanes = [];
 		this.localClippingEnabled = false;
 		this.toneMapping = NoToneMapping;
@@ -122,6 +129,10 @@ class WebGLRenderer {
 		this.lights = new WebGLLights();
 		this.bindingStates = new WebGLBindingStates(gl, this.state, this.attributes, this.info);
 		this.batcher = new WebGLBatcher(gl);
+		this.multiDrawExt = gl.getExtension('WEBGL_multi_draw');
+		this.megaBuffers = this.multiDrawExt !== null ? new WebGLMegaBuffers(gl, this.state, this.info) : null;
+		this._mdCounts = new Int32Array(1024); this._mdOffsets = new Int32Array(1024); this._mdN = 0;
+		this._mdUsedThisFrame = false;
 		this.shadowMap = new WebGLShadowMap(this);
 		this.properties = { get: (obj) => this._materialProps(obj) };
 		this.info.programs = this.programs.programs;
@@ -182,6 +193,8 @@ class WebGLRenderer {
 		this._cmdItem = new Array(this._cmdCapacity);
 		this._cmdOffset = new Int32Array(this._cmdCapacity);
 		this._cmdCount = new Int32Array(this._cmdCapacity);
+		this._cmdKind = new Int8Array(this._cmdCapacity);
+		this._cmdMdStart = new Int32Array(this._cmdCapacity);
 		this._cmdN = 0;
 
 		// draw-time cache
@@ -265,6 +278,7 @@ class WebGLRenderer {
 		canvas.removeEventListener && canvas.removeEventListener('webglcontextrestored', this._onContextRestore, false);
 		this.programs.dispose();
 		this.batcher.dispose();
+		if (this.megaBuffers !== null) this.megaBuffers.dispose();
 		this._gl.deleteBuffer(this._frameBuffer); this._gl.deleteBuffer(this._lightsBuffer); this._gl.deleteBuffer(this._materialBuffer);
 		this.setAnimationLoop(null);
 	}
@@ -620,6 +634,7 @@ class WebGLRenderer {
 		const vflags = {
 			instancing: (variant & V_INSTANCING) !== 0, instancingColor: (variant & V_INSTANCING_COLOR) !== 0,
 			receiveShadow: (variant & V_RECEIVE_SHADOW) !== 0, shadowPass: (variant & V_SHADOW_PASS) !== 0,
+			multiDraw: (variant & V_MULTIDRAW) !== 0,
 		};
 		const parameters = this.programs.getParameters(material, object, scene || _emptyScene, this.lights, vflags);
 		if (entry !== undefined && entry.program.parameters.key === parameters.key && material.isShaderMaterial !== true) {
@@ -731,54 +746,141 @@ class WebGLRenderer {
 	/**
 	 * Build draw commands (singles and batches) from a sorted key list, then execute them.
 	 */
+	_isMultiDrawable(item) {
+		if (!this._isBatchable(item)) return false;
+		const object = item.object, material = item.material;
+		if (object.isMesh !== true || material.wireframe === true || object.isSprite === true) return false;
+		const rec = this.megaBuffers.ensure(item.geometry);
+		if (rec === null || rec.page === null) return false;
+		item.mdRecord = rec;
+		return true;
+	}
+
+	/**
+	 * Build draw commands from a sorted key list, then execute them. Commands are:
+	 *   single draw, instanced batch (same geometry+material), or multi-draw batch
+	 *   (same material, any geometries from one mega-buffer page).
+	 */
 	_drawList(list, keys, n, scene, camera, shadowPass) {
 		if (n === 0) return;
 		this._currentScene = scene;
 		if (this._traceSeq !== null) this._traceList = shadowPass ? 's' : (keys === list.transparentSorted ? 't' : 'o');
 		const batcher = this.batcher;
 		batcher.begin();
-		let cmdN = 0;
-		const autoBatch = this.autoBatch;
+		let cmdN = 0, mdN = 0;
+		const autoBatch = this.autoBatch, minimum = this.autoBatchMinimum;
+		const multi = autoBatch && this.autoMultiDraw && this.megaBuffers !== null;
 		let i = 0;
 		while (i < n) {
 			const item = list.itemFromKey(keys[i]);
 			let j = i + 1;
-			if (autoBatch && this._isBatchable(item)) {
+			let kind = 0; // 0 single, 1 instanced run, 2 multi-draw run
+			if (multi && this._isMultiDrawable(item)) {
+				const page = item.mdRecord.page, indexed = item.mdRecord.indexed;
+				while (j < n) {
+					const next = list.itemFromKey(keys[j]);
+					if (next.material === item.material && next.program === item.program && next.renderOrder === item.renderOrder &&
+						this._isMultiDrawable(next) && next.mdRecord.page === page && next.mdRecord.indexed === indexed) j++;
+					else break;
+				}
+				if (j - i >= minimum) kind = 2;
+			} else if (autoBatch && this._isBatchable(item)) {
 				while (j < n) {
 					const next = list.itemFromKey(keys[j]);
 					if (next.geometry === item.geometry && next.material === item.material && next.program === item.program &&
 						next.renderOrder === item.renderOrder && this._isBatchable(next)) j++;
 					else break;
 				}
+				if (j - i >= minimum) kind = 1;
 			}
 			if (cmdN === this._cmdCapacity) this._growCommands();
 			this._cmdItem[cmdN] = item;
-			if (j - i >= this.autoBatchMinimum) {
+			if (kind === 2) {
+				batcher.ensure(j - i);
+				if (mdN + (j - i) > this._mdCounts.length) this._growMultiDraw(mdN + (j - i));
+				this._cmdOffset[cmdN] = batcher.count;
+				this._cmdCount[cmdN] = j - i;
+				this._cmdKind[cmdN] = 2;
+				this._cmdMdStart[cmdN] = mdN;
+				for (let k = i; k < j; k++) {
+					const it = list.itemFromKey(keys[k]);
+					batcher.add(it.object);
+					const rec = it.mdRecord;
+					if (rec.indexed) { this._mdCounts[mdN] = rec.indexCount; this._mdOffsets[mdN] = rec.byteOffset; }
+					else { this._mdCounts[mdN] = rec.vertexCount; this._mdOffsets[mdN] = rec.baseVertex; }
+					mdN++;
+				}
+			} else if (kind === 1) {
 				batcher.ensure(j - i);
 				this._cmdOffset[cmdN] = batcher.count;
 				this._cmdCount[cmdN] = j - i;
+				this._cmdKind[cmdN] = 1;
 				for (let k = i; k < j; k++) batcher.add(list.itemFromKey(keys[k]).object);
 			} else {
+				j = i + 1;
 				this._cmdOffset[cmdN] = -1;
 				this._cmdCount[cmdN] = 1;
+				this._cmdKind[cmdN] = 0;
 			}
 			cmdN++;
 			i = j;
 		}
-		batcher.upload();
+		let usedTexture = false;
+		for (let c = 0; c < cmdN; c++) if (this._cmdKind[c] === 2) { usedTexture = true; break; }
+		if (usedTexture) batcher.uploadTexture(this.state, TEXTURE_UNITS.objectMatrices);
+		let usedBuffer = false;
+		for (let c = 0; c < cmdN; c++) if (this._cmdKind[c] === 1) { usedBuffer = true; break; }
+		if (usedBuffer) batcher.upload();
 		for (let c = 0; c < cmdN; c++) {
 			const item = this._cmdItem[c];
-			if (this._cmdOffset[c] >= 0) this._renderBatch(item, this._cmdOffset[c], this._cmdCount[c], scene, camera, shadowPass);
+			const kind = this._cmdKind[c];
+			if (kind === 2) this._renderMultiDraw(item, this._cmdOffset[c], this._cmdCount[c], this._cmdMdStart[c], scene, camera, shadowPass);
+			else if (kind === 1) this._renderBatch(item, this._cmdOffset[c], this._cmdCount[c], scene, camera, shadowPass);
 			else this._renderItem(item, scene, camera, shadowPass);
 			this._cmdItem[c] = null;
 		}
 	}
+	_growMultiDraw(min) {
+		let cap = this._mdCounts.length; while (cap < min) cap *= 2;
+		const c = new Int32Array(cap); c.set(this._mdCounts); this._mdCounts = c;
+		const o = new Int32Array(cap); o.set(this._mdOffsets); this._mdOffsets = o;
+	}
+
+	/** One multiDrawElements/Arrays call for `count` sub-draws whose matrices start at `drawBase` in the matrix texture. */
+	_renderMultiDraw(item, drawBase, count, mdStart, scene, camera, shadowPass) {
+		const object = item.object, material = item.material, gl = this._gl;
+		const variant = this._variantFor(object, item.geometry, material, shadowPass) | V_MULTIDRAW;
+		const program = this._getProgram(material, object, scene, variant);
+		this._setupMaterial(item, program, material, camera, false, shadowPass ? shadowSideOf(material) : material.side);
+		const mu = program.modelMatrixUniform;
+		if (mu !== null && !cacheArray(mu, IDENTITY, 16)) { gl.uniformMatrix4fv(mu.location, false, IDENTITY); if (this._traceUniforms !== null) this._trace(mu); }
+		const du = program.drawBaseUniform;
+		if (du !== null && du.cache !== drawBase) { du.cache = drawBase; gl.uniform1i(du.location, drawBase); if (this._traceUniforms !== null) this._trace(du); }
+		// the matrix texture lives on a fixed unit; make sure nothing replaced it there
+		this.state.bindTexture(gl.TEXTURE_2D, this.batcher.texture, TEXTURE_UNITS.objectMatrices);
+		const rec = item.mdRecord;
+		this.state.bindVertexArray(rec.page.vao);
+		const ext = this.multiDrawExt;
+		let primitives = 0;
+		if (rec.indexed) {
+			ext.multiDrawElementsWEBGL(gl.TRIANGLES, this._mdCounts, mdStart, gl.UNSIGNED_INT, this._mdOffsets, mdStart, count);
+		} else {
+			ext.multiDrawArraysWEBGL(gl.TRIANGLES, this._mdOffsets, mdStart, this._mdCounts, mdStart, count);
+		}
+		for (let k = 0; k < count; k++) primitives += this._mdCounts[mdStart + k];
+		this.info.update(primitives, gl.TRIANGLES, 1);
+		this.info.render.batches++;
+		this.info.render.instances += count;
+	}
+
 	_growCommands() {
 		const cap = this._cmdCapacity * 2;
 		const a = new Array(cap); for (let i = 0; i < this._cmdCapacity; i++) a[i] = this._cmdItem[i];
 		const o = new Int32Array(cap); o.set(this._cmdOffset);
 		const cnt = new Int32Array(cap); cnt.set(this._cmdCount);
-		this._cmdItem = a; this._cmdOffset = o; this._cmdCount = cnt; this._cmdCapacity = cap;
+		const kd = new Int8Array(cap); kd.set(this._cmdKind);
+		const ms = new Int32Array(cap); ms.set(this._cmdMdStart);
+		this._cmdItem = a; this._cmdOffset = o; this._cmdCount = cnt; this._cmdKind = kd; this._cmdMdStart = ms; this._cmdCapacity = cap;
 	}
 
 	_drawMode(object, material) {

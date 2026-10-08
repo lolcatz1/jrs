@@ -38,7 +38,9 @@ export const TEXTURE_UNITS = {
 	bumpMap: 7, // shares with specularMap (never used together by one material type)
 	dirShadowMap0: 8, dirShadowMap1: 9, dirShadowMap2: 10, dirShadowMap3: 11,
 	spotShadowMap0: 12, spotShadowMap1: 13, spotShadowMap2: 14, spotShadowMap3: 15,
+	objectMatrices: 15, // multi-draw matrix texture (spot shadow maps are capped at 3 when it is used)
 };
+export const MATRIX_TEXTURE_WIDTH = 1024; // texels; 4 texels per matrix -> 256 matrices per row
 
 export const FRAME_BLOCK = /* glsl */`
 layout(std140) uniform Frame {
@@ -135,6 +137,17 @@ in mat4 instanceMatrix;
 	in vec3 instanceColor;
 	#endif
 #endif
+#ifdef USE_MULTIDRAW
+// one object matrix per sub-draw, fetched from a per-frame matrix texture by gl_DrawID
+uniform highp sampler2D objectMatrices;
+uniform int drawBase;
+mat4 fetchObjectMatrix() {
+	int id = ( drawBase + gl_DrawID ) * 4;
+	int y = id / ${MATRIX_TEXTURE_WIDTH};
+	int x = id - y * ${MATRIX_TEXTURE_WIDTH};
+	return mat4( texelFetch( objectMatrices, ivec2( x, y ), 0 ), texelFetch( objectMatrices, ivec2( x + 1, y ), 0 ), texelFetch( objectMatrices, ivec2( x + 2, y ), 0 ), texelFetch( objectMatrices, ivec2( x + 3, y ), 0 ) );
+}
+#endif
 out vec3 vWorldPosition;
 #ifdef USE_NORMAL
 out vec3 vNormal;
@@ -163,6 +176,9 @@ void main() {
 	#ifdef USE_INSTANCING
 	model = model * instanceMatrix;
 	#endif
+	#ifdef USE_MULTIDRAW
+	model = model * fetchObjectMatrix();
+	#endif
 	#ifdef IS_SPRITE
 		// billboard: sprite plane in view space
 		vec4 mvPosition = viewMatrix * model * vec4( 0.0, 0.0, 0.0, 1.0 );
@@ -184,7 +200,7 @@ void main() {
 	#endif
 	vWorldPosition = worldPosition.xyz;
 	#ifdef USE_NORMAL
-		#ifdef USE_INSTANCING
+		#if defined( USE_INSTANCING ) || defined( USE_MULTIDRAW )
 		vNormal = normalize( transpose( inverse( mat3( model ) ) ) * normal );
 		#else
 		vNormal = normalize( normalMatrix * normal );
@@ -706,6 +722,7 @@ export function buildBuiltinShader(p) {
 	if (p.vertexAlphas) d('USE_COLOR_ALPHA');
 	if (p.instancing) d('USE_INSTANCING');
 	if (p.instancingColor) d('USE_INSTANCING_COLOR');
+	if (p.multiDraw) d('USE_MULTIDRAW');
 	if (p.flatShading) d('FLAT_SHADED');
 	if (p.doubleSided) d('DOUBLE_SIDED');
 	if (p.fog) d('USE_FOG');
@@ -719,7 +736,7 @@ export function buildBuiltinShader(p) {
 	d('NUM_DIR_SHADOWS', p.numDirShadows | 0);
 	d('NUM_SPOT_SHADOWS', p.numSpotShadows | 0);
 	const prefix = '#version 300 es\n' + defines.join('\n') + '\n';
-	const vsExtra = p.materialType === MATERIAL_SPRITE ? spriteUniform : '';
+	const vsExtra = (p.multiDraw ? '#extension GL_ANGLE_multi_draw : require\n' : '') + (p.materialType === MATERIAL_SPRITE ? spriteUniform : '');
 	const vs = prefix + vsExtra + vertexShader;
 	// insert shadow helper functions after sampleShadow definition
 	let fs = fragmentShader;

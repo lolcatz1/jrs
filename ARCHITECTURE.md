@@ -47,7 +47,11 @@ Benefits:
 `Matrix4.elements` is a `Float32Array` everywhere (three.js uses a plain `Array` of
 doubles). This matches what the GPU consumes and makes uploads a memcpy. The trade-off
 is float32 precision in matrices; scenes with coordinates beyond ~10^5 units should be
-camera-relative, as they should be in any float32 pipeline.
+camera-relative, as they should be in any float32 pipeline. `Matrix4` also accepts external
+storage, so the few places where precision shows up on screen use a `Float64Array`-backed
+scratch matrix: a parentless camera's view matrix is composed from its position and
+quaternion and inverted in doubles, then rounded once, which is the same arithmetic path
+three.js takes. With that, the client-shaped benchmark scenes render pixel-identical to three.
 
 ## 3. Culling and sorting without allocation (`src/renderers/webgl/WebGLRenderLists.js`)
 
@@ -87,6 +91,25 @@ in order, so the back-to-front order from the sort is preserved.
 
 `InstancedMesh` keeps working as in three.js (its own `instanceMatrix` attribute).
 Disable automatic batching with `renderer.autoBatch = false`.
+
+### 4b. Multi-draw over mega-buffers (`src/renderers/webgl/WebGLMegaBuffers.js`)
+
+Instanced batching needs identical geometry. For runs of **different** geometries that share a
+material, jrs uses `WEBGL_multi_draw` (Chrome, Firefox, Safari): geometries with the same
+attribute layout (names, item sizes, types, indexed or not) are sub-allocated into large shared
+vertex and index buffers ("pages", 262k vertices each, one VAO per page). Indices are rebased to
+the page's vertex base at upload time, so no base-vertex extension is needed. A run becomes one
+`multiDrawElementsWEBGL` (or `multiDrawArraysWEBGL`) call whose sub-draws read their object
+matrix from a per-frame **matrix texture** (RGBA32F, four texels per matrix) indexed by
+`gl_DrawID`. This is the transform-texture technique that three's `BatchedMesh` asks the
+application to set up by hand, applied automatically and kept in sync with the scene graph:
+the matrix texture is filled from the transform slab in the same pass that builds the instance
+data, and its upload is skipped when the batch hash is unchanged. Sub-draws execute in order,
+so transparent runs keep their back-to-front order. The classic instanced path remains the
+fallback when the extension is missing (`renderer.autoMultiDraw = false` disables it).
+
+Effect: the 2,000 distinct-geometry benchmark goes from 2,000 draw calls to 1; the
+many-materials scene from 600 (instanced) to 200 (one per material and layout).
 
 ## 5. Uniform blocks instead of uniform uploads (`src/renderers/shaders/ShaderLib.js`)
 
@@ -129,7 +152,10 @@ shared by every program and keyed only on (geometry, instancing mode).
 
 Every `gl.enable/disable/depthFunc/blendFunc/useProgram/bindVertexArray/bindBufferRange/
 bindTexture` goes through a cache and is dropped when redundant. Texture binding is
-tracked per unit.
+tracked per unit. Every uniform location keeps its last uploaded value in doubles (as
+three.js's `WebGLUniforms` does), so shared uniforms, camera matrices and per-object
+matrices are only re-sent when they change; `ShaderMaterial` instances with the same
+source, defines and parameters share one program and therefore one cache.
 
 ## 8. Lazy BVH for raycasting (`src/core/MeshBVH.js`)
 

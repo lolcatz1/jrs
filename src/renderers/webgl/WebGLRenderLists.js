@@ -33,7 +33,7 @@ class WebGLRenderList {
 	_getItem(object, geometry, material, group, z, variant) {
 		let item = this.items[this.count];
 		if (item === undefined) {
-			item = { id: object.id, object, geometry, material, program: null, group, z, renderOrder: object.renderOrder, materialRid: 0, geometryRid: 0, variant };
+			item = { id: object.id, object, geometry, material, program: null, group, z, renderOrder: object.renderOrder, materialRid: 0, geometryRid: 0, variant, mdRecord: null };
 			this.items[this.count] = item;
 		} else {
 			item.id = object.id; item.object = object; item.geometry = geometry; item.material = material; item.program = null;

@@ -8,14 +8,17 @@
  * is skipped entirely (the frame hash covers object identity and
  * _worldVersion of every batched object).
  */
+import { MATRIX_TEXTURE_WIDTH } from '../shaders/ShaderLib.js';
+
 export const INSTANCE_STRIDE_FLOATS = 16;
+const MATRICES_PER_ROW = MATRIX_TEXTURE_WIDTH / 4;
 export const INSTANCE_STRIDE_BYTES = INSTANCE_STRIDE_FLOATS * 4;
 
 class WebGLBatcher {
 	constructor(gl) {
 		this.gl = gl;
 		this.buffer = gl.createBuffer();
-		this.capacity = 1024; // instances
+		this.capacity = 1024; // instances (a multiple of MATRICES_PER_ROW)
 		this.data = new Float32Array(this.capacity * INSTANCE_STRIDE_FLOATS);
 		this.count = 0;
 		this.lastHash = 0;
@@ -24,12 +27,40 @@ class WebGLBatcher {
 		gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
 		gl.bufferData(gl.ARRAY_BUFFER, this.data.byteLength, gl.DYNAMIC_DRAW);
 		gl.bindBuffer(gl.ARRAY_BUFFER, null);
+		// matrix texture for multi-draw: RGBA32F, 4 texels per matrix, rows of MATRICES_PER_ROW matrices
+		this.texture = null; this.textureRows = 0; this.textureHash = 0; this.textureCount = 0;
+	}
+	/** Upload the frame's matrices into the matrix texture (unit `unit`) if they changed. The texture stays bound to `unit`. */
+	uploadTexture(state, unit) {
+		const gl = this.gl;
+		const rows = Math.max(1, Math.ceil(this.count / MATRICES_PER_ROW));
+		if (this.texture === null || rows > this.textureRows) {
+			if (this.texture !== null) gl.deleteTexture(this.texture);
+			this.texture = gl.createTexture();
+			let allocRows = 1; while (allocRows < rows) allocRows *= 2;
+			state.bindTexture(gl.TEXTURE_2D, this.texture, unit);
+			gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA32F, MATRIX_TEXTURE_WIDTH, allocRows);
+			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+			this.textureRows = allocRows;
+			this.textureHash = 0;
+		} else {
+			state.bindTexture(gl.TEXTURE_2D, this.texture, unit);
+		}
+		if (this.count === 0) return;
+		if (this.textureHash === this.hash && this.textureCount === this.count) return;
+		// data capacity is a multiple of a full row (see ensure), so whole rows can be uploaded
+		gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+		gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+		gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, MATRIX_TEXTURE_WIDTH, rows, gl.RGBA, gl.FLOAT, this.data, 0);
+		this.textureHash = this.hash; this.textureCount = this.count;
 	}
 	begin() { this.count = 0; this.hash = 0x811c9dc5 | 0; }
 	ensure(extra) {
 		if (this.count + extra > this.capacity) {
 			let cap = this.capacity;
 			while (cap < this.count + extra) cap *= 2;
+			cap = Math.ceil(cap / MATRICES_PER_ROW) * MATRICES_PER_ROW;
 			const nd = new Float32Array(cap * INSTANCE_STRIDE_FLOATS);
 			nd.set(this.data);
 			this.data = nd; this.capacity = cap;
@@ -72,7 +103,7 @@ class WebGLBatcher {
 		}
 		return false;
 	}
-	dispose() { this.gl.deleteBuffer(this.buffer); }
+	dispose() { this.gl.deleteBuffer(this.buffer); if (this.texture !== null) this.gl.deleteTexture(this.texture); }
 }
 
 export { WebGLBatcher };
