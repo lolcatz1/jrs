@@ -25,20 +25,31 @@ uv channel per map.
 
 ### Block layout
 
-| | before | after |
-|--|--|--|
-| size | 128 B (8 vec4) | 256 B (16 vec4) |
-| 0..79 | diffuse, emissive, specular, params, params2 | unchanged |
-| 80..127 | uvTransform0..2 (one mat3, 3 vec4) | uvT[0..11) : 7 transforms x 6 floats, 2 floats spare |
+| | before (this branch's first version) | integration tip (envmaps) | after (this branch, merged) |
+|--|--|--|--|
+| size | 128 B (8 vec4) | 192 B (12 vec4) | 320 B (20 vec4) |
+| 0..79 | diffuse, emissive, specular, params, params2 | unchanged | unchanged |
+| 80..143 | uvTransform0..2 (one mat3) | uvTransform0..2 + envParams + envMapRotation (mat3) | envParams + envMapRotation (floats 20..35) |
+| 144..319 | - | - | `uvT[11]`: 7 transforms x 6 floats (floats 36..77), 2 spare |
 
-`MATERIAL_BLOCK_SIZE`, the scratch / `blockData` arrays, `MaterialRecord` (+ `mPad`), the stride
-(`max(size, UNIFORM_BUFFER_OFFSET_ALIGNMENT)`) and the `bindBufferRange` windows all derive from that constant.
-On devices with 256 B alignment the stride was already 256, so nothing changes there. With a 16 KB uniform block limit a
-material window drops from 128 to 64 records (64 KB: capped at 256 either way).
+The environment-map fields keep their meaning (envMap has no uv transform in three.js); the single `uvTransform` mat3 is
+replaced by the per-map transforms. 7 slots + env + base do not fit 256 B, so the record is 320 B.
+
+Stride handling (`WebGLRenderer`): the record size is no longer padded into the stride with `max( size, alignment )`
+(wrong once the size exceeds the alignment, it gave unaligned `bindBufferRange` offsets and GL_INVALID_VALUE). Records are
+kept in two buffers, both written when a record changes:
+
+* `_materialBuffer`: stride = size rounded up to `UNIFORM_BUFFER_OFFSET_ALIGNMENT` (512 B where the alignment is 256), used
+  for single-material binds at `slot * stride`.
+* `_materialTight`: records back to back (`MaterialRecord` has no `mPad`, `_materialPad` = 0), used for material-index
+  windows. A window holds `min( 256, MAX_UNIFORM_BLOCK_SIZE / 320 )` records rounded down to a multiple of
+  `alignment / gcd( 320, alignment )` so that each window starts at an aligned offset: 204 records with a 64 KB block limit and
+  256 B alignment (48 with 16 KB). Padding the records instead would have halved the window to 128 and turned the
+  200-material `many-materials` scenario from 3 into 6 draws.
 
 ## Validation
 
-* `npm test`: 139/139. `node bench/conformance.mjs`: all pass, including the new check
+* `npm test`: 152/152. `node bench/conformance.mjs`: all pass, including the new check
   *"Per-map uv transforms and channels: map, alphaMap, emissiveMap, aoMap on one material (matches three.js)"*
   (map and alphaMap with different offset/repeat/rotation/center, alphaMap and aoMap on `channel: 1`, a second material with the
   same textures on channel 0; max diff 0 vs three.js; it fails on the old code with mean 19 / max 212).
@@ -48,8 +59,11 @@ material window drops from 128 to 64 records (64 KB: capped at 256 either way).
   rasteriser-dependent).
   `node bench/fuzz.mjs --seeds=100 --continue`: before the fixes 27 seeds failed; with the feature off the same seeds give
   12 failures that are unrelated to maps (8 23 27 28 35 61 63 65 78 85 93 99). After this branch, with the feature on:
-  11 failures, all of them in that baseline set. Every seed that failed only because of per-map transforms now passes.
-  `--seeds=50` without `--continue` stops at seed 8, a baseline failure.
+  all failures are in the baseline set; every seed that failed only because of per-map transforms now passes.
+  After the final merge with the envmap tip: `node bench/fuzz.mjs --seeds=30 --continue --enable=perMapTransform` fails
+  2 8 12 14 23 27, exactly the integration tip's list; `--seeds=100` additionally 35 61 63 78 85 93 99 (the earlier baseline).
+  The generator never gives an independent extra map a render target texture (the RT's content differs slightly between the
+  libraries and alpha tests / emissive amplify it). A 700-material scene (buffer growth, 4 windows) renders identically to three.js.
 * Benchmarks: see below.
 
 ## Benchmarks
@@ -62,7 +76,8 @@ below `latest.json` in every scenario (meanAbsDiff/maxDiff). `bench/results/late
 
 ## Risks
 
-* Block growth halves the material window on GPUs with a 16 KB uniform block limit (more material pages per scene).
+* Two copies of every material record (aligned + tight): one extra `bufferSubData` per changed record and about 60% more
+  material buffer memory. Windows hold 204 records (64 KB block limit) or 48 (16 KB).
 * `texture.channel` >= 2 is treated as a constant (0, 0): jrs has no `uv2` / `uv3` attributes.
 * The program key is a number for materials without maps and a string for those with maps. The integer key was already close
   to 2^53 (55 bits of flags); worth rebuilding as a structured key.
