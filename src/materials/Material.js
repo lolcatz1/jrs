@@ -62,7 +62,7 @@ class Material extends EventDispatcher {
 		this._alphaTest = 0;
 		/** Set when `needsUpdate` is assigned; the renderer clears it after re-resolving the program. */
 		this._programDirty = true;
-		this._frameStamp = -1; this._frameRid = 0;
+		this._frameStamp = -1; this._frameRid = 0; this._batchGroup = null;
 	}
 	get alphaTest() { return this._alphaTest; }
 	set alphaTest(value) {

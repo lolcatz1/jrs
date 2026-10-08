@@ -119,6 +119,38 @@ export function conformanceTests() {
 			}
 		},
 		{
+			name: 'Batches spanning materials render identically to individual draws', run(T, renderer) {
+				const { scene, camera } = baseScene(T);
+				const d = new T.DirectionalLight(0xffffff, 2); d.position.set(1, 2, 3); scene.add(d);
+				const p = new T.PointLight(0xffffff, 20, 0, 2); p.position.set(-2, 1, 3); scene.add(p);
+				scene.add(new T.AmbientLight(0xffffff, 0.3));
+				const geos = [new T.BoxGeometry(0.15, 0.15, 0.15), new T.SphereGeometry(0.1, 8, 6), new T.ConeGeometry(0.08, 0.2, 7)];
+				const data = new Uint8Array([255, 255, 255, 255, 128, 128, 128, 255, 128, 128, 128, 255, 255, 255, 255, 255]);
+				const tex = new T.DataTexture(data, 2, 2, T.RGBAFormat, T.UnsignedByteType); tex.needsUpdate = true;
+				// 40 materials of one program: different colours, shininess, emissive, uv transforms; a few textured (same texture) or double-sided
+				const mats = [];
+				for (let i = 0; i < 40; i++) {
+					const m = new T.MeshPhongMaterial({ color: new T.Color().setHSL(i / 40, 0.8, 0.5), shininess: 5 + i * 4, emissive: new T.Color(i % 5 === 0 ? 0x200010 : 0) });
+					if (i % 9 === 0) { m.map = tex; m.map.offset.set(0.25 * i, 0); }
+					if (i % 11 === 0) m.side = T.DoubleSide;
+					mats.push(m);
+				}
+				for (let i = 0; i < 300; i++) { const m = new T.Mesh(geos[i % 3], mats[(i * 7) % 40]); m.position.set((i % 20 - 10) * 0.2, (Math.floor(i / 20) - 7.5) * 0.2, 0); m.rotation.set(i, i * 0.3, 0); m.scale.setScalar(1 + (i % 3) * 0.2); scene.add(m); }
+				renderer.autoBatch = true; renderer.autoBatchMaterials = true; renderer.render(scene, camera);
+				const a = readAll(renderer), callsA = renderer.info.render.calls;
+				renderer.autoBatchMaterials = false; renderer.render(scene, camera);
+				const callsM = renderer.info.render.calls;
+				renderer.autoBatch = false; renderer.render(scene, camera);
+				const b = readAll(renderer), callsB = renderer.info.render.calls;
+				renderer.autoBatch = true; renderer.autoBatchMaterials = true;
+				let maxd = 0;
+				for (let i = 0; i < a.length; i++) { const dd = Math.abs(a[i] - b[i]); if (dd > maxd) maxd = dd; }
+				const glErr = renderer.getContext().getError();
+				const supported = renderer._materialArrayOk === true;
+				return { pass: (!supported || callsA <= 12) && callsM > callsA && callsB === 300 && maxd === 0 && glErr === 0, detail: `draw calls ${callsB} -> ${callsM} (per material) -> ${callsA} (material-index batching${supported ? '' : ', not supported on this device'}); max pixel diff ${maxd}` };
+			}
+		},
+		{
 			name: 'InstancedMesh', run(T, renderer) {
 				const { scene, camera } = baseScene(T);
 				scene.add(new T.AmbientLight(0xffffff, 3));

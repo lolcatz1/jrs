@@ -9,6 +9,11 @@
  *
  * Opaque key:      [renderOrder rank:6][program:6][material:10][indexed:1][geometry:9][index:20]
  * Transparent key: [renderOrder rank:6][depth back-to-front:26][index:20]
+ *
+ * The "material" field is a per-frame dense id of the item's material *batch group*: built-in
+ * materials whose draws can share one batch (same GL state, same textures, records in one
+ * window of the material buffer) share a group, so geometry runs span materials; every other
+ * material is its own group.
  */
 const INDEX_BITS = 20;
 const INDEX_RANGE = 1 << INDEX_BITS; // 1,048,576 items per list
@@ -33,7 +38,7 @@ class WebGLRenderList {
 	_getItem(object, geometry, material, group, z, variant) {
 		let item = this.items[this.count];
 		if (item === undefined) {
-			item = { id: object.id, object, geometry, material, program: null, group, z, renderOrder: object.renderOrder, materialRid: 0, geometryRid: 0, variant, mdRecord: null };
+			item = { id: object.id, object, geometry, material, program: null, group, z, renderOrder: object.renderOrder, materialRid: 0, geometryRid: 0, variant, mdRecord: null, batchGroup: null };
 			this.items[this.count] = item;
 		} else {
 			item.id = object.id; item.object = object; item.geometry = geometry; item.material = material; item.program = null;
@@ -45,10 +50,10 @@ class WebGLRenderList {
 	/**
 	 * Adds an item. `item.program` is resolved later by the renderer (once the frame's lights are known).
 	 */
-	push(object, geometry, material, group, z, materialRid, geometryRid, variant) {
+	push(object, geometry, material, group, z, materialRid, geometryRid, variant, batchGroup) {
 		if (this.count >= INDEX_RANGE) return; // list full; ignore extra items rather than corrupt keys
 		const item = this._getItem(object, geometry, material, group, z, variant);
-		item.materialRid = materialRid; item.geometryRid = geometryRid;
+		item.materialRid = materialRid; item.geometryRid = geometryRid; item.batchGroup = batchGroup;
 		const index = this.count - 1;
 		if (material.transparent === true) {
 			if (this.transparentCount === this.transparentKeys.length) {
