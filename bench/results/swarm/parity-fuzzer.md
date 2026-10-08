@@ -128,6 +128,10 @@ default feature set, `--continue`.
 | Tip d38333a, full default set with `envMaps` (before fixes 22, 23) | 1-100 | 89 pass; 19, 53, 65, 87, 90 (means 50-96: fix 22), 65 / 75 / 94 (fix 23), 12, 14, 97 (Open) |
 | Tip d38333a + fixes 21-23 | 1-100 | 97 pass; residuals 12 (0.125), 14 (0.06), 97 (0.062) |
 | Tip d38333a + fixes 21-24 (final code of this cycle) | 1-100 | **99 pass**; residual 14 (0.06): transparent custom-blend DoubleSide wireframe boxes with vertex colours, line endpoint pixels (the wireframe class under Open) |
+| Tip d38333a + fixes 21-24, fresh range | 501-600 | 92 pass; 8 small failures, means ≤ 0.035 except 557 (0.092, 18 px, orthographic + blurred background texture), all ≤ 48 px over 33 (edge-pixel kinds) |
+| Tip a178964 (perMapTransform on) | 1-100 | 99 pass; 14 (0.058, wireframe class) |
+| Tip a178964, `--enable=points,lines` | 1-40 | 39 pass; 14 (0.169 / 0.281 at frame 3: the same wireframe-class grouped boxes) after the Points-under-override generator fix (before it, seed 2 was non-deterministic in three.js itself: 9.6 / 5.2 / 0.8 on three runs) |
+| Tip a178964, points + lines on by default (final generator) | 1-100 | 95 pass; 14 (0.169, wireframe class), 58 (1.58, Open), 59 (0.19, Open), 81 / 90 (≤ 0.009, 14-15 edge pixels) |
 
 Feature-isolated batches with the final code (30 seeds each, `--only=basic,<feature>` plus
 `lambert,lights` where lighting is needed): fog, transparency, side, wireframe+drawRange, stencil,
@@ -170,6 +174,7 @@ Merge log (the branch keeps absorbing the integration tip; each row is one merge
 | 646caba | ad397c3 | 130/130, 33/33, ok, ok | all 12 scenes 0 mean (max 0; shared-animated 1 px, skinned-crowd 3 px ≤ 2) | 89 pass with the new mutation feature on; the 11 residuals are a subset of the known set (seed 78 now passes) | two real regressions/bugs, fixed in 8716722 (fixes 18, 19): material-array batches left their record window bound for the next plain batch of the same material (frame 0 of about 1 in 15 scenes with shared materials), and multi-draw ignored a drawRange set after the record was built (only reachable with the new per-frame mutations) |
 | 6858f51 | fc9e2b7 | 139/139, 34/34, ok, ok | all 17 scenes 0 mean (max ≤ 2 on ≤ 5 px; the three new point-shadow scenes 0 / 0, 0 / 0, 1 on 5 px) | 87 pass (point shadows + mutations on, so seeds no longer map to the earlier set); 11 residuals of the known kinds plus seed 2 (0.467) and seed 14 (0.05), both logged under Open | one compile failure (fix 20, d8f1052); point-light shadows added to the generator and pixel-identical |
 | d38333a (ShaderMaterial batching, envmaps/PMREM/CubeCamera/textured backgrounds, flat scene update, draw-list build, page VAOs) | fast-forward (this branch was already merged into the tip) | 152/152, 44/44, ok, ok | all 18 scenes 0 mean (max ≤ 2 on ≤ 5 px; the new pbr-envmap scene 0 / 0; instanced-100k 0 / 0 when its compare page loads: on this container that page times out at `page.goto` about every other run, on the untouched tip as well, so the row has to be re-run alone) | first run (envMaps on) 89 pass, 11 failing: the 5 ortho-background seeds (fix 22), 65 / 75 / 94 (fix 23), 12 / 14 / 97 (Open) → after fixes 21-23: 97 pass → after fix 24: **99 pass**, the one residual (14, 0.06) is the wireframe-line class | no merge regression: every parity fix is in place (fix 19's drawRange check now lives at push time as `ITEM_MULTIDRAWABLE`); the generator gained `envMaps` for the new environment code (identical on every seed tried); fixes 21-24 (shadow-pass alpha test, sticky clear colour, OPAQUE alpha, no tone mapping into render targets) are pre-existing mismatches the new seeds exposed; they also close the custom-blend and render-target residual classes of the earlier generator |
+| a178964 (per-map uv transforms, lines/points/sprites parity, skinning perf, dispose/leak sweep; this branch's fixes 21-24 already in) | fast-forward | 179/179, 45/45, ok, ok | all 23 scenes 0 mean (max ≤ 2 on ≤ 5 px on the mesh scenes; the new lines-many 17 on 2 px, points-cloud 3 on 4 px, sprites-many 11 on 30 px, skinned-crowd-large 10 on 9 px, morph-crowd 1 on 4 px); run per scene, the harness now retries a failed page load itself | 95 pass with points + lines on by default (seeds re-map again): 14 (wireframe class), 81 / 90 (edge pixels, ≤ 0.009), and two new Lines-containing scenes 58 (1.58) and 59 (0.19), both pre-existing (same on 015b35f) and logged under Open | no merge regression; `perMapTransform` is on by default now (the per-map-transform worker switched it on, the limitation is gone); `points` and `lines` switched on by default here after 39/40 seeds with `--enable=points,lines` passed (the one failure is the wireframe class); one generator fix: Points under a `scene.overrideMaterial` frame have an undefined `gl_PointSize` (a mesh material never writes it) and render differently from run to run even in three.js, so they are hidden on override frames |
 
 ## Mismatches found and what was done
 
@@ -315,6 +320,16 @@ each with the reasoning.
   `bench/fuzz-glerr.mjs 14 jrs` finds no erroring call alone): something a previous renderer on the page
   leaves behind in a module-level object. Open.
 * ~~Seed 12 (envMaps generator, 0.125)~~: identical after fix 24.
+* **Seed 58 (points + lines generator, mean 1.58 at frame 3)**: a `MeshPhongMaterial` floor lit by a
+  spot light renders white (saturated) in three.js and grey in jrs on the frame where a custom
+  non-indexed geometry's position attribute is rescaled (`needsUpdate`, the `geometry` mutation); frames
+  0-2 are identical. `autoBatch = false` or `autoBatchMinimum = 1000` makes the frame identical, so it is
+  the batched re-upload path; removing any of the three meshes that share the rescaled geometry (Basic
+  map DoubleSide, Standard with a render-target map) also clears it. Pre-existing (identical on
+  015b35f, 1.80); the scene has a `LineSegments` object, and no subset without `lines` has reproduced it.
+* **Seed 59 (points + lines generator, 0.19 at frame 4, 2.9 on 015b35f)**: independent of batching;
+  four shadow lights, two InstancedMeshes, a Lines object, mutations `order` + `transparent` on frame 4;
+  not isolated yet.
 * **Seed 145 of the earlier generator** (`--seed=145 --disable=envMaps`): 0.082 after fix 24 (was
   0.165); the ShaderMaterial-after-overrideMaterial part remains.
 * **Seed 14 (0.05)**: `MeshPhongMaterial` wireframe lines textured with a render target sample about
@@ -324,19 +339,16 @@ each with the reasoning.
 
 ### Known, excluded from the default feature set (flag to re-enable)
 
-* `perMapTransform`: jrs has ONE uv transform per material (the first map's `offset/repeat/rotation`
-  is applied to every map, see `_updateMaterialBlock`); three.js has a transform per map
-  (`mapTransform`, `alphaMapTransform`, …). Shows up as wrong alpha-test cut-outs or emissive
-  patterns when `map` and `alphaMap` have different transforms. The generator gives all maps of a
-  material the same texture unless the flag is on. A proper fix adds the per-map matrices to the
-  material uniform block (7 more mat3 per material); left for the integrator because it changes
-  the block layout every worker touches.
+* ~~`perMapTransform`~~: on by default since swarm/per-map-transform (one transform per map in the
+  Material block, merged in a178964); the generator's "all maps share the first map's texture" rule
+  only applies when the flag is off.
 * `shaderFog`: `ShaderMaterial` with `fog: true` (three's fog chunks need `fogColor` in the unlit
   colour space and `fogNear/fogFar/fogDensity`); not verified tonight, off to keep the default run
   about what is claimed to work.
 * `agx`: `AgXToneMapping` is not implemented in jrs (README).
-* `points`, `lines`: point-size and line rasterisation were not part of the brief; left off so the
-  default run stays about meshes. They can be enabled for a look.
+* ~~`points`, `lines`~~: on by default since the lines/points/sprites parity merge (a178964); Points are
+  hidden on `overrideMaterial` frames (undefined `gl_PointSize` under a mesh material, non-deterministic
+  in three.js too).
 
 ### Differences that are by design (not in the generator)
 
