@@ -213,6 +213,8 @@ class WebGLPrograms {
 		const currentRenderTarget = renderer.getRenderTarget();
 		const sRGBOutput = (currentRenderTarget === null ? renderer.outputColorSpace : currentRenderTarget.texture.colorSpace) === SRGBColorSpace && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH && materialType !== MATERIAL_NORMAL;
 
+		// batched sprites / points / lines read colour, opacity, rotation, point size, dash sizes ... per object from the matrix texture
+		const instanceMaterial = (variant.objectTexture === true || variant.multiDraw === true) && (materialType === MATERIAL_SPRITE || materialType === MATERIAL_POINTS || materialType === MATERIAL_LINE);
 		const p = {
 			materialType,
 			map, alphaMap, emissiveMap, normalMap, roughnessMap, metalnessMap, aoMap, specularMap,
@@ -228,7 +230,8 @@ class WebGLPrograms {
 			leanShadow,
 			fog, fogExp2: fog && scene.fog.isFogExp2 === true,
 			alphaTest: material.alphaTest > 0,
-			sizeAttenuation: (materialType === MATERIAL_POINTS || materialType === MATERIAL_SPRITE) && material.sizeAttenuation === true,
+			instanceMaterial,
+			sizeAttenuation: !instanceMaterial && (materialType === MATERIAL_POINTS || materialType === MATERIAL_SPRITE) && material.sizeAttenuation === true,
 			premultipliedAlpha: material.premultipliedAlpha === true,
 			dashed: materialType === MATERIAL_LINE && material.isLineDashedMaterial === true,
 			opaque: material.transparent === false && material.blending === NormalBlending && material.alphaToCoverage === false,
@@ -247,7 +250,7 @@ class WebGLPrograms {
 		key = key * 2 + (fog ? 1 : 0); key = key * 2 + (p.alphaTest ? 1 : 0); key = key * 2 + (p.sizeAttenuation ? 1 : 0); key = key * 2 + (p.premultipliedAlpha ? 1 : 0);
 		key = key * 2 + (p.dithering ? 1 : 0); key = key * 2 + (hasUv1 ? 1 : 0); key = key * 8 + toneMapping; key = key * 2 + (sRGBOutput ? 1 : 0);
 		key = key * 8 + numDirShadows; key = key * 8 + numSpotShadows; key = key * 2 + (p.multiDraw ? 1 : 0); key = key * 2 + (p.objectTexture ? 1 : 0); key = key * 2 + (leanShadow ? 1 : 0);
-		key = key * 2 + (p.dashed ? 1 : 0); key = key * 2 + (p.opaque ? 1 : 0);
+		key = key * 2 + (instanceMaterial ? 1 : 0); key = key * 2 + (p.dashed ? 1 : 0); key = key * 2 + (p.opaque ? 1 : 0);
 		p.key = key;
 		return p;
 	}

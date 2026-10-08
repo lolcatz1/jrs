@@ -136,6 +136,11 @@ in vec2 uv1;
 in float lineDistance;
 out float vLineDistance;
 #endif
+#ifdef INSTANCE_MATERIAL
+// batched sprites / points / lines: colour + opacity and a per-kind parameter block travel with the object's matrix
+flat out vec4 vInstA;
+flat out vec4 vInstB;
+#endif
 #ifdef USE_INSTANCING
 in mat4 instanceMatrix;
 	#ifdef USE_INSTANCING_COLOR
@@ -189,9 +194,6 @@ out vec4 vSpotShadowCoord[ NUM_SPOT_SHADOWS ];
 #endif
 
 void main() {
-	#ifdef IS_DASHED
-	vLineDistance = matParams.x * lineDistance;
-	#endif
 	mat4 model = modelMatrix;
 	#ifdef USE_INSTANCING
 	model = model * instanceMatrix;
@@ -199,19 +201,39 @@ void main() {
 	#ifdef USE_OBJECT_TEXTURE
 	model = model * fetchObjectMatrix();
 	#endif
+	#ifdef INSTANCE_MATERIAL
+	// A: rgb + opacity. B: sprite (rotation, size attenuation 0/1, -, alphaTest), points (size, height / 2 if attenuated else 0, -, alphaTest), dashed lines (scale, dashSize, totalSize, alphaTest)
+	vec4 instA = texelFetch( objectMatrices, objectTexel + ivec2( 4, 0 ), 0 );
+	vec4 instB = texelFetch( objectMatrices, objectTexel + ivec2( 5, 0 ), 0 );
+	vInstA = instA;
+	vInstB = instB;
+	#endif
+	#ifdef IS_DASHED
+		#ifdef INSTANCE_MATERIAL
+		vLineDistance = instB.x * lineDistance;
+		#else
+		vLineDistance = matParams.x * lineDistance;
+		#endif
+	#endif
 	#ifdef IS_SPRITE
 		// billboard: sprite plane in view space
 		vec4 mvPosition = viewMatrix * model * vec4( 0.0, 0.0, 0.0, 1.0 );
 		vec2 scale = vec2( length( model[ 0 ].xyz ), length( model[ 1 ].xyz ) );
-		#ifndef SIZE_ATTENUATION
-		if ( projectionMatrix[ 2 ][ 3 ] == - 1.0 ) scale *= - mvPosition.z;
+		#ifdef INSTANCE_MATERIAL
+		if ( instB.y < 0.5 && projectionMatrix[ 2 ][ 3 ] == - 1.0 ) scale *= - mvPosition.z;
+		float spriteRotation = instB.x;
+		#else
+			#ifndef SIZE_ATTENUATION
+			if ( projectionMatrix[ 2 ][ 3 ] == - 1.0 ) scale *= - mvPosition.z;
+			#endif
+		float spriteRotation = matParams2.w;
 		#endif
 		vec2 spriteCenter = uSpriteCenter;
 		#ifdef USE_OBJECT_TEXTURE
 		spriteCenter = texelFetch( objectMatrices, objectTexel + ivec2( 7, 0 ), 0 ).xy;
 		#endif
 		vec2 aligned = ( position.xy - ( spriteCenter - vec2( 0.5 ) ) ) * scale;
-		float c = cos( matParams2.w ), s = sin( matParams2.w );
+		float c = cos( spriteRotation ), s = sin( spriteRotation );
 		vec2 rotated = vec2( c * aligned.x - s * aligned.y, s * aligned.x + c * aligned.y );
 		mvPosition.xy += rotated;
 		// camera right/up axes in world space are rows 0 and 1 of the view matrix
@@ -220,7 +242,12 @@ void main() {
 		vec4 worldPosition = vec4( model[ 3 ].xyz + camRight * rotated.x + camUp * rotated.y, 1.0 );
 	#else
 		vec4 worldPosition = model * vec4( position, 1.0 );
+		#if defined( IS_LINE ) || defined( IS_POINTS )
+		// like three.js: one modelView matrix applied to the vertex (fewer roundings than view * (model * position))
+		vec4 mvPosition = ( viewMatrix * model ) * vec4( position, 1.0 );
+		#else
 		vec4 mvPosition = viewMatrix * worldPosition;
+		#endif
 	#endif
 	#ifndef SHADOW_LEAN
 	vWorldPosition = worldPosition.xyz;
@@ -258,9 +285,14 @@ void main() {
 	vFogDepth = - mvPosition.z;
 	#endif
 	#ifdef IS_POINTS
-	gl_PointSize = matParams2.z;
-		#ifdef SIZE_ATTENUATION
-		if ( projectionMatrix[ 2 ][ 3 ] == - 1.0 ) gl_PointSize *= ( matParams2.w / - mvPosition.z );
+		#ifdef INSTANCE_MATERIAL
+		gl_PointSize = instB.x;
+		if ( instB.y > 0.0 && projectionMatrix[ 2 ][ 3 ] == - 1.0 ) gl_PointSize *= ( instB.y / - mvPosition.z );
+		#else
+		gl_PointSize = matParams2.z;
+			#ifdef SIZE_ATTENUATION
+			if ( projectionMatrix[ 2 ][ 3 ] == - 1.0 ) gl_PointSize *= ( matParams2.w / - mvPosition.z );
+			#endif
 		#endif
 	#endif
 	#if NUM_DIR_SHADOWS > 0
@@ -312,6 +344,10 @@ in float vFogDepth;
 #endif
 #ifdef IS_DASHED
 in float vLineDistance;
+#endif
+#ifdef INSTANCE_MATERIAL
+flat in vec4 vInstA;
+flat in vec4 vInstB;
 #endif
 #ifdef USE_MAP
 uniform sampler2D map;
@@ -496,7 +532,11 @@ vec4 sRGBTransferOETF( in vec4 value ) {
 
 void main() {
 	#ifdef IS_DASHED
-	if ( mod( vLineDistance, matParams.z ) > matParams.y ) discard;
+		#ifdef INSTANCE_MATERIAL
+		if ( mod( vLineDistance, vInstB.z ) > vInstB.y ) discard;
+		#else
+		if ( mod( vLineDistance, matParams.z ) > matParams.y ) discard;
+		#endif
 	#endif
 	#ifdef IS_POINTS
 		#ifdef USE_UV
@@ -505,7 +545,11 @@ void main() {
 		vec2 pointUv = ( mat3( uvTransform0.xyz, uvTransform1.xyz, uvTransform2.xyz ) * vec3( gl_PointCoord.x, 1.0 - gl_PointCoord.y, 1.0 ) ).xy;
 		#endif
 	#endif
+	#ifdef INSTANCE_MATERIAL
+	vec4 diffuseColor = vInstA;
+	#else
 	vec4 diffuseColor = vec4( diffuse.rgb, diffuse.a );
+	#endif
 	#if defined( USE_COLOR ) || defined( USE_INSTANCING_COLOR )
 	diffuseColor *= vColor;
 	#endif
@@ -525,7 +569,11 @@ void main() {
 		#endif
 	#endif
 	#ifdef USE_ALPHATEST
-	if ( diffuseColor.a < emissive.a ) discard;
+		#ifdef INSTANCE_MATERIAL
+		if ( diffuseColor.a < vInstB.w ) discard;
+		#else
+		if ( diffuseColor.a < emissive.a ) discard;
+		#endif
 	#endif
 
 	#ifdef IS_DEPTH
@@ -745,6 +793,7 @@ export function buildBuiltinShader(p) {
 		case MATERIAL_NORMAL: d('IS_NORMAL_MATERIAL'); d('USE_NORMAL'); break;
 		case MATERIAL_DEPTH: case MATERIAL_SHADOW_DEPTH: d('IS_DEPTH'); break;
 		case MATERIAL_POINTS: d('IS_POINTS'); break;
+		case MATERIAL_LINE: d('IS_LINE'); break;
 		case MATERIAL_SPRITE: d('IS_SPRITE'); break;
 	}
 	if (p.leanShadow) d('SHADOW_LEAN');
@@ -770,6 +819,7 @@ export function buildBuiltinShader(p) {
 	if (p.alphaTest) d('USE_ALPHATEST');
 	if (p.sizeAttenuation) d('SIZE_ATTENUATION');
 	if (p.dashed) d('IS_DASHED');
+	if (p.instanceMaterial) d('INSTANCE_MATERIAL');
 	if (p.opaque) d('OPAQUE');
 	if (p.premultipliedAlpha) d('PREMULTIPLIED_ALPHA');
 	if (p.dithering) d('DITHERING');

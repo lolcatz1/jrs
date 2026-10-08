@@ -13,7 +13,7 @@ import { computeNormalMatrix } from '../../core/TransformSlab.js';
 
 const TEX_STRIDE_FLOATS = TEXELS_PER_OBJECT * 4; // model matrix (4 texels) + normal matrix columns (3 texels) + spare
 const MATRICES_PER_ROW = MATRIX_TEXTURE_WIDTH / TEXELS_PER_OBJECT;
-const _f32 = new Float32Array(2), _i32 = new Int32Array(_f32.buffer);
+const _f32 = new Float32Array(10), _i32 = new Int32Array(_f32.buffer);
 
 class WebGLBatcher {
 	constructor(gl) {
@@ -24,8 +24,10 @@ class WebGLBatcher {
 		this.texCapacity = MATRICES_PER_ROW * 8;
 		this.texData = new Float32Array(this.texCapacity * TEX_STRIDE_FLOATS);
 		this.texCount = 0; this.texHash = 0;
+		this.pixelRatio = 1; this.pointScale = 1;
 	}
-	begin() { this.texCount = 0; this.texHash = 0x811c9dc5 | 0; }
+	/** `pixelRatio` and `height` (renderer drawing size in CSS pixels) feed the per-point size math, as in three's refreshUniformsPoints. */
+	begin(pixelRatio = 1, height = 1) { this.texCount = 0; this.texHash = 0x811c9dc5 | 0; this.pixelRatio = pixelRatio; this.pointScale = height * 0.5; }
 	ensureTex(extra) {
 		if (this.texCount + extra > this.texCapacity) {
 			let cap = this.texCapacity;
@@ -36,8 +38,12 @@ class WebGLBatcher {
 			this.texData = nd; this.texCapacity = cap;
 		}
 	}
-	/** Append an object's world matrix and (CPU-cached) normal matrix. Returns its index in the texture. */
-	addTex(object) {
+	/**
+	 * Append an object's world matrix and (CPU-cached) normal matrix. Sprites, points and lines have no normal matrix; the
+	 * texels it would use carry their material's per-object values instead (see INSTANCE_MATERIAL in the vertex shader).
+	 * Returns its index in the texture.
+	 */
+	addTex(object, material) {
 		const d = this.texData, o = this.texCount * TEX_STRIDE_FLOATS;
 		const s = object._slabData, so = object._slabOffset + 16;
 		for (let i = 0; i < 16; i++) d[o + i] = s[so + i];
@@ -51,13 +57,37 @@ class WebGLBatcher {
 			d[o + 16] = s[no]; d[o + 17] = s[no + 1]; d[o + 18] = s[no + 2]; d[o + 19] = 0;
 			d[o + 20] = s[no + 3]; d[o + 21] = s[no + 4]; d[o + 22] = s[no + 5]; d[o + 23] = 0;
 			d[o + 24] = s[no + 6]; d[o + 25] = s[no + 7]; d[o + 26] = s[no + 8]; d[o + 27] = 0;
-		} else if (object.isSprite === true) {
-			// sprites have no normal matrix; their anchor (a plain mutable Vector2) travels in the spare texel
-			const c = object.center;
-			d[o + 28] = c.x; d[o + 29] = c.y;
-			_f32[0] = c.x; _f32[1] = c.y;
-			h = Math.imul(h ^ _i32[0], 16777619);
-			h = Math.imul(h ^ _i32[1], 16777619);
+		} else {
+			let n = 0;
+			if (object.isSprite === true) {
+				// the anchor (a plain mutable Vector2) travels in the last texel
+				const c = object.center;
+				d[o + 28] = c.x; d[o + 29] = c.y;
+				_f32[0] = c.x; _f32[1] = c.y; n = 2;
+				if (material !== undefined && material.isSpriteMaterial === true) { // B: rotation, attenuation flag
+					const color = material.color;
+					d[o + 16] = color.r; d[o + 17] = color.g; d[o + 18] = color.b; d[o + 19] = material.opacity;
+					d[o + 20] = material.rotation; d[o + 21] = material.sizeAttenuation === true ? 1 : 0; d[o + 22] = 0; d[o + 23] = material.alphaTest;
+					n = 10;
+				}
+			} else if (material !== undefined) {
+				if (object.isPoints === true && material.isPointsMaterial === true) {
+					const color = material.color;
+					d[o + 16] = color.r; d[o + 17] = color.g; d[o + 18] = color.b; d[o + 19] = material.opacity;
+					d[o + 20] = material.size * this.pixelRatio; d[o + 21] = material.sizeAttenuation === true ? this.pointScale : 0; d[o + 22] = 0; d[o + 23] = material.alphaTest;
+					n = 8;
+				} else if (object.isLine === true && material.isLineBasicMaterial === true) {
+					const color = material.color;
+					d[o + 16] = color.r; d[o + 17] = color.g; d[o + 18] = color.b; d[o + 19] = material.opacity;
+					if (material.isLineDashedMaterial === true) { d[o + 20] = material.scale; d[o + 21] = material.dashSize; d[o + 22] = material.dashSize + material.gapSize; } else { d[o + 20] = 0; d[o + 21] = 0; d[o + 22] = 1; }
+					d[o + 23] = material.alphaTest;
+					n = 8;
+				}
+			}
+			if (n > 2) for (let k = 0; k < 8; k++) { _f32[k] = d[o + 16 + k]; }
+			// the scratch holds the values in order: sprite adds its centre as two more entries
+			if (n === 10) { _f32[8] = d[o + 28]; _f32[9] = d[o + 29]; }
+			for (let k = 0; k < n; k++) h = Math.imul(h ^ _i32[k], 16777619);
 		}
 		this.texHash = h;
 		return this.texCount++;

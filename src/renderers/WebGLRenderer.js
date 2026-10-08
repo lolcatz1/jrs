@@ -1,6 +1,6 @@
 import {
 	REVISION, NoToneMapping, SRGBColorSpace, LinearSRGBColorSpace, PCFShadowMap, FrontSide, BackSide, DoubleSide,
-	UnsignedByteType, RGBAFormat
+	UnsignedByteType, RGBAFormat, CustomBlending
 } from '../constants.js';
 import { Color } from '../math/Color.js';
 import { ColorManagement } from '../math/ColorManagement.js';
@@ -803,6 +803,26 @@ class WebGLRenderer {
 			object.onBeforeRender === defaultOnBeforeRender && object.onAfterRender === defaultOnAfterRender;
 	}
 
+	/**
+	 * May `next` extend a run that starts at `item`? Same material (and program), or, for sprites / points / lines, whose
+	 * colour, opacity and size/rotation/dash parameters travel per object in the matrix texture, any material that draws
+	 * identically apart from those values.
+	 */
+	_sameRun(item, next) {
+		const a = item.material, b = next.material;
+		if (a === b) return item.program === next.program;
+		if (item.object.isMesh === true) return false;
+		if (a.type !== b.type || a.map !== b.map || a.alphaMap !== b.alphaMap || a.side !== b.side || a.transparent !== b.transparent || a.blending !== b.blending ||
+			a.depthFunc !== b.depthFunc || a.depthTest !== b.depthTest || a.depthWrite !== b.depthWrite || a.colorWrite !== b.colorWrite ||
+			a.premultipliedAlpha !== b.premultipliedAlpha || a.dithering !== b.dithering || a.toneMapped !== b.toneMapped || a.fog !== b.fog ||
+			a.alphaToCoverage !== b.alphaToCoverage || (a.alphaTest > 0) !== (b.alphaTest > 0) || a.polygonOffset !== b.polygonOffset ||
+			a.stencilWrite === true || b.stencilWrite === true || a.vertexColors !== b.vertexColors || a.visible !== b.visible) return false;
+		if (a.blending === CustomBlending) return false;
+		if (a.polygonOffset === true && (a.polygonOffsetFactor !== b.polygonOffsetFactor || a.polygonOffsetUnits !== b.polygonOffsetUnits)) return false;
+		if (a.linewidth !== b.linewidth) return false;
+		return a.isSpriteMaterial === true || a.isPointsMaterial === true || a.isLineBasicMaterial === true;
+	}
+
 	/** Primitive kind of a batchable object; one instanced run draws a single kind (a Line and a LineLoop sharing a geometry are different draws). */
 	_batchKind(object) {
 		if (object.isMesh === true) return KIND_TRIANGLES;
@@ -834,7 +854,7 @@ class WebGLRenderer {
 		this._currentScene = scene;
 		if (this._traceSeq !== null) this._traceList = shadowPass ? 's' : (keys === list.transparentSorted ? 't' : 'o');
 		const batcher = this.batcher;
-		batcher.begin();
+		batcher.begin(this._pixelRatio, this._height);
 		let cmdN = 0, mdN = 0;
 		const autoBatch = this.autoBatch, minimum = this.autoBatchMinimum;
 		const multi = autoBatch && this.autoMultiDraw && this.megaBuffers !== null;
@@ -845,30 +865,35 @@ class WebGLRenderer {
 			let kind = 0; // 0 single, 1 instanced run, 2 multi-draw run
 			if (multi && this._isMultiDrawable(item)) {
 				const page = item.mdRecord.page, indexed = item.mdRecord.indexed, mode = item.mdRecord.mode;
-				let distinct = 1, lastGeometry = item.geometry, firstGroupEnd = -1;
+				let distinct = 1, lastGeometry = item.geometry, firstGroupEnd = -1, kindEnd = -1;
+				const kind0 = this._batchKind(item.object);
 				while (j < n) {
 					const next = list.itemFromKey(keys[j]);
-					if (next.material === item.material && next.program === item.program && next.renderOrder === item.renderOrder &&
+					if (next.renderOrder === item.renderOrder && this._sameRun(item, next) &&
 						this._isMultiDrawable(next) && next.mdRecord.page === page && next.mdRecord.indexed === indexed && next.mdRecord.mode === mode) {
 						if (next.geometry !== lastGeometry) { distinct++; lastGeometry = next.geometry; if (firstGroupEnd < 0) firstGroupEnd = j; }
+						if (kindEnd < 0 && this._batchKind(next.object) !== kind0) kindEnd = j;
 						j++;
 					} else break;
 				}
 				if (firstGroupEnd < 0) firstGroupEnd = j;
+				// an instanced draw uses one geometry and one primitive kind (a Line and a LineLoop expand to the same LINES records but are not the same draw)
+				if (kindEnd >= 0 && kindEnd < firstGroupEnd) firstGroupEnd = kindEnd;
 				// Cost model: a multi-draw costs one call plus a small per-sub-draw cost; an instanced draw
 				// costs one call per distinct geometry. Repeated geometries (sorted contiguously) are
 				// therefore drawn instanced, geometry-group by geometry-group; mostly-distinct runs use multi-draw.
-				if (distinct * 2 >= j - i) { if (j - i >= minimum) kind = 2; }
-				else { j = firstGroupEnd; if (j - i >= minimum) kind = 1; }
+				const min = item.object.isMesh === true ? minimum : Math.min(minimum, 2);
+				if (distinct * 2 >= j - i) { if (j - i >= min) kind = 2; }
+				else { j = firstGroupEnd; if (j - i >= min) kind = 1; }
 			} else if (autoBatch && this._isBatchable(item)) {
 				const kindOf = this._batchKind(item.object);
 				while (j < n) {
 					const next = list.itemFromKey(keys[j]);
-					if (next.geometry === item.geometry && next.material === item.material && next.program === item.program &&
-						next.renderOrder === item.renderOrder && this._isBatchable(next) && this._batchKind(next.object) === kindOf) j++;
+					if (next.geometry === item.geometry && next.renderOrder === item.renderOrder && this._sameRun(item, next) &&
+						this._isBatchable(next) && this._batchKind(next.object) === kindOf) j++;
 					else break;
 				}
-				if (j - i >= minimum) kind = 1;
+				if (j - i >= (kindOf === KIND_TRIANGLES ? minimum : Math.min(minimum, 2))) kind = 1;
 			}
 			if (cmdN === this._cmdCapacity) this._growCommands();
 			this._cmdItem[cmdN] = item;
@@ -881,7 +906,7 @@ class WebGLRenderer {
 				this._cmdMdStart[cmdN] = mdN;
 				for (let k = i; k < j; k++) {
 					const it = list.itemFromKey(keys[k]);
-					batcher.addTex(it.object);
+					batcher.addTex(it.object, it.material);
 					const rec = it.mdRecord;
 					if (rec.indexed) { this._mdCounts[mdN] = rec.indexCount; this._mdOffsets[mdN] = rec.byteOffset; }
 					else { this._mdCounts[mdN] = rec.vertexCount; this._mdOffsets[mdN] = rec.baseVertex; }
@@ -892,7 +917,7 @@ class WebGLRenderer {
 				this._cmdOffset[cmdN] = batcher.texCount;
 				this._cmdCount[cmdN] = j - i;
 				this._cmdKind[cmdN] = 1;
-				for (let k = i; k < j; k++) batcher.addTex(list.itemFromKey(keys[k]).object);
+				for (let k = i; k < j; k++) { const it = list.itemFromKey(keys[k]); batcher.addTex(it.object, it.material); }
 			} else {
 				j = i + 1;
 				this._cmdOffset[cmdN] = -1;
