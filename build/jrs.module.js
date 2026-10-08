@@ -6232,6 +6232,44 @@ var WebGLState = class {
   }
 };
 
+// src/renderers/webgl/LiveSet.js
+var LiveSet = class {
+  constructor() {
+    this.refs = /* @__PURE__ */ new Set();
+    this._adds = 0;
+  }
+  add(record) {
+    record._liveRef = new WeakRef(record);
+    this.refs.add(record._liveRef);
+    if ((++this._adds & 1023) === 0) this._compact();
+  }
+  delete(record) {
+    if (record._liveRef !== void 0) {
+      this.refs.delete(record._liveRef);
+      record._liveRef = void 0;
+    }
+  }
+  _compact() {
+    for (const r of this.refs) if (r.deref() === void 0) this.refs.delete(r);
+  }
+  /** Calls fn(record) for every record that is still alive, then forgets them all. */
+  drain(fn) {
+    for (const r of this.refs) {
+      const rec = r.deref();
+      if (rec !== void 0) {
+        rec._liveRef = void 0;
+        fn(rec);
+      }
+    }
+    this.refs.clear();
+  }
+  get size() {
+    let n = 0;
+    for (const r of this.refs) if (r.deref() !== void 0) n++;
+    return n;
+  }
+};
+
 // src/renderers/webgl/WebGLAttributes.js
 function mergeUpdateRanges(updateRanges) {
   updateRanges.sort((a, b) => a.start - b.start);
@@ -6250,6 +6288,13 @@ function mergeUpdateRanges(updateRanges) {
 var WebGLAttributes = class {
   constructor(gl) {
     this.gl = gl;
+    this.buffers = /* @__PURE__ */ new WeakMap();
+    this.live = new LiveSet();
+  }
+  /** Deletes every buffer still alive (renderer.dispose()). */
+  releaseAll() {
+    const gl = this.gl;
+    this.live.drain((data) => gl.deleteBuffer(data.buffer));
     this.buffers = /* @__PURE__ */ new WeakMap();
   }
   _createBuffer(attribute, bufferType) {
@@ -6323,6 +6368,7 @@ var WebGLAttributes = class {
     if (data) {
       this.gl.deleteBuffer(data.buffer);
       this.buffers.delete(attribute);
+      this.live.delete(data);
     }
   }
   /** Ensures the GPU buffer exists and is current. Returns the record. */
@@ -6332,6 +6378,7 @@ var WebGLAttributes = class {
     if (data === void 0) {
       data = this._createBuffer(attribute, bufferType);
       this.buffers.set(attribute, data);
+      this.live.add(data);
     } else if (data.version < attribute.version) {
       if (data.size !== attribute.array.byteLength) {
         if (attribute.isInstancedBufferAttribute !== true && data.itemSize === attribute.itemSize && data.stride === attribute.stride && data.bytesPerElement === attribute.array.BYTES_PER_ELEMENT && this._typeOf(attribute.array, attribute) === data.type) {
@@ -6360,6 +6407,7 @@ var WebGLTextures = class {
     this.state = state;
     this.info = info;
     this.properties = /* @__PURE__ */ new WeakMap();
+    this.live = new LiveSet();
     this.maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE);
     this.anisotropyExt = gl.getExtension("EXT_texture_filter_anisotropic");
     this.maxAnisotropy = this.anisotropyExt ? gl.getParameter(this.anisotropyExt.MAX_TEXTURE_MAX_ANISOTROPY_EXT) : 0;
@@ -6423,8 +6471,29 @@ var WebGLTextures = class {
     if (p === void 0) {
       p = {};
       this.properties.set(obj, p);
+      this.live.add(p);
     }
     return p;
+  }
+  _forget(obj) {
+    const p = this.properties.get(obj);
+    if (p !== void 0) this.live.delete(p);
+    this.properties.delete(obj);
+  }
+  /** Deletes every texture, framebuffer and renderbuffer still alive, placeholders included (renderer.dispose()). */
+  releaseAll() {
+    const gl = this.gl;
+    this.live.drain((p) => {
+      if (p.webglTexture) gl.deleteTexture(p.webglTexture);
+      if (p.framebuffer) gl.deleteFramebuffer(p.framebuffer);
+      if (p.depthbuffer) gl.deleteRenderbuffer(p.depthbuffer);
+    });
+    if (this._empty !== void 0) {
+      for (const key in this._empty) gl.deleteTexture(this._empty[key]);
+      this._empty = void 0;
+    }
+    this.properties = /* @__PURE__ */ new WeakMap();
+    this.info.memory.textures = 0;
   }
   _onTextureDispose(event) {
     const texture = event.target;
@@ -6434,7 +6503,7 @@ var WebGLTextures = class {
       this.gl.deleteTexture(p.webglTexture);
       this.info.memory.textures--;
     }
-    this.properties.delete(texture);
+    this._forget(texture);
   }
   _onRenderTargetDispose(event) {
     const renderTarget = event.target;
@@ -6455,10 +6524,10 @@ var WebGLTextures = class {
         this.gl.deleteTexture(dp.webglTexture);
         this.info.memory.textures--;
       }
-      this.properties.delete(renderTarget.depthTexture);
+      this._forget(renderTarget.depthTexture);
     }
-    this.properties.delete(renderTarget.texture);
-    this.properties.delete(renderTarget);
+    this._forget(renderTarget.texture);
+    this._forget(renderTarget);
   }
   glType(type) {
     const gl = this.gl;
@@ -16239,6 +16308,56 @@ var WebGLBindingStates = class {
     this.info = info;
     this.cache = /* @__PURE__ */ new WeakMap();
     this._onGeometryDispose = this._onGeometryDispose.bind(this);
+    this._onInstancedMeshDispose = this._onInstancedMeshDispose.bind(this);
+    this._watched = /* @__PURE__ */ new WeakSet();
+    this.live = new LiveSet();
+  }
+  /** Deletes every VAO still alive (renderer.dispose()). */
+  releaseAll() {
+    const gl = this.gl;
+    this.live.drain((entry) => {
+      for (const key in entry.vaos) {
+        const v = entry.vaos[key];
+        if (v) gl.deleteVertexArray(v.vao);
+      }
+      if (entry.custom !== null) for (const r of entry.custom.values()) gl.deleteVertexArray(r.vao);
+      entry.vaos = [null, null, null];
+      entry.custom = null;
+    });
+    this.cache = /* @__PURE__ */ new WeakMap();
+    this._watched = /* @__PURE__ */ new WeakSet();
+  }
+  /** An InstancedMesh's own attributes (matrix, colour) and the VAOs that point at them go with the mesh (as in three.js). */
+  _onInstancedMeshDispose(event) {
+    const mesh = event.target;
+    mesh.removeEventListener("dispose", this._onInstancedMeshDispose);
+    this._watched.delete(mesh);
+    if (mesh.instanceMatrix) this.attributes.remove(mesh.instanceMatrix);
+    if (mesh.instanceColor) this.attributes.remove(mesh.instanceColor);
+    const entry = this.cache.get(mesh.geometry);
+    if (entry !== void 0 && entry.instancedFor === mesh) {
+      const v = entry.vaos[1];
+      if (v) {
+        this.gl.deleteVertexArray(v.vao);
+        entry.vaos[1] = null;
+      }
+      if (entry.custom !== null) {
+        for (const [key, r] of entry.custom) if ((key & 3) === 1) {
+          this.gl.deleteVertexArray(r.vao);
+          entry.custom.delete(key);
+        }
+      }
+      entry.instancedFor = null;
+      if (this.state.currentVAO !== null) {
+        this.gl.bindVertexArray(null);
+        this.state.currentVAO = null;
+      }
+    }
+  }
+  _watchInstanced(mesh) {
+    if (this._watched.has(mesh)) return;
+    this._watched.add(mesh);
+    mesh.addEventListener("dispose", this._onInstancedMeshDispose);
   }
   _onGeometryDispose(event) {
     const geometry = event.target;
@@ -16251,6 +16370,7 @@ var WebGLBindingStates = class {
       }
       if (entry.custom !== null) for (const r of entry.custom.values()) this.gl.deleteVertexArray(r.vao);
       this.cache.delete(geometry);
+      this.live.delete(entry);
       if (this.info !== null) this.info.memory.geometries--;
     }
     for (const name in geometry.attributes) this.attributes.remove(geometry.attributes[name]);
@@ -16261,6 +16381,7 @@ var WebGLBindingStates = class {
     if (entry === void 0) {
       entry = { vaos: [null, null, null], layoutVersion: -1, instancedFor: null, hadInstanceColor: false, custom: null, attrList: null, versionSum: -1, epoch: -1, epochMode: -1 };
       this.cache.set(geometry, entry);
+      this.live.add(entry);
       geometry.addEventListener("dispose", this._onGeometryDispose);
       if (this.info !== null) this.info.memory.geometries++;
     }
@@ -16323,6 +16444,7 @@ var WebGLBindingStates = class {
       if (attributes.update(attribute, gl.ARRAY_BUFFER).buffer !== beforeBuffer) rebuild = true;
     }
     if (mode === 1) {
+      this._watchInstanced(instancedObject);
       const im = instancedObject.instanceMatrix;
       const before = attributes.get(im);
       const beforeBuffer = before !== void 0 ? before.buffer : null;
@@ -16605,6 +16727,7 @@ var WebGLBatcher = class {
 var NO_HOOK = BufferAttribute.prototype.onUploadCallback;
 var PAGE_VERTICES = 1 << 18;
 var PAGE_INDEX_RATIO = 4;
+var EMPTY_PAGE_GRACE_FRAMES = 30;
 var MAX_STAGE_BYTES = 1 << 20;
 var DYNAMIC_UPLOADS_BEFORE_EVICTION = 3;
 function glTypeOf(gl, array) {
@@ -16673,6 +16796,7 @@ var Page2 = class {
     this.bufferIds = {};
     this.indexBufferId = ++bufferIdCounter;
     this.vao = gl.createVertexArray();
+    this.emptySince = -1;
     gl.bindVertexArray(this.vao);
     for (const a of layout.attributes) {
       const buffer = gl.createBuffer();
@@ -16693,6 +16817,10 @@ var Page2 = class {
     gl.bindVertexArray(null);
     gl.bindBuffer(gl.ARRAY_BUFFER, null);
   }
+  isEmpty() {
+    const v = this.vertexAlloc, i = this.indexAlloc;
+    return v.starts.length === 1 && v.sizes[0] === this.capacity && i.starts.length === 1 && i.sizes[0] === this.indexCapacity;
+  }
   dispose() {
     const gl = this.gl;
     gl.deleteVertexArray(this.vao);
@@ -16710,6 +16838,7 @@ var WebGLMegaBuffers = class {
     this.state = state;
     this.info = info;
     this.maxAttributes = gl.getParameter(gl.MAX_VERTEX_ATTRIBS);
+    this.pages = [];
     this.layouts = /* @__PURE__ */ new Map();
     this.records = /* @__PURE__ */ new WeakMap();
     this._onGeometryDispose = this._onGeometryDispose.bind(this);
@@ -16853,6 +16982,7 @@ var WebGLMegaBuffers = class {
       const cap = Math.max(PAGE_VERTICES, vertexCount), icap = Math.max(PAGE_VERTICES * PAGE_INDEX_RATIO, indexCount);
       page = new Page2(this.gl, layout, cap, icap);
       layout.pages.push(page);
+      this.pages.push(page);
       this.state.currentVAO = null;
       this.state.currentArrayBuffer = null;
       baseVertex = page.vertexAlloc.alloc(vertexCount);
@@ -17028,9 +17158,35 @@ var WebGLMegaBuffers = class {
     }
     return pos + bytes;
   }
+  /** Once per frame (outermost render call): deletes pages that have held no geometry for EMPTY_PAGE_GRACE_FRAMES frames. */
+  sweep(frame) {
+    const pages = this.pages;
+    for (let i = pages.length - 1; i >= 0; i--) {
+      const page = pages[i];
+      if (!page.isEmpty()) {
+        page.emptySince = -1;
+        continue;
+      }
+      if (page.emptySince < 0) {
+        page.emptySince = frame;
+        continue;
+      }
+      if (frame - page.emptySince < EMPTY_PAGE_GRACE_FRAMES) continue;
+      const list = page.layout.pages, at = list.indexOf(page);
+      if (at !== -1) list.splice(at, 1);
+      pages.splice(i, 1);
+      page.dispose();
+      if (this.state.currentVAO !== null) {
+        this.gl.bindVertexArray(null);
+        this.state.currentVAO = null;
+      }
+      this.state.currentArrayBuffer = null;
+    }
+  }
   dispose() {
     for (const layout of this.layouts.values()) for (const p of layout.pages) p.dispose();
     this.layouts.clear();
+    this.pages.length = 0;
     this.records = /* @__PURE__ */ new WeakMap();
     this._segs.length = 0;
     this._notify.length = 0;
@@ -17353,6 +17509,12 @@ var WebGLInfo = class {
     this.programs = null;
     this.autoReset = true;
   }
+  /** A new GL context replaced the old one: nothing the old one held exists any more. */
+  rebind(gl) {
+    this.gl = gl;
+    this.memory.geometries = 0;
+    this.memory.textures = 0;
+  }
   update(count, mode, instanceCount) {
     const gl = this.gl;
     this.render.calls++;
@@ -17622,6 +17784,15 @@ var WebGLShadowMap = class {
     this._renderOrderList = [];
     this.skipped = 0;
     this.rendered = 0;
+  }
+  /** Forgets every per-light record and list; the depth maps themselves are render targets released with the textures. */
+  dispose() {
+    this.lists = /* @__PURE__ */ new WeakMap();
+    this.records = /* @__PURE__ */ new WeakMap();
+    this._epoch++;
+    this._renderOrders.clear();
+    this._casterCount = 0;
+    this._casters.length = 0;
   }
   render(lights, scene, camera) {
     const renderer = this.renderer;
@@ -18587,6 +18758,9 @@ var ITEM_BATCHABLE = 1;
 var ITEM_MULTIDRAWABLE = 2;
 var defaultOnBeforeRender = Object3D.prototype.onBeforeRender;
 var defaultOnAfterRender = Object3D.prototype.onAfterRender;
+var GL_DELETERS = ["deleteBuffer", "deleteTexture", "deleteVertexArray", "deleteProgram", "deleteShader", "deleteFramebuffer", "deleteRenderbuffer"];
+var _noop = () => {
+};
 var WebGLRenderer = class {
   constructor(parameters = {}) {
     const {
@@ -18662,7 +18836,54 @@ var WebGLRenderer = class {
     this._onContextRestore = this._onContextRestore.bind(this);
     canvas.addEventListener && canvas.addEventListener("webglcontextlost", this._onContextLost, false);
     canvas.addEventListener && canvas.addEventListener("webglcontextrestored", this._onContextRestore, false);
-    this.info = new WebGLInfo(gl);
+    this.xr = { enabled: false, isPresenting: false, cameraAutoUpdate: true, getCamera: () => null, updateCamera: () => {
+    }, setAnimationLoop: () => {
+    }, addEventListener: () => {
+    }, removeEventListener: () => {
+    }, getSession: () => null, setSession: async () => {
+    }, getFrame: () => null, getReferenceSpace: () => null, setReferenceSpaceType: () => {
+    }, setFramebufferScaleFactor: () => {
+    }, getFoveation: () => void 0, setFoveation: () => {
+    }, hasDepthSensing: () => false, getDepthSensingMesh: () => null };
+    this._glEpoch = 0;
+    this._onMaterialDispose = this._onMaterialDispose.bind(this);
+    this._initGLContext();
+    this._renderOrderList = [];
+    this._lastNotedRenderOrder = NaN;
+    this._rankOfRenderOrder = (ro) => this._rankOf(ro);
+    this._cmdCapacity = 1024;
+    this._cmdItem = new Array(this._cmdCapacity);
+    this._cmdOffset = new Int32Array(this._cmdCapacity);
+    this._cmdCount = new Int32Array(this._cmdCapacity);
+    this._cmdKind = new Int8Array(this._cmdCapacity);
+    this._cmdMdStart = new Int32Array(this._cmdCapacity);
+    this._cmdN = 0;
+    this.reuseRenderLists = true;
+    this.flatSceneUpdate = true;
+    this._flatGraph = null;
+    this._flatMerged = false;
+    this._deferSkeletons = false;
+    this._skinnedPending = [];
+    this._zTmp = new Float64Array(1);
+    this._rec = null;
+    this._buildSeq = 0;
+    this._touchMap = /* @__PURE__ */ new Map();
+    this._megaTouch = null;
+    this._verifyList = null;
+    this._currentProgram = null;
+    this._currentMaterial = null;
+    this._currentCamera = null;
+    this._currentGeometryRecord = null;
+    this._animationLoop = null;
+    this._requestId = null;
+    this._onAnimationFrame = this._onAnimationFrame.bind(this);
+  }
+  /** Creates every GL object and GL-dependent subsystem of the renderer (constructor, and again after a lost context is restored). */
+  _initGLContext() {
+    const gl = this._gl, canvas = this.domElement;
+    const epoch = ++this._glEpoch;
+    if (this.info === void 0) this.info = new WebGLInfo(gl);
+    else this.info.rebind(gl);
     this.state = new WebGLState(gl);
     this.attributes = new WebGLAttributes(gl);
     this.textures = new WebGLTextures(gl, this.state, this.info);
@@ -18678,7 +18899,7 @@ var WebGLRenderer = class {
     this._mdN = 0;
     this._mdUsedThisFrame = false;
     this.morphtargets = new WebGLMorphtargets(this.textures.maxTextureSize);
-    this.shadowMap = new WebGLShadowMap(this);
+    if (this.shadowMap === void 0) this.shadowMap = new WebGLShadowMap(this);
     this.properties = { get: (obj) => this._materialProps(obj) };
     this.info.programs = this.programs.programs;
     this.capabilities = {
@@ -18711,15 +18932,6 @@ var WebGLRenderer = class {
       init: () => {
       }
     };
-    this.xr = { enabled: false, isPresenting: false, cameraAutoUpdate: true, getCamera: () => null, updateCamera: () => {
-    }, setAnimationLoop: () => {
-    }, addEventListener: () => {
-    }, removeEventListener: () => {
-    }, getSession: () => null, setSession: async () => {
-    }, getFrame: () => null, getReferenceSpace: () => null, setReferenceSpaceType: () => {
-    }, setFramebufferScaleFactor: () => {
-    }, getFoveation: () => void 0, setFoveation: () => {
-    }, hasDepthSensing: () => false, getDepthSensingMesh: () => null };
     this._frameData = new Float32Array(FRAME_BLOCK_SIZE / 4);
     this._frameUploaded = new Float32Array(FRAME_BLOCK_SIZE / 4);
     this._lightsUploaded = new Float32Array(LIGHTS_BLOCK_SIZE / 4);
@@ -18735,6 +18947,7 @@ var WebGLRenderer = class {
     this._materialPad = (this._materialStride - MATERIAL_BLOCK_SIZE) / 16;
     this._materialArrayOk = probeMaterialArray(gl);
     this._batchGroups = /* @__PURE__ */ new Map();
+    this._lifetimeRegistry = typeof FinalizationRegistry !== "undefined" ? new FinalizationRegistry((held) => this._releaseHeld(held)) : null;
     this._batchSigScratch = new Float64Array(BATCH_SIG_SIZE);
     this._materialCapacity = Math.ceil(256 / this._materialWindow) * this._materialWindow;
     this._materialBuffer = gl.createBuffer();
@@ -18748,36 +18961,10 @@ var WebGLRenderer = class {
     this.state.bindUniformBufferRange(BLOCK_LIGHTS, this._lightsBuffer, 0, LIGHTS_BLOCK_SIZE);
     this._materialProperties = /* @__PURE__ */ new WeakMap();
     this._wireframeGeometries = /* @__PURE__ */ new WeakMap();
-    this._onMaterialDispose = this._onMaterialDispose.bind(this);
-    this._renderOrderList = [];
-    this._lastNotedRenderOrder = NaN;
-    this._rankOfRenderOrder = (ro) => this._rankOf(ro);
-    this._cmdCapacity = 1024;
-    this._cmdItem = new Array(this._cmdCapacity);
-    this._cmdOffset = new Int32Array(this._cmdCapacity);
-    this._cmdCount = new Int32Array(this._cmdCapacity);
-    this._cmdKind = new Int8Array(this._cmdCapacity);
-    this._cmdMdStart = new Int32Array(this._cmdCapacity);
-    this._cmdN = 0;
-    this.reuseRenderLists = true;
-    this.flatSceneUpdate = true;
-    this._flatGraph = null;
-    this._flatMerged = false;
-    this._deferSkeletons = false;
-    this._skinnedPending = [];
-    this._zTmp = new Float64Array(1);
-    this._rec = null;
-    this._buildSeq = 0;
-    this._touchMap = /* @__PURE__ */ new Map();
-    this._megaTouch = null;
-    this._verifyList = null;
     this._currentProgram = null;
     this._currentMaterial = null;
-    this._currentCamera = null;
     this._currentGeometryRecord = null;
-    this._animationLoop = null;
-    this._requestId = null;
-    this._onAnimationFrame = this._onAnimationFrame.bind(this);
+    this._currentSide = -1;
   }
   // ------------------------------------------------------------------ public API
   get outputColorSpace() {
@@ -18919,30 +19106,81 @@ var WebGLRenderer = class {
   clearStencil() {
     this.clear(false, false, true);
   }
+  /** Releases every GPU resource the renderer owns or created for scene objects: programs, buffers, VAOs, textures, framebuffers. */
   dispose() {
+    if (this._disposed === true) return;
     const canvas = this.domElement;
     canvas.removeEventListener && canvas.removeEventListener("webglcontextlost", this._onContextLost, false);
     canvas.removeEventListener && canvas.removeEventListener("webglcontextrestored", this._onContextRestore, false);
+    this.setAnimationLoop(null);
+    this._releaseGL();
+    this._disposed = true;
+  }
+  /**
+   * Releases every GL object. With `discard` (a restored context) the objects are already gone with the old context, so
+   * the delete calls would only raise "object does not belong to this context": they are replaced by no-ops meanwhile.
+   */
+  _releaseGL(discard = false) {
+    const gl = this._gl;
+    if (discard === true) {
+      for (let i = 0; i < GL_DELETERS.length; i++) gl[GL_DELETERS[i]] = _noop;
+    }
+    try {
+      this._releaseGLObjects(gl);
+    } finally {
+      if (discard === true) for (let i = 0; i < GL_DELETERS.length; i++) delete gl[GL_DELETERS[i]];
+    }
+  }
+  _releaseGLObjects(gl) {
+    this.textures.releaseAll();
+    this.bindingStates.releaseAll();
+    this.attributes.releaseAll();
     this.programs.dispose();
     this.batcher.dispose();
     if (this.megaBuffers !== null) this.megaBuffers.dispose();
-    this._gl.deleteBuffer(this._frameBuffer);
-    this._gl.deleteBuffer(this._lightsBuffer);
-    this._gl.deleteBuffer(this._materialBuffer);
-    this.setAnimationLoop(null);
+    gl.deleteBuffer(this._frameBuffer);
+    gl.deleteBuffer(this._lightsBuffer);
+    gl.deleteBuffer(this._materialBuffer);
+    this.renderLists.dispose();
+    this.shadowMap.dispose();
+    this._materialProperties = /* @__PURE__ */ new WeakMap();
+    this._wireframeGeometries = /* @__PURE__ */ new WeakMap();
+    this._batchGroups.clear();
+    this._materialSlotsUsed = 0;
+    this._materialFreeSlots = [];
+    this._glEpoch++;
+    this.info.memory.geometries = 0;
+    this.info.memory.textures = 0;
+    this.info.programs.length = 0;
+  }
+  _ensureGL() {
+    if (this._disposed !== true) return;
+    this._disposed = false;
+    const canvas = this.domElement;
+    canvas.addEventListener && canvas.addEventListener("webglcontextlost", this._onContextLost, false);
+    canvas.addEventListener && canvas.addEventListener("webglcontextrestored", this._onContextRestore, false);
+    this._rebuildGL();
+  }
+  /** Fresh GL-dependent subsystems on the (possibly new) context state. */
+  _rebuildGL() {
+    this._initGLContext();
+    this.state.reset();
+    this._blocksValid = false;
+    this._lastLightsVersion = -1;
+    this._currentRenderTarget = null;
+    this.setViewport(this._viewport);
+    this.setScissor(this._scissor);
+    this.setScissorTest(this._scissorTest);
+    this._applyClearColor();
   }
   _onContextLost(event) {
     event.preventDefault();
     this._isContextLost = true;
   }
   _onContextRestore() {
+    this._releaseGL(true);
     this._isContextLost = false;
-    this._blocksValid = false;
-    this.state.reset();
-    this.programs.dispose();
-    this._materialProperties = /* @__PURE__ */ new WeakMap();
-    this.shadowMap._epoch++;
-    this.renderLists.dispose();
+    this._rebuildGL();
   }
   setAnimationLoop(callback) {
     this._animationLoop = callback;
@@ -19038,6 +19276,7 @@ var WebGLRenderer = class {
       return;
     }
     if (this._isContextLost === true) return;
+    if (this._disposed === true) this._ensureGL();
     const gl = this._gl;
     const savedFlat = this._flatGraph, savedMerged = this._flatMerged;
     const flat = this.flatSceneUpdate === true && scene.isObject3D === true ? this._flatGraphFor(scene) : null;
@@ -19050,6 +19289,7 @@ var WebGLRenderer = class {
       if (camera.parent === null && camera.matrixWorldAutoUpdate === true) camera.updateMatrixWorld();
     }
     this._frameId = ++_frameCounter;
+    if (this._renderCallDepth === 0 && this.megaBuffers !== null) this.megaBuffers.sweep(this._frameId);
     this._renderCallDepth++;
     this._currentCamera = camera;
     this._currentScene = scene;
@@ -19949,7 +20189,7 @@ var WebGLRenderer = class {
   _batchGroupOf(material) {
     if (this._materialArrayOk !== true || this.autoBatch !== true || this.autoBatchMaterials !== true || material.isShaderMaterial === true) return null;
     const props = this._materialProps(material);
-    if (props.blockSlot < 0) this._allocMaterialSlot(props);
+    if (props.blockSlot < 0) this._allocMaterialSlot(props, material);
     const s = this._batchSigScratch;
     let k = 0;
     for (let i = 0; i < MAP_KEYS.length; i++) {
@@ -20007,11 +20247,33 @@ var WebGLRenderer = class {
     const key = Array.prototype.join.call(s, ",");
     let group = this._batchGroups.get(key);
     if (group === void 0) {
-      group = { _frameStamp: -1, _frameRid: 0, page: s[BATCH_SIG_SIZE - 1] };
+      group = { _frameStamp: -1, _frameRid: 0, page: s[BATCH_SIG_SIZE - 1], key, refs: 0 };
       this._batchGroups.set(key, group);
     }
-    props.batchGroup = group;
+    this._setBatchGroup(props, material, group);
     return group;
+  }
+  _setBatchGroup(props, material, group) {
+    if (props.batchGroup === group) return;
+    if (props.batchGroup !== null) this._releaseGroup(props.batchGroup);
+    group.refs++;
+    props.batchGroup = group;
+    this._registerLifetime(props, material);
+  }
+  _releaseGroup(group) {
+    if (--group.refs <= 0 && this._batchGroups.get(group.key) === group) this._batchGroups.delete(group.key);
+  }
+  /** (Re)registers what the material holds (batch group, buffer slot) to be given back if it is collected without dispose(). */
+  _registerLifetime(props, material) {
+    const registry = this._lifetimeRegistry;
+    if (registry === null) return;
+    registry.unregister(props);
+    registry.register(material, { group: props.batchGroup, slot: props.blockSlot, epoch: this._glEpoch }, props);
+  }
+  _releaseHeld(held) {
+    if (held.epoch !== this._glEpoch) return;
+    if (held.group !== null) this._releaseGroup(held.group);
+    if (held.slot >= 0) this._materialFreeSlots.push(held.slot);
   }
   /** Resolve the program of every item in the list. Runs after the frame's lights are collected. */
   _resolvePrograms(list, scene) {
@@ -20086,7 +20348,15 @@ var WebGLRenderer = class {
           if (e.altProgram !== null) this.programs.releaseProgram(e.altProgram);
         }
       }
-      if (props.blockSlot >= 0) this._materialFreeSlots.push(props.blockSlot);
+      if (props.batchGroup !== null) {
+        this._releaseGroup(props.batchGroup);
+        props.batchGroup = null;
+      }
+      if (props.blockSlot >= 0) {
+        this._materialFreeSlots.push(props.blockSlot);
+        props.blockSlot = -1;
+      }
+      if (this._lifetimeRegistry !== null) this._lifetimeRegistry.unregister(props);
     }
     this._materialProperties.delete(material);
   }
@@ -20150,7 +20420,7 @@ var WebGLRenderer = class {
     return program;
   }
   /** Give the material a record slot in the shared material buffer (growing the buffer when full). */
-  _allocMaterialSlot(props) {
+  _allocMaterialSlot(props, material) {
     const gl = this._gl;
     let slot = this._materialFreeSlots.pop();
     if (slot === void 0) {
@@ -20172,13 +20442,14 @@ var WebGLRenderer = class {
     }
     props.blockSlot = slot;
     props.blockData.fill(NaN);
+    this._registerLifetime(props, material);
   }
   /** Refresh the material's uniform block (once per frame per material) and return its byte offset. */
   _syncMaterialBlock(material, props) {
     if (props.blockStamp === this._frameId) return props.blockSlot * this._materialStride;
     props.blockStamp = this._frameId;
     const gl = this._gl;
-    if (props.blockSlot < 0) this._allocMaterialSlot(props);
+    if (props.blockSlot < 0) this._allocMaterialSlot(props, material);
     const s = this._materialScratch;
     const color = material.color;
     if (color !== void 0) {
