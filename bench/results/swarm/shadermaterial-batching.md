@@ -140,6 +140,9 @@ GL calls per frame, shader-client (three -> jrs before -> jrs after): total 3,80
 1,313 -> 1,313 -> **132** (plus 165 `multiDrawElementsWEBGL` on the extension object, which the GL
 counter does not see; `renderer.info.render.calls` = 297); `useProgram` 13 -> 13 -> 13;
 `bindTexture` 171 -> 171 -> 177 (the matrix texture is re-bound per batch through the state cache).
+After the later integration merges the `bindTexture` count of this scene reads 859 for jrs on every
+branch, the integration branch's own `latest.json` included (855 with 1,313 draws), so that is an
+upstream change in sampler binding, not part of this branch; the draw and uniform counts are as above.
 The remaining 481 uniform calls are the materials' own uniforms re-sent on every program switch
 (24 material instances x ~20 changed values: `drawBase` per batch, the per-material samplers'
 `bindTexture`s, and the two animated shared uniforms), i.e. the per-material cost the uniform-list
