@@ -107,6 +107,7 @@ class WebGLRenderer {
 		this._currentRenderTarget = null;
 		this._renderCallDepth = 0;
 		this._frameId = 0;
+		this._cameraLayerMask = 1;
 		this._envVersion = 0;
 		// env version = lights epoch * 65536 + interned id of the (tone mapping, colour space, shadows, fog)
 		// state, so switching between render targets and the screen revisits the same version instead
@@ -383,6 +384,7 @@ class WebGLRenderer {
 		list.init();
 		this.lights.begin();
 		this._renderOrderReset();
+		this._cameraLayerMask = camera.layers.mask;
 		this._projectObject(scene, camera, 0, this.sortObjects, list);
 		this.lights.end(this.shadowMap.enabled);
 		if (this.lights.version !== this._lastLightsVersion) { this._lastLightsVersion = this.lights.version; this._lightsEpoch++; this._envVersion = this._lightsEpoch * 65536 + this._envKeyId; }
@@ -522,41 +524,27 @@ class WebGLRenderer {
 		}
 		const s = object._slabData, o = object._slabOffset;
 		const c = bs.center;
-		if (object._cullVersion !== object._worldVersion || object._cullSphere !== bs || object._cullRadius !== bs.radius || object._cullCx !== c.x || object._cullCy !== c.y || object._cullCz !== c.z) {
+		// double-valued cache keys live in the object's snapshot record, contiguous with the change-detection data
+		const n = object._snapData, q = object._snapOffset + 10;
+		const cx = c.x, cy = c.y, cz = c.z, r = bs.radius;
+		if (object._cullVersion !== object._worldVersion || object._cullSphere !== bs || n[q] !== r || n[q + 1] !== cx || n[q + 2] !== cy || n[q + 3] !== cz) {
 			const e = o + 16;
-			const x = c.x, y = c.y, z = c.z;
 			const e0 = s[e], e1 = s[e + 1], e2 = s[e + 2], e4 = s[e + 4], e5 = s[e + 5], e6 = s[e + 6], e8 = s[e + 8], e9 = s[e + 9], e10 = s[e + 10];
-			s[o + 41] = e0 * x + e4 * y + e8 * z + s[e + 12];
-			s[o + 42] = e1 * x + e5 * y + e9 * z + s[e + 13];
-			s[o + 43] = e2 * x + e6 * y + e10 * z + s[e + 14];
+			s[o + 41] = e0 * cx + e4 * cy + e8 * cz + s[e + 12];
+			s[o + 42] = e1 * cx + e5 * cy + e9 * cz + s[e + 13];
+			s[o + 43] = e2 * cx + e6 * cy + e10 * cz + s[e + 14];
 			const sx = e0 * e0 + e1 * e1 + e2 * e2, sy = e4 * e4 + e5 * e5 + e6 * e6, sz = e8 * e8 + e9 * e9 + e10 * e10;
-			s[o + 44] = bs.radius * Math.sqrt(sx > sy ? (sx > sz ? sx : sz) : (sy > sz ? sy : sz));
-			object._cullVersion = object._worldVersion; object._cullSphere = bs; object._cullRadius = bs.radius;
-			object._cullCx = c.x; object._cullCy = c.y; object._cullCz = c.z;
+			s[o + 44] = r * Math.sqrt(sx > sy ? (sx > sz ? sx : sz) : (sy > sz ? sy : sz));
+			object._cullVersion = object._worldVersion; object._cullSphere = bs;
+			n[q] = r; n[q + 1] = cx; n[q + 2] = cy; n[q + 3] = cz;
 		}
 		return frustum.intersectsSphereFlat(s[o + 41], s[o + 42], s[o + 43], s[o + 44]);
 	}
 
 	_projectObject(object, camera, groupOrder, sortObjects, list) {
 		if (object.visible === false) return;
-		const visible = object.layers.test(camera.layers);
-		if (visible) {
-			if (object.isGroup) {
-				groupOrder = object.renderOrder;
-			} else if (object.isLOD) {
-				if (object.autoUpdate === true) object.update(camera);
-			} else if (object.isLight) {
-				this.lights.push(object);
-			} else if (object.isSprite) {
-				if (!object.frustumCulled || _frustum.intersectsSprite(object)) {
-					const material = object.material;
-					if (material.visible) {
-						const we = object.matrixWorld.elements, ve = camera.matrixWorldInverse.elements;
-						list.zScratch[0] = -(ve[2] * we[12] + ve[6] * we[13] + ve[10] * we[14] + ve[14]);
-						this._pushItem(list, object, object.geometry, material, null, false);
-					}
-				}
-			} else if (object.isMesh || object.isLine || object.isPoints) {
+		if ((object.layers.mask & this._cameraLayerMask) !== 0) {
+			if (object.isMesh === true || object.isLine === true || object.isPoints === true) {
 				const geometry = object.geometry;
 				const material = object.material;
 				if (!object.frustumCulled || this._cullTest(object, geometry, _frustum)) {
@@ -579,6 +567,21 @@ class WebGLRenderer {
 						}
 					} else if (material.visible) {
 						this._pushItem(list, object, geometry, material, null, false);
+					}
+				}
+			} else if (object.isGroup) {
+				groupOrder = object.renderOrder;
+			} else if (object.isLOD) {
+				if (object.autoUpdate === true) object.update(camera);
+			} else if (object.isLight) {
+				this.lights.push(object);
+			} else if (object.isSprite) {
+				if (!object.frustumCulled || _frustum.intersectsSprite(object)) {
+					const material = object.material;
+					if (material.visible) {
+						const we = object.matrixWorld.elements, ve = camera.matrixWorldInverse.elements;
+						list.zScratch[0] = -(ve[2] * we[12] + ve[6] * we[13] + ve[10] * we[14] + ve[14]);
+						this._pushItem(list, object, object.geometry, material, null, false);
 					}
 				}
 			}
