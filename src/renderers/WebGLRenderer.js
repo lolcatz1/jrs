@@ -31,6 +31,11 @@ const _vector3 = /*@__PURE__*/ new Vector3();
 const _color = /*@__PURE__*/ new Color();
 const _frustum = /*@__PURE__*/ new Frustum();
 const _emptyScene = { fog: null, environment: null, background: null, overrideMaterial: null, isScene: true, matrixWorldAutoUpdate: false, children: [], visible: true };
+function _sameWords(a, b) {
+	for (let i = 0, n = a.length; i < n; i++) if (a[i] !== b[i]) return false;
+	return true;
+}
+let _frameCounter = 0; // unique across renderers so per-material frame stamps cannot collide
 
 // variant bits for program selection
 const V_INSTANCING = 1, V_INSTANCING_COLOR = 2, V_RECEIVE_SHADOW = 4, V_SHADOW_PASS = 8;
@@ -108,7 +113,7 @@ class WebGLRenderer {
 		this._renderCallDepth = 0;
 		this._frameId = 0;
 		this._envVersion = 0;
-		this._lastEnvKey = '';
+		this._envToneMapping = NaN; this._envColorSpace = ''; this._envShadows = false; this._envFog = -1;
 		this._lastLightsVersion = -1;
 		this._samplerStamp = 0;
 		this._programCounter = 0;
@@ -164,6 +169,7 @@ class WebGLRenderer {
 		this._frameBuffer = gl.createBuffer();
 		gl.bindBuffer(gl.UNIFORM_BUFFER, this._frameBuffer);
 		gl.bufferData(gl.UNIFORM_BUFFER, FRAME_BLOCK_SIZE, gl.DYNAMIC_DRAW);
+		this._lightsUploaded = new Int32Array(LIGHTS_BLOCK_SIZE / 4); this._lightsUploadedValid = false; // last image written to the lights UBO
 		this._lightsBuffer = gl.createBuffer();
 		gl.bindBuffer(gl.UNIFORM_BUFFER, this._lightsBuffer);
 		gl.bufferData(gl.UNIFORM_BUFFER, LIGHTS_BLOCK_SIZE, gl.DYNAMIC_DRAW);
@@ -284,7 +290,7 @@ class WebGLRenderer {
 		this.setAnimationLoop(null);
 	}
 	_onContextLost(event) { event.preventDefault(); this._isContextLost = true; }
-	_onContextRestore() { this._isContextLost = false; this.state.reset(); this.programs.dispose(); this._materialProperties = new WeakMap(); }
+	_onContextRestore() { this._isContextLost = false; this._lightsUploadedValid = false; this.state.reset(); this.programs.dispose(); this._materialProperties = new WeakMap(); }
 	setAnimationLoop(callback) {
 		this._animationLoop = callback;
 		if (this._requestId !== null) { cancelAnimationFrame(this._requestId); this._requestId = null; }
@@ -357,7 +363,7 @@ class WebGLRenderer {
 		const gl = this._gl;
 		if (scene.matrixWorldAutoUpdate === true) scene.updateMatrixWorld();
 		if (camera.parent === null && camera.matrixWorldAutoUpdate === true) camera.updateMatrixWorld();
-		this._frameId++;
+		this._frameId = ++_frameCounter;
 		this._renderCallDepth++;
 		this._currentCamera = camera;
 		this._currentScene = scene;
@@ -386,9 +392,13 @@ class WebGLRenderer {
 
 		// per-frame blocks (light data is filled after the shadow pass so shadow matrices are current)
 		this.lights.fill();
-		gl.bindBuffer(gl.UNIFORM_BUFFER, this._lightsBuffer);
-		gl.bufferSubData(gl.UNIFORM_BUFFER, 0, this.lights.data);
-		this.state.currentUniformBuffer = this._lightsBuffer;
+		// (identical contents, e.g. the 2nd/3rd pass of a static multi-pass frame, are not re-uploaded)
+		if (this._lightsUploadedValid !== true || !_sameWords(this.lights.ints, this._lightsUploaded)) {
+			this._lightsUploaded.set(this.lights.ints); this._lightsUploadedValid = true;
+			gl.bindBuffer(gl.UNIFORM_BUFFER, this._lightsBuffer);
+			gl.bufferSubData(gl.UNIFORM_BUFFER, 0, this.lights.data);
+			this.state.currentUniformBuffer = this._lightsBuffer;
+		}
 		this._uploadFrameBlock(camera, scene);
 		this.shadowMap.bindShadowMaps(this.lights);
 
@@ -450,8 +460,11 @@ class WebGLRenderer {
 		const target = this._currentRenderTarget;
 		const cs = target === null ? this._outputColorSpace : target.texture.colorSpace;
 		const fog = scene.fog === null ? 0 : (scene.fog.isFogExp2 ? 2 : 1);
-		const key = this.toneMapping + '|' + cs + '|' + (this.shadowMap.enabled ? 1 : 0) + '|' + fog;
-		if (key !== this._lastEnvKey) { this._lastEnvKey = key; this._envVersion++; }
+		const shadows = !!this.shadowMap.enabled;
+		if (fog !== this._envFog || cs !== this._envColorSpace || shadows !== this._envShadows || this.toneMapping !== this._envToneMapping) {
+			this._envFog = fog; this._envColorSpace = cs; this._envShadows = shadows; this._envToneMapping = this.toneMapping;
+			this._envVersion++;
+		}
 	}
 
 	_uploadFrameBlock(camera, scene) {
@@ -605,7 +618,7 @@ class WebGLRenderer {
 	_materialProps(material) {
 		let props = this._materialProperties.get(material);
 		if (props === undefined) {
-			props = { programs: [], blockData: new Float32Array(MATERIAL_BLOCK_SIZE / 4), blockSlot: -1, blockStamp: -1, textureStamp: -1, resolveStamp: -1, resolveVariant: -1, resolveProgram: null };
+			props = { programs: [], blockData: new Float32Array(MATERIAL_BLOCK_SIZE / 4), blockSlot: -1, blockStamp: -1, textureStamp: -1 };
 			this._materialProperties.set(material, props);
 			material.addEventListener('dispose', this._onMaterialDispose);
 		}
@@ -623,10 +636,9 @@ class WebGLRenderer {
 	}
 
 	_getProgram(material, object, scene, variant) {
-		const props = this._materialProps(material);
-		if (props.resolveStamp === this._frameId && props.resolveVariant === variant) return props.resolveProgram;
-		const program = this._getProgramSlow(props, material, object, scene, variant);
-		props.resolveStamp = this._frameId; props.resolveVariant = variant; props.resolveProgram = program;
+		if (material._resolveStamp === this._frameId && material._resolveVariant === variant) return material._resolveProgram;
+		const program = this._getProgramSlow(this._materialProps(material), material, object, scene, variant);
+		material._resolveStamp = this._frameId; material._resolveVariant = variant; material._resolveProgram = program;
 		return program;
 	}
 	_getProgramSlow(props, material, object, scene, variant) {

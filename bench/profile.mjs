@@ -5,6 +5,7 @@ const name = process.argv[2] || 'many-materials';
 const { server, port } = await startServer();
 const browser = await launchBrowser();
 const page = await browser.newPage();
+page.on('console', (m) => { if (m.type() === 'warning') console.log(m.text()); });
 page.on('pageerror', (e) => console.log('[pageerror]', e.message));
 await page.goto(`http://127.0.0.1:${port}/bench/index.html`);
 await page.waitForFunction(() => window.ready === true);
@@ -18,7 +19,7 @@ const r = await page.evaluate(async (name) => {
 	const { scene, camera, update } = sc.build(JRS, sc.n);
 	const gl = renderer.getContext();
 	const t = {};
-	const wrap = (obj, m, label) => { const f = obj[m].bind(obj); obj[m] = (...a) => { const s = performance.now(); const r = f(...a); t[label] = (t[label] || 0) + performance.now() - s; return r; }; };
+	const wrap = (obj, m, label) => { if (!obj || typeof obj[m] !== 'function') { console.warn('profile: skipping stale wrapper', label); return; } const f = obj[m].bind(obj); obj[m] = (...a) => { const s = performance.now(); const r = f(...a); t[label] = (t[label] || 0) + performance.now() - s; return r; }; };
 	wrap(renderer, '_projectObject', 'project(total,recursive)');
 	wrap(renderer, '_drawList', 'drawList');
 	wrap(renderer, '_resolvePrograms', 'resolvePrograms');

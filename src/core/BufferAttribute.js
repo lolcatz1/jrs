@@ -2,6 +2,7 @@ import { Vector3 } from '../math/Vector3.js';
 import { Vector2 } from '../math/Vector2.js';
 import { denormalize, normalize } from '../math/MathUtils.js';
 import { StaticDrawUsage, FloatType } from '../constants.js';
+import { attributeEpoch } from './attributeEpoch.js';
 
 const _vector = /*@__PURE__*/ new Vector3();
 const _vector2 = /*@__PURE__*/ new Vector2();
@@ -24,7 +25,7 @@ class BufferAttribute {
 		this._rid = _attributeRid++;
 	}
 	onUploadCallback() {}
-	set needsUpdate(value) { if (value === true) this.version++; }
+	set needsUpdate(value) { if (value === true) { this.version++; attributeEpoch.value++; } }
 	setUsage(value) { this.usage = value; return this; }
 	addUpdateRange(start, count) { this.updateRanges.push({ start, count }); }
 	clearUpdateRanges() { this.updateRanges.length = 0; }
