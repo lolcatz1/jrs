@@ -107,6 +107,7 @@ class WebGLRenderer {
 		this._currentRenderTarget = null;
 		this._renderCallDepth = 0;
 		this._frameId = 0;
+		this._cameraLayerMask = 1;
 		this._envVersion = 0;
 		// env version = lights epoch * 65536 + interned id of the (tone mapping, colour space, shadows, fog)
 		// state, so switching between render targets and the screen revisits the same version instead
@@ -383,6 +384,7 @@ class WebGLRenderer {
 		list.init();
 		this.lights.begin();
 		this._renderOrderReset();
+		this._cameraLayerMask = camera.layers.mask;
 		this._projectObject(scene, camera, 0, this.sortObjects, list);
 		this.lights.end(this.shadowMap.enabled);
 		if (this.lights.version !== this._lastLightsVersion) { this._lastLightsVersion = this.lights.version; this._lightsEpoch++; this._envVersion = this._lightsEpoch * 65536 + this._envKeyId; }
@@ -522,41 +524,27 @@ class WebGLRenderer {
 		}
 		const s = object._slabData, o = object._slabOffset;
 		const c = bs.center;
-		if (object._cullVersion !== object._worldVersion || object._cullSphere !== bs || object._cullRadius !== bs.radius || object._cullCx !== c.x || object._cullCy !== c.y || object._cullCz !== c.z) {
+		// double-valued cache keys live in the object's snapshot record, contiguous with the change-detection data
+		const n = object._snapData, q = object._snapOffset + 10;
+		const cx = c.x, cy = c.y, cz = c.z, r = bs.radius;
+		if (object._cullVersion !== object._worldVersion || object._cullSphere !== bs || n[q] !== r || n[q + 1] !== cx || n[q + 2] !== cy || n[q + 3] !== cz) {
 			const e = o + 16;
-			const x = c.x, y = c.y, z = c.z;
 			const e0 = s[e], e1 = s[e + 1], e2 = s[e + 2], e4 = s[e + 4], e5 = s[e + 5], e6 = s[e + 6], e8 = s[e + 8], e9 = s[e + 9], e10 = s[e + 10];
-			s[o + 41] = e0 * x + e4 * y + e8 * z + s[e + 12];
-			s[o + 42] = e1 * x + e5 * y + e9 * z + s[e + 13];
-			s[o + 43] = e2 * x + e6 * y + e10 * z + s[e + 14];
+			s[o + 41] = e0 * cx + e4 * cy + e8 * cz + s[e + 12];
+			s[o + 42] = e1 * cx + e5 * cy + e9 * cz + s[e + 13];
+			s[o + 43] = e2 * cx + e6 * cy + e10 * cz + s[e + 14];
 			const sx = e0 * e0 + e1 * e1 + e2 * e2, sy = e4 * e4 + e5 * e5 + e6 * e6, sz = e8 * e8 + e9 * e9 + e10 * e10;
-			s[o + 44] = bs.radius * Math.sqrt(sx > sy ? (sx > sz ? sx : sz) : (sy > sz ? sy : sz));
-			object._cullVersion = object._worldVersion; object._cullSphere = bs; object._cullRadius = bs.radius;
-			object._cullCx = c.x; object._cullCy = c.y; object._cullCz = c.z;
+			s[o + 44] = r * Math.sqrt(sx > sy ? (sx > sz ? sx : sz) : (sy > sz ? sy : sz));
+			object._cullVersion = object._worldVersion; object._cullSphere = bs;
+			n[q] = r; n[q + 1] = cx; n[q + 2] = cy; n[q + 3] = cz;
 		}
 		return frustum.intersectsSphereFlat(s[o + 41], s[o + 42], s[o + 43], s[o + 44]);
 	}
 
 	_projectObject(object, camera, groupOrder, sortObjects, list) {
 		if (object.visible === false) return;
-		const visible = object.layers.test(camera.layers);
-		if (visible) {
-			if (object.isGroup) {
-				groupOrder = object.renderOrder;
-			} else if (object.isLOD) {
-				if (object.autoUpdate === true) object.update(camera);
-			} else if (object.isLight) {
-				this.lights.push(object);
-			} else if (object.isSprite) {
-				if (!object.frustumCulled || _frustum.intersectsSprite(object)) {
-					const material = object.material;
-					if (material.visible) {
-						const we = object.matrixWorld.elements, ve = camera.matrixWorldInverse.elements;
-						list.zScratch[0] = -(ve[2] * we[12] + ve[6] * we[13] + ve[10] * we[14] + ve[14]);
-						this._pushItem(list, object, object.geometry, material, null, false);
-					}
-				}
-			} else if (object.isMesh || object.isLine || object.isPoints) {
+		if ((object.layers.mask & this._cameraLayerMask) !== 0) {
+			if (object.isMesh === true || object.isLine === true || object.isPoints === true) {
 				const geometry = object.geometry;
 				const material = object.material;
 				if (!object.frustumCulled || this._cullTest(object, geometry, _frustum)) {
@@ -579,6 +567,21 @@ class WebGLRenderer {
 						}
 					} else if (material.visible) {
 						this._pushItem(list, object, geometry, material, null, false);
+					}
+				}
+			} else if (object.isGroup) {
+				groupOrder = object.renderOrder;
+			} else if (object.isLOD) {
+				if (object.autoUpdate === true) object.update(camera);
+			} else if (object.isLight) {
+				this.lights.push(object);
+			} else if (object.isSprite) {
+				if (!object.frustumCulled || _frustum.intersectsSprite(object)) {
+					const material = object.material;
+					if (material.visible) {
+						const we = object.matrixWorld.elements, ve = camera.matrixWorldInverse.elements;
+						list.zScratch[0] = -(ve[2] * we[12] + ve[6] * we[13] + ve[10] * we[14] + ve[14]);
+						this._pushItem(list, object, object.geometry, material, null, false);
 					}
 				}
 			}
@@ -905,6 +908,7 @@ class WebGLRenderer {
 		const program = this._getProgram(material, object, scene, variant);
 		this._setupMaterial(item, program, material, camera, false, shadowPass ? shadowSideOf(material) : material.side);
 		const mu = program.modelMatrixUniform;
+		if (mu !== null) mu._lastObject = null;
 		if (mu !== null && !cacheArray(mu, IDENTITY, 16)) { gl.uniformMatrix4fv(mu.location, false, IDENTITY); if (this._traceUniforms !== null) this._trace(mu); }
 		const du = program.drawBaseUniform;
 		if (du !== null && du.cache !== drawBase) { du.cache = drawBase; gl.uniform1i(du.location, drawBase); if (this._traceUniforms !== null) this._trace(du); }
@@ -1016,7 +1020,11 @@ class WebGLRenderer {
 		// per-object uniforms
 		const s = object._slabData, o = object._slabOffset;
 		const mu = program.modelMatrixUniform;
-		if (mu !== null && !cacheSlab(mu, s, o + 16, 16)) { gl.uniformMatrix4fv(mu.location, false, s, o + 16, 16); if (this._traceUniforms !== null) this._trace(mu); }
+		if (mu !== null && (mu._lastObject !== object || mu._lastVersion !== object._worldVersion)) {
+			// the cache already holds this object's matrix at this world version when both match
+			mu._lastObject = object; mu._lastVersion = object._worldVersion;
+			if (!cacheSlab(mu, s, o + 16, 16)) { gl.uniformMatrix4fv(mu.location, false, s, o + 16, 16); if (this._traceUniforms !== null) this._trace(mu); }
+		}
 		if (material.isShaderMaterial) {
 			this._uploadObjectUniformsForShaderMaterial(program, object, camera);
 		} else {
@@ -1047,6 +1055,7 @@ class WebGLRenderer {
 		this._setupMaterial(item, program, material, camera, false, shadowPass ? shadowSideOf(material) : material.side);
 		if (material.wireframe === true) geometry = this._wireframeGeometry(geometry);
 		const mu = program.modelMatrixUniform;
+		if (mu !== null) mu._lastObject = null;
 		if (mu !== null && !cacheArray(mu, IDENTITY, 16)) { gl.uniformMatrix4fv(mu.location, false, IDENTITY); if (this._traceUniforms !== null) this._trace(mu); }
 		const du = program.drawBaseUniform;
 		if (du !== null && du.cache !== drawBase) { du.cache = drawBase; gl.uniform1i(du.location, drawBase); if (this._traceUniforms !== null) this._trace(du); }
@@ -1096,7 +1105,20 @@ class WebGLRenderer {
 		// Values are read from the uniform objects now (not snapshotted), so textures assigned
 		// later to uniform objects shared between materials are picked up.
 		this._samplerStamp++;
-		for (const name in uniforms) this._uploadUniform(program, name, uniforms[name].value);
+		let plan = material._uniformPlan;
+		if (plan === undefined || plan.program !== program || plan.uniforms !== uniforms || plan.version !== material.version || plan.count !== Object.keys(uniforms).length) plan = this._buildUniformPlan(program, material);
+		const names = plan.names, recs = plan.records, objs = plan.objects, n = names.length;
+		if (this._traceUniforms === null) {
+			for (let i = 0; i < n; i++) {
+				const value = objs[i].value, u = recs[i];
+				if (u === null) this._uploadUniform(program, names[i], value);
+				else if (value !== null && value !== undefined) u.setter(gl, this, u, value);
+			}
+		} else {
+			for (let i = 0; i < n; i++) {
+				if (recs[i] === null) this._uploadUniform(program, names[i], objs[i].value); else setUniformValue(gl, this, recs[i], objs[i].value);
+			}
+		}
 		// every sampler the program declares but this material left null gets an empty texture
 		// of the right target on its own unit (mixed sampler types on one unit is INVALID_OPERATION)
 		const samplers = program.samplerUniforms;
@@ -1116,6 +1138,18 @@ class WebGLRenderer {
 			if (fog.isFog) { if (pu.fogNear) setUniformValue(gl, this, pu.fogNear, fog.near); if (pu.fogFar) setUniformValue(gl, this, pu.fogFar, fog.far); }
 			else if (pu.fogDensity) setUniformValue(gl, this, pu.fogDensity, fog.density);
 		}
+	}
+	/** Names (and program uniform records) a ShaderMaterial uploads to `program`; rebuilt when its uniforms object, key count, version or program change. */
+	_buildUniformPlan(program, material) {
+		const uniforms = material.uniforms, names = [], records = [], objects = [], pu = program.uniforms;
+		for (const name in uniforms) {
+			const u = pu[name];
+			if (u !== undefined) { if (u.setter === undefined) u.setter = pickSetter(this._gl, u.type); names.push(name); records.push(u); objects.push(uniforms[name]); continue; }
+			const v = uniforms[name].value;
+			// struct / array-of-struct / flattened-array values resolve to nested program uniforms at upload time
+			if (v !== null && v !== undefined && (Array.isArray(v) || (typeof v === 'object' && !isLeafValue(v)))) { names.push(name); records.push(null); objects.push(uniforms[name]); }
+		}
+		return (material._uniformPlan = { program, uniforms, version: material.version, count: Object.keys(uniforms).length, names, records, objects });
 	}
 	/** Uploads one uniform value; recurses into structs ({...}) and arrays of structs like three.js. */
 	_uploadUniform(program, name, value) {
@@ -1257,53 +1291,75 @@ function setUniformValue(gl, renderer, u, value) {
 }
 let traceCounter = 0;
 function setUniformValueImpl(gl, renderer, u, value) {
-	const loc = u.location;
 	if (value === null || value === undefined) return;
-	switch (u.type) {
-		case U_FLOAT:
-			if (u.size > 1 || Array.isArray(value) || ArrayBuffer.isView(value)) { if (!cacheArray(u, value, value.length)) { traceCounter++; gl.uniform1fv(loc, value); } }
-			else if (u.cache !== value) { u.cache = value; { traceCounter++; gl.uniform1f(loc, value); } }
-			break;
-		case U_INT: case U_BOOL:
-			if (u.size > 1 || Array.isArray(value) || ArrayBuffer.isView(value)) { if (!cacheArray(u, value, value.length)) { traceCounter++; gl.uniform1iv(loc, value); } }
-			else { const v = value ? (typeof value === 'boolean' ? 1 : value) : 0; if (u.cache !== v) { u.cache = v; { traceCounter++; gl.uniform1i(loc, v); } } }
-			break;
-		case U_UNSIGNED_INT: if (u.size > 1) { traceCounter++; gl.uniform1uiv(loc, value); } else if (u.cache !== value) { u.cache = value; { traceCounter++; gl.uniform1ui(loc, value); } } break;
-		case U_FLOAT_VEC2:
-			if (value.isVector2) { if (!cacheVec(u, value.x, value.y, 0, 0)) { traceCounter++; gl.uniform2f(loc, value.x, value.y); } }
-			else { const a = flattenArray(value, 2); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniform2fv(loc, a); } }
-			break;
-		case U_FLOAT_VEC3:
-			if (value.isVector3) { if (!cacheVec(u, value.x, value.y, value.z, 0)) { traceCounter++; gl.uniform3f(loc, value.x, value.y, value.z); } }
-			else if (value.isColor) { if (!cacheVec(u, value.r, value.g, value.b, 0)) { traceCounter++; gl.uniform3f(loc, value.r, value.g, value.b); } }
-			else { const a = flattenArray(value, 3); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniform3fv(loc, a); } }
-			break;
-		case U_FLOAT_VEC4:
-			if (value.isVector4 || value.isQuaternion) { if (!cacheVec(u, value.x, value.y, value.z, value.w)) { traceCounter++; gl.uniform4f(loc, value.x, value.y, value.z, value.w); } }
-			else { const a = flattenArray(value, 4); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniform4fv(loc, a); } }
-			break;
-		case U_INT_VEC2: case U_BOOL_VEC2: if (value.isVector2) { traceCounter++; gl.uniform2i(loc, value.x, value.y); } else { traceCounter++; gl.uniform2iv(loc, value); } break;
-		case U_INT_VEC3: case U_BOOL_VEC3: if (value.isVector3) { traceCounter++; gl.uniform3i(loc, value.x, value.y, value.z); } else { traceCounter++; gl.uniform3iv(loc, value); } break;
-		case U_INT_VEC4: case U_BOOL_VEC4: if (value.isVector4) { traceCounter++; gl.uniform4i(loc, value.x, value.y, value.z, value.w); } else { traceCounter++; gl.uniform4iv(loc, value); } break;
-		case U_FLOAT_MAT2: { const a = value.elements || flattenArray(value, 4); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniformMatrix2fv(loc, false, a); } break; }
-		case U_FLOAT_MAT3: { const a = value.elements || flattenArray(value, 9); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniformMatrix3fv(loc, false, a); } break; }
-		case U_FLOAT_MAT4: { const a = value.elements || flattenArray(value, 16); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniformMatrix4fv(loc, false, a); } break; }
+	let f = u.setter;
+	if (f === undefined) f = u.setter = pickSetter(gl, u.type);
+	f(gl, renderer, u, value);
+}
+const noopSetter = () => {};
+function setFloat(gl, renderer, u, value) {
+	if (u.size > 1 || Array.isArray(value) || ArrayBuffer.isView(value)) { if (!cacheArray(u, value, value.length)) { traceCounter++; gl.uniform1fv(u.location, value); } }
+	else if (u.cache !== value) { u.cache = value; traceCounter++; gl.uniform1f(u.location, value); }
+}
+function setInt(gl, renderer, u, value) {
+	if (u.size > 1 || Array.isArray(value) || ArrayBuffer.isView(value)) { if (!cacheArray(u, value, value.length)) { traceCounter++; gl.uniform1iv(u.location, value); } }
+	else { const v = value ? (typeof value === 'boolean' ? 1 : value) : 0; if (u.cache !== v) { u.cache = v; traceCounter++; gl.uniform1i(u.location, v); } }
+}
+function setUint(gl, renderer, u, value) {
+	if (u.size > 1) { traceCounter++; gl.uniform1uiv(u.location, value); } else if (u.cache !== value) { u.cache = value; traceCounter++; gl.uniform1ui(u.location, value); }
+}
+function setVec2(gl, renderer, u, value) {
+	if (value.isVector2) { if (!cacheVec(u, value.x, value.y, 0, 0)) { traceCounter++; gl.uniform2f(u.location, value.x, value.y); } }
+	else { const a = flattenArray(value, 2); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniform2fv(u.location, a); } }
+}
+function setVec3(gl, renderer, u, value) {
+	if (value.isVector3) { if (!cacheVec(u, value.x, value.y, value.z, 0)) { traceCounter++; gl.uniform3f(u.location, value.x, value.y, value.z); } }
+	else if (value.isColor) { if (!cacheVec(u, value.r, value.g, value.b, 0)) { traceCounter++; gl.uniform3f(u.location, value.r, value.g, value.b); } }
+	else { const a = flattenArray(value, 3); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniform3fv(u.location, a); } }
+}
+function setVec4(gl, renderer, u, value) {
+	if (value.isVector4 || value.isQuaternion) { if (!cacheVec(u, value.x, value.y, value.z, value.w)) { traceCounter++; gl.uniform4f(u.location, value.x, value.y, value.z, value.w); } }
+	else { const a = flattenArray(value, 4); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniform4fv(u.location, a); } }
+}
+function setIVec2(gl, renderer, u, value) { traceCounter++; if (value.isVector2) gl.uniform2i(u.location, value.x, value.y); else gl.uniform2iv(u.location, value); }
+function setIVec3(gl, renderer, u, value) { traceCounter++; if (value.isVector3) gl.uniform3i(u.location, value.x, value.y, value.z); else gl.uniform3iv(u.location, value); }
+function setIVec4(gl, renderer, u, value) { traceCounter++; if (value.isVector4) gl.uniform4i(u.location, value.x, value.y, value.z, value.w); else gl.uniform4iv(u.location, value); }
+function setMat2(gl, renderer, u, value) { const a = value.elements || flattenArray(value, 4); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniformMatrix2fv(u.location, false, a); } }
+function setMat3(gl, renderer, u, value) { const a = value.elements || flattenArray(value, 9); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniformMatrix3fv(u.location, false, a); } }
+function setMat4(gl, renderer, u, value) { const a = value.elements || flattenArray(value, 16); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniformMatrix4fv(u.location, false, a); } }
+function setSampler(gl, renderer, u, value) {
+	// units were assigned at link time (u.unit .. u.unit + size - 1); bind textures, placeholders for gaps
+	u.boundStamp = renderer._samplerStamp;
+	if (Array.isArray(value)) {
+		for (let i = 0; i < u.size; i++) {
+			const t = value[i];
+			if (t && t.isTexture) bindTextureUniform(renderer, u, t, u.unit + i); else renderer.textures.bindEmpty(u, u.unit + i);
+		}
+	} else if (value.isTexture) {
+		bindTextureUniform(renderer, u, value, u.unit);
+	} else {
+		renderer.textures.bindEmpty(u, u.unit);
+	}
+}
+/** The upload function for a GL uniform type (chosen once per uniform record). */
+function pickSetter(gl, type) {
+	switch (type) {
+		case U_FLOAT: return setFloat;
+		case U_INT: case U_BOOL: return setInt;
+		case U_UNSIGNED_INT: return setUint;
+		case U_FLOAT_VEC2: return setVec2;
+		case U_FLOAT_VEC3: return setVec3;
+		case U_FLOAT_VEC4: return setVec4;
+		case U_INT_VEC2: case U_BOOL_VEC2: return setIVec2;
+		case U_INT_VEC3: case U_BOOL_VEC3: return setIVec3;
+		case U_INT_VEC4: case U_BOOL_VEC4: return setIVec4;
+		case U_FLOAT_MAT2: return setMat2;
+		case U_FLOAT_MAT3: return setMat3;
+		case U_FLOAT_MAT4: return setMat4;
 		case U_SAMPLER_2D: case U_SAMPLER_2D_SHADOW: case U_SAMPLER_3D: case U_SAMPLER_2D_ARRAY: case U_SAMPLER_CUBE: case U_SAMPLER_CUBE_SHADOW:
 		case U_INT_SAMPLER_2D: case U_UNSIGNED_INT_SAMPLER_2D: case U_INT_SAMPLER_3D: case U_UNSIGNED_INT_SAMPLER_3D: case U_INT_SAMPLER_2D_ARRAY: case U_UNSIGNED_INT_SAMPLER_2D_ARRAY:
-			// units were assigned at link time (u.unit .. u.unit + size - 1); bind textures, placeholders for gaps
-			u.boundStamp = renderer._samplerStamp;
-			if (Array.isArray(value)) {
-				for (let i = 0; i < u.size; i++) {
-					const t = value[i];
-					if (t && t.isTexture) bindTextureUniform(renderer, u, t, u.unit + i); else renderer.textures.bindEmpty(u, u.unit + i);
-				}
-			} else if (value.isTexture) {
-				bindTextureUniform(renderer, u, value, u.unit);
-			} else {
-				renderer.textures.bindEmpty(u, u.unit);
-			}
-			break;
-		default: break;
+			return setSampler;
+		default: return noopSetter;
 	}
 }
 

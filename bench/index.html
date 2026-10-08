@@ -9,6 +9,7 @@
 import * as JRS from '/src/index.js';
 import * as THREE from '/node_modules/three/build/three.module.js';
 import { scenarios } from '/bench/scenarios.js';
+import { WebGLRenderList } from '/src/renderers/webgl/WebGLRenderLists.js';
 
 const libs = { jrs: JRS, three: THREE };
 const log = (s) => { document.getElementById('log').textContent += s + '\n'; };
@@ -204,6 +205,25 @@ window.captureScenario = async function (libName, scenarioName, opts = {}) {
 	const calls = renderer.info.render.calls;
 	renderer.dispose(); canvas.remove();
 	return { lib: libName, scenario: scenarioName, times, images, drawCalls: calls };
+};
+/** Time spent inside WebGLRenderList.finish (key build + sort) per frame, jrs only, over `frames` frames. Returns microseconds per call. */
+window.sortCost = async function (scenarioName, frames = 300) {
+	const sc = scenarios[scenarioName];
+	const canvas = document.createElement('canvas'); canvas.width = 320; canvas.height = 240; document.body.appendChild(canvas);
+	const renderer = new JRS.WebGLRenderer({ canvas, antialias: false, stencil: true });
+	renderer.setSize(320, 240, false);
+	if (scenarioName === 'shadows') renderer.shadowMap.enabled = true;
+	const { scene, camera, update, warm } = sc.build(JRS, sc.n);
+	if (warm) warm(renderer);
+	const original = WebGLRenderList.prototype.finish;
+	let total = 0, calls = 0, measuring = false;
+	WebGLRenderList.prototype.finish = function (a, b) { if (!measuring) return original.call(this, a, b); const s = performance.now(); original.call(this, a, b); total += performance.now() - s; calls++; };
+	for (let f = 0; f < 20; f++) { if (update) update(f); renderer.render(scene, camera); }
+	measuring = true;
+	for (let f = 0; f < frames; f++) { if (update) update(20 + f); renderer.render(scene, camera); }
+	WebGLRenderList.prototype.finish = original;
+	renderer.dispose(); canvas.remove();
+	return { scenario: scenarioName, finishUsPerFrame: +(total / frames * 1000).toFixed(1), callsPerFrame: calls / frames };
 };
 window.ready = true;
 </script>
