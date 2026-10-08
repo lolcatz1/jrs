@@ -171,7 +171,7 @@ export function conformanceTests() {
 				renderer.render(scene, camera); const a2 = probe();
 				d.intensity = 0.2; renderer.render(scene, camera); const b = probe();           // direct light mutation
 				d.color.r = 0; renderer.render(scene, camera); const c = probe();                // direct colour channel mutation
-				scene.fog = new T.Fog(0x000040, 1, 7); renderer.render(scene, camera); const e = probe();
+				scene.fog = new T.Fog(0x402000, 1, 7); renderer.render(scene, camera); const e = probe(); // fog colour != background: a fully fogged pixel must stay distinguishable
 				scene.fog.near = 0.1; scene.fog.far = 4.8; renderer.render(scene, camera); const f = probe();  // direct fog mutation
 				camera.position.x = 3; renderer.render(scene, camera); const g = probe();                    // camera move
 				const same = a.every((v, i) => v === a2[i]);
