@@ -150,7 +150,8 @@ class WebGLTextures {
 	glType(type) { return this.utils.convert(type); }
 	glFormat(format, colorSpace = NoColorSpace) { return this.utils.convert(format, colorSpace); }
 
-	glInternalFormat(internalFormatName, glFormat, glType, normalized, colorSpace, forceLinearTransfer = false) {
+	/** (kept in jrs's original argument order; `normalized` (EXT_texture_norm16) comes last) */
+	glInternalFormat(internalFormatName, glFormat, glType, colorSpace, forceLinearTransfer = false, normalized = false) {
 		const gl = this.gl;
 		if (internalFormatName !== null) {
 			if (gl[internalFormatName] !== undefined) return gl[internalFormatName];
@@ -502,7 +503,7 @@ class WebGLTextures {
 
 			const glFormat = this.convert(texture.format, texture.colorSpace);
 			const glType = this.convert(texture.type);
-			let glInternalFormat = this.glInternalFormat(texture.internalFormat, glFormat, glType, texture.normalized, texture.colorSpace, texture.isVideoTexture);
+			let glInternalFormat = this.glInternalFormat(texture.internalFormat, glFormat, glType, texture.colorSpace, texture.isVideoTexture, texture.normalized);
 
 			if (!streamed) this._setTextureParameters(textureType, texture);
 
@@ -706,7 +707,7 @@ class WebGLTextures {
 			}
 			const image = cubeImage[0];
 			const glFormat = this.convert(texture.format, texture.colorSpace), glType = this.convert(texture.type);
-			const glInternalFormat = this.glInternalFormat(texture.internalFormat, glFormat, glType, texture.normalized, texture.colorSpace);
+			const glInternalFormat = this.glInternalFormat(texture.internalFormat, glFormat, glType, texture.colorSpace, false, texture.normalized);
 			const useTexStorage = texture.isVideoTexture !== true;
 			const allocateMemory = (sourceProperties.version === undefined) || (forceUpload === true);
 			const dataReady = source.dataReady;
@@ -804,7 +805,7 @@ class WebGLTextures {
 				state.bindTexture(gl.TEXTURE_2D, tp.webglTexture, 0); state.activeTexture(0);
 				this._setTextureParameters(gl.TEXTURE_2D, texture);
 				const glFormat = this.glFormat(texture.format, texture.colorSpace), glType = this.glType(texture.type);
-				const glInternalFormat = this.glInternalFormat(texture.internalFormat, glFormat, glType, texture.normalized, texture.colorSpace);
+				const glInternalFormat = this.glInternalFormat(texture.internalFormat, glFormat, glType, texture.colorSpace, false, texture.normalized);
 				gl.texImage2D(gl.TEXTURE_2D, 0, glInternalFormat, renderTarget.width, renderTarget.height, 0, glFormat, glType, null);
 				gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tp.webglTexture, 0);
 				tp.version = texture.version;
@@ -873,7 +874,7 @@ class WebGLTextures {
 			state.bindTexture(gl.TEXTURE_CUBE_MAP, tp.webglTexture, 0); state.activeTexture(0);
 			this._setTextureParameters(gl.TEXTURE_CUBE_MAP, texture);
 			const glFormat = this.glFormat(texture.format, texture.colorSpace), glType = this.glType(texture.type);
-			const glInternalFormat = this.glInternalFormat(texture.internalFormat, glFormat, glType, texture.normalized, texture.colorSpace);
+			const glInternalFormat = this.glInternalFormat(texture.internalFormat, glFormat, glType, texture.colorSpace, false, texture.normalized);
 			for (let i = 0; i < 6; i++) gl.texImage2D(gl.TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, glInternalFormat, size, size, 0, glFormat, glType, null);
 			tp.version = texture.version;
 		} else {
