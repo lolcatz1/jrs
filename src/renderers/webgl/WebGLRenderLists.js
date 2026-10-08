@@ -194,9 +194,10 @@ class WebGLRenderList {
 			}
 			const z = this.zScratch[0];
 			this.transparentDepth[slot.n] = z; // depth key resolved in finish()
+			const zf = this.transparentDepth[slot.n]; // the float32-rounded value: min/max must bound what finish() reads back
 			slot.ids[slot.n++] = index;
-			if (z < this.minDepth) this.minDepth = z;
-			if (z > this.maxDepth) this.maxDepth = z;
+			if (zf < this.minDepth) this.minDepth = zf;
+			if (zf > this.maxDepth) this.maxDepth = zf;
 			this.transparentCount++;
 		} else {
 			const slot = this.opaque;
