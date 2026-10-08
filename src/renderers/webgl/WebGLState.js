@@ -45,7 +45,7 @@ class WebGLState {
 		this.currentMaterialWord = -1; // packed state of the last "simple" material applied by setMaterial; -1 = unknown
 		this.currentTextureSlot = null;
 		// pixel store (unpack) state, cached so per-frame texture uploads do not re-send it
-		this._unpackFlipY = null; this._unpackPremultiply = null; this._unpackAlignment = null;
+		this._pixelStore = {};
 		gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
 		this.currentBoundTextures = []; // slot -> {type, texture}
 		this.currentFramebuffer = null;
@@ -332,16 +332,36 @@ class WebGLState {
 			bound.type = undefined; bound.texture = undefined;
 		}
 	}
+	/** Cached gl.pixelStorei (like three.js's WebGLState.pixelStorei). */
+	pixelStorei(name, value) {
+		const parameters = this._pixelStore;
+		if (parameters[name] !== value) { this.gl.pixelStorei(name, value); parameters[name] = value; }
+	}
+	getParameter(name) {
+		const v = this._pixelStore[name];
+		return v !== undefined ? v : this.gl.getParameter(name);
+	}
 	/** Sets the three unpack parameters every upload needs, skipping the ones already current. */
 	setUnpack(flipY, premultiplyAlpha, alignment) {
 		const gl = this.gl;
-		if (this._unpackFlipY !== flipY) { this._unpackFlipY = flipY; gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, flipY); }
-		if (this._unpackPremultiply !== premultiplyAlpha) { this._unpackPremultiply = premultiplyAlpha; gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, premultiplyAlpha); }
-		if (this._unpackAlignment !== alignment) { this._unpackAlignment = alignment; gl.pixelStorei(gl.UNPACK_ALIGNMENT, alignment); }
+		this.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, flipY);
+		this.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, premultiplyAlpha);
+		this.pixelStorei(gl.UNPACK_ALIGNMENT, alignment);
 	}
+	// Texture storage / upload wrappers: like three.js they log instead of throwing when the browser rejects the arguments.
+	texImage2D(...a) { try { this.gl.texImage2D(...a); } catch (e) { console.error('WebGLState:', e); } }
+	texImage3D(...a) { try { this.gl.texImage3D(...a); } catch (e) { console.error('WebGLState:', e); } }
+	texSubImage2D(...a) { try { this.gl.texSubImage2D(...a); } catch (e) { console.error('WebGLState:', e); } }
+	texSubImage3D(...a) { try { this.gl.texSubImage3D(...a); } catch (e) { console.error('WebGLState:', e); } }
+	texStorage2D(...a) { try { this.gl.texStorage2D(...a); } catch (e) { console.error('WebGLState:', e); } }
+	texStorage3D(...a) { try { this.gl.texStorage3D(...a); } catch (e) { console.error('WebGLState:', e); } }
+	compressedTexImage2D(...a) { try { this.gl.compressedTexImage2D(...a); } catch (e) { console.error('WebGLState:', e); } }
+	compressedTexImage3D(...a) { try { this.gl.compressedTexImage3D(...a); } catch (e) { console.error('WebGLState:', e); } }
+	compressedTexSubImage2D(...a) { try { this.gl.compressedTexSubImage2D(...a); } catch (e) { console.error('WebGLState:', e); } }
+	compressedTexSubImage3D(...a) { try { this.gl.compressedTexSubImage3D(...a); } catch (e) { console.error('WebGLState:', e); } }
 	reset() {
 		const gl = this.gl;
-		this._unpackFlipY = null; this._unpackPremultiply = null; this._unpackAlignment = null;
+		this._pixelStore = {};
 		gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
 		gl.disable(gl.BLEND); gl.disable(gl.CULL_FACE); gl.disable(gl.DEPTH_TEST); gl.disable(gl.POLYGON_OFFSET_FILL);
 		gl.disable(gl.SCISSOR_TEST); gl.disable(gl.STENCIL_TEST); gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
