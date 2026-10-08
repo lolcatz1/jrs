@@ -22,6 +22,45 @@ For a static object the per-frame cost is ten float compares.
 The `rotation` (Euler) and `quaternion` objects stay synchronised through the same
 `_onChange` callbacks three.js uses, so `mesh.rotation.y += 0.01` keeps working.
 
+### 1b. Flat scene update (`src/core/FlatGraph.js`, `WebGLRenderer._flatPass`)
+
+three.js (and jrs until now) walk the scene twice per frame: `scene.updateMatrixWorld()` recurses through
+`children` to update matrices, then `projectObject` recurses again to cull and collect render items. Both walks
+are call-heavy and every property they read (`children`, `visible`, `matrixAutoUpdate`, `layers`, `parent`, ...)
+comes from receivers of many shapes.
+
+jrs keeps, per rendered scene, a `FlatGraph`: the objects in `traverse` order in one array (parent before
+child), with the parent index, the end of each subtree, the child count and a kind bitmask (renderable / light /
+sprite / LOD / custom `updateMatrixWorld` / camera or skinned-mesh post hook) in typed arrays, plus per-frame
+scratch (world version seen, "descendants must recompute", effective visibility). One loop over that array does
+what the two walks did: change-detect and recompose the local matrix, remultiply the world matrix straight in the
+slab (same expression order as `Matrix4.multiplyMatrices`, so results are bit-identical), refresh the world
+bounding sphere, test the frustum, compute the normal matrix while the record is hot, and push the render item.
+Items come out in exactly `traverseVisible` order, so draw order and `onBeforeRender` / `onAfterRender` order are
+unchanged.
+
+Invalidation: `add` / `remove` / `attach` patch the array in place (the subtree is spliced in after its parent's
+last descendant, or spliced out; more than 16 patches between two frames, or a parent that is not in the graph,
+mark it for a rebuild). The pass also compares every entry's `children.length` with the count it was built with,
+so a direct `children` edit rebuilds the graph and reruns the pass. Nested scenes rendered alternately each keep
+their own graph; a scene rendered by two renderers shares one.
+
+Semantics kept exactly (see `test/flat-scene-update.test.js` and `bench/flat-check.mjs`): `matrixAutoUpdate =
+false` (user-written `matrix`), `matrixWorldAutoUpdate = false` (user-written `matrixWorld`, children recomputed
+only when the object is flagged or its parent moves), `updateMatrixWorld(force)` / `updateWorldMatrix()` called
+by the app between frames (they still run recursively and the pass finds nothing to do), subclasses overriding
+`updateMatrixWorld` (the override is called, recursively, for its subtree), cameras in the hierarchy (updated with
+their ancestor chain before the frustum is built), lights (collected in traversal order; targets are read later),
+skinned meshes whose bones follow them in traversal order (`skeleton.update()` is deferred to the end of the pass),
+invisible subtrees (matrices updated, nothing pushed), layers, `frustumCulled = false`, a scene with
+`matrixWorldAutoUpdate = false` (projected, not updated).
+
+The pass runs in one of two modes per `render()`: when the list cannot be reused anyway (no recorded
+dependencies, an epoch moved, or the previous pass recomputed a world matrix: the scene is animating) matrices
+and items are produced in the same loop; otherwise an update-only loop runs first so an unchanged frame reuses
+its render list (§3b) without projecting. `renderer.flatSceneUpdate = false` restores the recursive walks;
+`renderer.debug.flatUpdate` counts merged / split passes and rebuilds.
+
 ## 2. Slab-allocated matrices (`src/core/TransformSlab.js`)
 
 Every `Object3D` owns a 48-float record in a large `Float32Array` page:

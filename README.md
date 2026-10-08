@@ -37,7 +37,7 @@ application keeps working. WebGL2 is required (every current browser has it).
 
 | three.js | jrs |
 |----------|-----|
-| Recomposes and remultiplies **every** object's matrices every frame | Only objects whose position/rotation/scale (or ancestor) changed are touched; everything derived (normal matrix, bounding sphere, instance data) is cached by a per-object version counter |
+| Recomposes and remultiplies **every** object's matrices every frame, in two recursive walks (matrix update, then projection) | Only objects whose position/rotation/scale (or ancestor) changed are touched; everything derived (normal matrix, bounding sphere, instance data) is cached by a per-object version counter; matrix update, culling and render-item collection are one flat loop over a per-scene array kept in traversal order |
 | 16-element `Array`s of doubles per matrix, converted on every upload | `Float32Array` records in shared slab pages; uploaded with zero-copy `srcOffset` calls |
 | Sorts an array of item objects with a JS comparator | Packs a 52-bit key per item into a `Float64Array` and uses the native comparator-free sort |
 | One draw call per mesh | Consecutive meshes sharing geometry and material become **one instanced draw call**; runs of *different* geometries sharing a material become **one multi-draw call** over shared mega-buffers with a `gl_DrawID`-indexed matrix texture; batches also **span materials** that share a program, GL state and textures (each instance picks its material record from a uniform-block array); static scenes skip the uploads entirely |
