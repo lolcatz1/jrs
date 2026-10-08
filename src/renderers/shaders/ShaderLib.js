@@ -278,6 +278,7 @@ out vec2 vAoMapUv;
 #endif
 #ifdef USE_SPECULARMAP
 out vec2 vSpecularMapUv;
+#endif
 #ifdef IS_DEPTH
 out vec2 vHighPrecisionZW;
 #endif
@@ -536,6 +537,7 @@ in vec2 vAoMapUv;
 #endif
 #ifdef USE_SPECULARMAP
 in vec2 vSpecularMapUv;
+#endif
 #ifdef IS_DEPTH
 in vec2 vHighPrecisionZW;
 #endif
