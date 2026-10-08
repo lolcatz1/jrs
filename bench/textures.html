@@ -104,7 +104,7 @@ async function runCase(c, jrs, three) {
 			if (params.get('dump') && c.name.includes(params.get('dump'))) entry.images = { jrs: toPNG(va.pixels), three: toPNG(vb.pixels) };
 			const d = diffImages(va.pixels, vb.pixels);
 			const tol = c.tolerance === undefined ? 0 : c.tolerance;
-			details.push(`max diff ${d.maxDiff}, mean ${d.meanAbsDiff.toFixed(3)}${va.info ? ' | ' + va.info : ''}`);
+			details.push(`max diff ${d.maxDiff}, mean ${d.meanAbsDiff.toFixed(3)}${va.info ? ' | jrs: ' + va.info : ''}${vb.info && vb.info !== va.info ? ' | three: ' + vb.info : ''}`);
 			if (c.expectDiffer) { if (d.maxDiff === 0) problems.push('expected a visible difference but images are identical (test is blind)'); }
 			else if (c.pixelsAdvisory) details.push(`pixels advisory only (${c.pixelsAdvisory})`);
 			else if (d.maxDiff > tol) problems.push(`pixels differ: max ${d.maxDiff}, ${(100 * d.badFraction).toFixed(2)}% > 16, tolerance ${tol}; centre jrs [${va.centre}] three [${vb.centre}]`);

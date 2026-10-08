@@ -293,10 +293,12 @@ class WebGLRenderer {
 	setClearColor(color, alpha = 1) { this._clearColor.set(color); this._clearAlpha = alpha; this._applyClearColor(); }
 	getClearAlpha() { return this._clearAlpha; }
 	setClearAlpha(alpha) { this._clearAlpha = alpha; this._applyClearColor(); }
+	/** Colour space of colours written straight to the framebuffer (clear colour, background): the output colour space on screen, the working (linear) space in a render target, as in three.js. */
+	_unlitColorSpace() { return this._currentRenderTarget === null ? this._outputColorSpace : ColorManagement.workingColorSpace; }
 	_applyClearColor() {
 		let a = this._clearAlpha;
 		_color.copy(this._clearColor);
-		ColorManagement.fromWorkingColorSpace(_color, this._currentRenderTarget === null ? this._outputColorSpace : this._currentRenderTarget.texture.colorSpace);
+		ColorManagement.fromWorkingColorSpace(_color, this._unlitColorSpace());
 		let r = _color.r, g = _color.g, b = _color.b;
 		if (this._premultipliedAlpha) { r *= a; g *= a; b *= a; }
 		this.state.setClearColor(r, g, b, a);
@@ -582,7 +584,7 @@ class WebGLRenderer {
 		const background = scene.background;
 		if (background !== null && background.isColor) {
 			_color.copy(background);
-			ColorManagement.fromWorkingColorSpace(_color, this._currentRenderTarget === null ? this._outputColorSpace : this._currentRenderTarget.texture.colorSpace);
+			ColorManagement.fromWorkingColorSpace(_color, this._unlitColorSpace());
 			this.state.setClearColor(_color.r, _color.g, _color.b, 1);
 			if (this.autoClear || this.autoClearColor) this.clear(true, this.autoClearDepth, this.autoClearStencil);
 			this._applyClearColor();
@@ -801,12 +803,13 @@ class WebGLRenderer {
 	/** Detects changes in frame-wide shader-affecting state and bumps the env version. */
 	_updateEnv(scene) {
 		const target = this._currentRenderTarget;
-		const cs = target === null ? this._outputColorSpace : target.texture.colorSpace;
+		const cs = this._unlitColorSpace();
 		const fog = scene.fog === null ? 0 : (scene.fog.isFogExp2 ? 2 : 1);
 		let csId = this._colorSpaceIds.get(cs);
 		if (csId === undefined) { csId = this._colorSpaceIds.size; this._colorSpaceIds.set(cs, csId); }
 		const shadowKind = this.shadowMap.enabled ? (this.shadowMap.type === BasicShadowMap ? 2 : (this.shadowMap.type === VSMShadowMap ? 3 : 1)) : 0;
-		const key = ((this.toneMapping * 64 + csId) * 4 + shadowKind) * 3 + fog;
+		// like three.js, tone mapping and output encoding only apply when rendering to the screen
+		const key = (((target === null ? this.toneMapping : NoToneMapping) * 64 + csId) * 4 + shadowKind) * 3 + fog;
 		let id = this._envKeyIds.get(key);
 		if (id === undefined) { id = this._envKeyIds.size % 65536; this._envKeyIds.set(key, id); }
 		if (id !== this._envKeyId) { this._envKeyId = id; this._envVersion = this._lightsEpoch * 65536 + id; }

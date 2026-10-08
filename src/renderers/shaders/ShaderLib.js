@@ -738,6 +738,9 @@ void main() {
 
 	#ifdef IS_NORMAL_MATERIAL
 	fragColor = vec4( normalize( ( viewMatrix * vec4( normal, 0.0 ) ).xyz ) * 0.5 + 0.5, diffuseColor.a );
+	#ifdef OPAQUE
+	fragColor.a = 1.0;
+	#endif
 	return;
 	#endif
 

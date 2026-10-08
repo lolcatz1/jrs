@@ -451,6 +451,42 @@ export function moreCases(env, C, has, h) {
 		const m4 = memTex(side);
 		return { ...r, data: { memory: [m1, m2, m3, m4], deletes: [deletes1, deletes2], creates: creates >= 2 } };
 	});
+	add('lifecycle', 'context loss and restore: a texture is uploaded again into the new context', async (T, side) => {
+		// uses its own renderer so that the shared pair keeps a live context
+		const canvas = document.createElement('canvas'); canvas.width = canvas.height = SIZE; document.body.appendChild(canvas);
+		const renderer = new T.WebGLRenderer({ canvas, antialias: false, preserveDrawingBuffer: true });
+		renderer.setPixelRatio(1); renderer.setSize(SIZE, SIZE, false);
+		const tex = new T.DataTexture(rgbaPattern(4, 4), 4, 4, T.RGBAFormat, T.UnsignedByteType); tex.needsUpdate = true;
+		const { scene, camera } = quadScene(T, basic(T, tex));
+		renderer.render(scene, camera);
+		const gl = renderer.getContext();
+		const once = (name) => new Promise((res, rej) => { canvas.addEventListener(name, res, { once: true }); setTimeout(() => rej(new Error(name + ' did not fire')), 4000); });
+		const lost = once('webglcontextlost'); renderer.forceContextLoss(); await lost; await new Promise((r) => setTimeout(r, 300));
+		const restored = once('webglcontextrestored'); renderer.forceContextRestore(); await restored;
+		renderer.render(scene, camera);
+		const px = new Uint8Array(SIZE * SIZE * 4); gl.readPixels(0, 0, SIZE, SIZE, gl.RGBA, gl.UNSIGNED_BYTE, px);
+		const o = (Math.floor(SIZE / 2) * SIZE + Math.floor(SIZE / 2)) * 4;
+		const r = { pixels: px, centre: [px[o], px[o + 1], px[o + 2], px[o + 3]] };
+		renderer.dispose(); canvas.remove();
+		return r;
+	}, { compareWarnings: false, gap: 'context restore is not supported: after webglcontextrestored jrs keeps its stale GL objects (buffers, VAOs, uniform blocks, programs, textures) where three.js re-initialises every sub-system; not specific to textures' });
+	add('lifecycle', 'context loss and restore: an untextured mesh (baseline for the texture case above)', async (T, side) => {
+		const canvas = document.createElement('canvas'); canvas.width = canvas.height = SIZE; document.body.appendChild(canvas);
+		const renderer = new T.WebGLRenderer({ canvas, antialias: false, preserveDrawingBuffer: true });
+		renderer.setPixelRatio(1); renderer.setSize(SIZE, SIZE, false);
+		const { scene, camera } = quadScene(T, new T.MeshBasicMaterial({ color: 0xff8800 }));
+		renderer.render(scene, camera);
+		const gl = renderer.getContext();
+		const once = (name) => new Promise((res, rej) => { canvas.addEventListener(name, res, { once: true }); setTimeout(() => rej(new Error(name + ' did not fire')), 4000); });
+		const lost = once('webglcontextlost'); renderer.forceContextLoss(); await lost; await new Promise((r) => setTimeout(r, 300));
+		const restored = once('webglcontextrestored'); renderer.forceContextRestore(); await restored;
+		renderer.render(scene, camera);
+		const px = new Uint8Array(SIZE * SIZE * 4); gl.readPixels(0, 0, SIZE, SIZE, gl.RGBA, gl.UNSIGNED_BYTE, px);
+		const o = (Math.floor(SIZE / 2) * SIZE + Math.floor(SIZE / 2)) * 4;
+		const r = { pixels: px, centre: [px[o], px[o + 1], px[o + 2], px[o + 3]] };
+		renderer.dispose(); canvas.remove();
+		return r;
+	}, { compareWarnings: false, gap: 'context restore is not supported: after webglcontextrestored jrs keeps its stale GL objects (buffers, VAOs, uniform blocks, programs, textures) where three.js re-initialises every sub-system; not specific to textures' });
 	add('lifecycle', 'texture.userData / uuid / name / id are untouched by upload, dispose and re-upload', (T, side) => {
 		const tex = mkData(T, 4, 4, 1); tex.userData = { a: 1, nested: { b: [1, 2, 3] } }; tex.name = 'hello';
 		const uuid = tex.uuid, id = tex.id, source = tex.source.uuid;
@@ -855,7 +891,7 @@ export function moreCases(env, C, has, h) {
 			for (let y = 0; y < 8; y++) for (let x = 0; x < n; x++) d[(y * n + x) * 4 + 3] = 255, d[(y * n + x) * 4] = 255;
 			tex.needsUpdate = true;
 			const t2 = performance.now(); const r = shot(side, scene, camera); side.gl.finish(); const t3 = performance.now();
-			r.info = `first upload+render ${(t1 - t0).toFixed(0)} ms, second ${(t3 - t2).toFixed(0)} ms (${side.lib.REVISION ? 'three' : 'jrs'}); ${side.log.filter((c) => /^tex(Sub)?(Image|Storage)2D$/.test(c[0])).map((c) => c[0]).join(',')}`;
+			r.info = `first upload+render ${(t1 - t0).toFixed(0)} ms, second ${(t3 - t2).toFixed(0)} ms ; ${side.log.filter((c) => /^tex(Sub)?(Image|Storage)2D$/.test(c[0])).map((c) => c[0]).join(',')}`;
 			return r;
 		}, { compareWarnings: false });
 	}
@@ -881,6 +917,173 @@ export function moreCases(env, C, has, h) {
 		r.info = `6 frames in ${(performance.now() - t0).toFixed(0)} ms; ` + side.log.filter((c) => /^tex(Sub)?(Image|Storage)2D$/.test(c[0])).map((c) => c[0]).join(',');
 		return r;
 	}, { compareWarnings: false });
+
+	// ----------------------------------------------------------------------------------------------------- integer formats, alignment, render targets, batching
+	for (const [fname, comps, tname, sampler, arrType] of [
+		['RedIntegerFormat', 1, 'UnsignedByte', 'usampler2D', 'Uint8Array'], ['RGIntegerFormat', 2, 'UnsignedByte', 'usampler2D', 'Uint8Array'], ['RGBAIntegerFormat', 4, 'UnsignedByte', 'usampler2D', 'Uint8Array'],
+		['RedIntegerFormat', 1, 'UnsignedShort', 'usampler2D', 'Uint16Array'], ['RGBAIntegerFormat', 4, 'UnsignedShort', 'usampler2D', 'Uint16Array'], ['RedIntegerFormat', 1, 'UnsignedInt', 'usampler2D', 'Uint32Array'], ['RGBAIntegerFormat', 4, 'UnsignedInt', 'usampler2D', 'Uint32Array'],
+		['RedIntegerFormat', 1, 'Byte', 'isampler2D', 'Int8Array'], ['RGIntegerFormat', 2, 'Short', 'isampler2D', 'Int16Array'], ['RGBAIntegerFormat', 4, 'Int', 'isampler2D', 'Int32Array'],
+		['RGBIntegerFormat', 3, 'UnsignedByte', 'usampler2D', 'Uint8Array'],
+	]) {
+		add('integer', `DataTexture ${fname.replace('Format', '')} x ${tname} sampled with ${sampler}`, (T, side) => {
+			const data = new globalThis[arrType](4 * 4 * comps); for (let i = 0; i < data.length; i++) data[i] = ((i * 37 + 11) % 100) * (arrType.startsWith('Int') ? (i % 2 ? -1 : 1) : 1);
+			const tex = new T.DataTexture(data, 4, 4, T[fname], T[tname + 'Type']); tex.needsUpdate = true;
+			const scale = arrType === 'Uint32Array' || arrType === 'Int32Array' ? '100.0' : '100.0';
+			const { scene, camera } = plain(T);
+			scene.add(new T.Mesh(new T.PlaneGeometry(2, 2), shaderQuad(T, { t: { value: tex } },
+				`precision highp ${sampler}; precision highp int; uniform ${sampler} t; varying vec2 vUv; void main(){ ${sampler === 'usampler2D' ? 'uvec4' : 'ivec4'} v = texelFetch(t, ivec2(vUv * 4.0), 0); vec4 f = vec4(v); gl_FragColor = vec4(abs(f.rgb) / ${scale}, 1.0); }`)));
+			return shot(side, scene, camera);
+		});
+	}
+	add('upload-state', 'unpackAlignment=1/2/4/8 RG x UnsignedByte, width 3 (row-padded data)', (T, side) => {
+		const w = 3, hh = 4; let r = null; const px = [];
+		for (const al of [1, 2, 4, 8]) {
+			const rowBytes = Math.ceil(w * 2 / al) * al, data = new Uint8Array(rowBytes * hh);
+			for (let y = 0; y < hh; y++) for (let x = 0; x < w * 2; x++) data[y * rowBytes + x] = 20 + ((y * 53 + x * 37) % 230);
+			const tex = new T.DataTexture(data, w, hh, T.RGFormat, T.UnsignedByteType); tex.unpackAlignment = al; tex.needsUpdate = true;
+			const { scene, camera } = quadScene(T, basic(T, tex));
+			px.push(shot(side, scene, camera));
+		}
+		const out = new Uint8Array(px[0].pixels.length); for (let i = 0; i < out.length; i++) out[i] = px[(i >> 2) % 4].pixels[i];
+		return { pixels: out, centre: px[0].centre };
+	});
+	add('render-target', 'render target texture with generateMipmaps and a mipmap minFilter used as a map (minified)', (T, side) => {
+		const rt = new T.WebGLRenderTarget(64, 64, { generateMipmaps: true, minFilter: T.LinearMipmapLinearFilter, magFilter: T.LinearFilter });
+		const world = new T.Scene(); world.background = new T.Color(0x203060);
+		const cam = new T.OrthographicCamera(-1, 1, 1, -1, 0.1, 10); cam.position.z = 2;
+		const tex = new T.DataTexture(busyPattern(64, 64), 64, 64, T.RGBAFormat, T.UnsignedByteType); tex.needsUpdate = true;
+		world.add(new T.Mesh(new T.PlaneGeometry(2, 2), basic(T, tex)));
+		side.renderer.setRenderTarget(rt); side.renderer.render(world, cam); side.renderer.setRenderTarget(null);
+		const { scene, camera } = plain(T);
+		const t2 = rt.texture; t2.wrapS = t2.wrapT = T.RepeatWrapping; t2.repeat.set(5, 5);
+		scene.add(new T.Mesh(new T.PlaneGeometry(2, 2), basic(T, t2)));
+		const r = shot(side, scene, camera);
+		rt.dispose();
+		return r;
+	});
+	for (const [type, label] of [['HalfFloatType', 'HalfFloat'], ['FloatType', 'Float'], ['UnsignedByteType', 'UnsignedByte sRGB']]) {
+		add('render-target', `render target type=${label}: render then sample`, (T, side) => {
+			const rt = new T.WebGLRenderTarget(32, 32, { type: T[type], colorSpace: label.includes('sRGB') ? T.SRGBColorSpace : T.NoColorSpace, magFilter: T.NearestFilter, minFilter: T.NearestFilter });
+			const world = new T.Scene(); world.background = new T.Color(0x884422);
+			const cam = new T.OrthographicCamera(-1, 1, 1, -1, 0.1, 10); cam.position.z = 2;
+			world.add(new T.Mesh(new T.PlaneGeometry(1, 1), new T.MeshBasicMaterial({ color: 0x44ff88 })));
+			side.renderer.setRenderTarget(rt); side.renderer.render(world, cam); side.renderer.setRenderTarget(null);
+			const { scene, camera } = plain(T);
+			scene.add(new T.Mesh(new T.PlaneGeometry(2, 2), basic(T, rt.texture)));
+			const r = shot(side, scene, camera);
+			rt.dispose();
+			return r;
+		});
+	}
+	for (const [tm, name] of [['ACESFilmicToneMapping', 'ACESFilmic'], ['ReinhardToneMapping', 'Reinhard']]) {
+		add('render-target', `tone mapping (${name}) applies to the screen only: render target contents are untouched`, (T, side) => {
+			side.renderer.toneMapping = T[tm]; side.renderer.toneMappingExposure = 1.4;
+			try {
+				const rt = new T.WebGLRenderTarget(32, 32, { magFilter: T.NearestFilter, minFilter: T.NearestFilter });
+				const world = new T.Scene(); world.background = new T.Color(0x884422);
+				const cam = new T.OrthographicCamera(-1, 1, 1, -1, 0.1, 10); cam.position.z = 2;
+				world.add(new T.Mesh(new T.PlaneGeometry(1, 1), new T.MeshBasicMaterial({ color: 0x66ffaa })));
+				side.renderer.setRenderTarget(rt); side.renderer.render(world, cam); side.renderer.setRenderTarget(null);
+				const { scene, camera } = plain(T);
+				scene.add(new T.Mesh(new T.PlaneGeometry(1, 2), basic(T, rt.texture)).translateX(-0.5));
+				scene.add(new T.Mesh(new T.PlaneGeometry(1, 2), new T.MeshBasicMaterial({ color: 0x66ffaa })).translateX(0.5));
+				const r = shot(side, scene, camera);
+				rt.dispose();
+				return r;
+			} finally { side.renderer.toneMapping = T.NoToneMapping; side.renderer.toneMappingExposure = 1; }
+		});
+	}
+	add('render-target', 'sRGB render target: clear colour, background colour and a ShaderMaterial with colorspace_fragment', (T, side) => {
+		const rt = new T.WebGLRenderTarget(32, 32, { colorSpace: T.SRGBColorSpace, magFilter: T.NearestFilter, minFilter: T.NearestFilter });
+		const world = new T.Scene(); world.background = new T.Color(0x884422);
+		const cam = new T.OrthographicCamera(-1, 1, 1, -1, 0.1, 10); cam.position.z = 2;
+		const sm = new T.ShaderMaterial({ vertexShader: 'void main(){ gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }', fragmentShader: 'void main(){ gl_FragColor = vec4(0.2, 0.5, 0.8, 1.0); #include <colorspace_fragment>\n }' });
+		const m1 = new T.Mesh(new T.PlaneGeometry(0.8, 0.8), sm); m1.position.x = -0.5; world.add(m1);
+		const m2 = new T.Mesh(new T.PlaneGeometry(0.8, 0.8), new T.MeshBasicMaterial({ color: 0x66ffaa })); m2.position.x = 0.5; world.add(m2);
+		side.renderer.setRenderTarget(rt); side.renderer.render(world, cam); side.renderer.setRenderTarget(null);
+		const { scene, camera } = plain(T);
+		scene.add(new T.Mesh(new T.PlaneGeometry(2, 2), basic(T, rt.texture)));
+		const r = shot(side, scene, camera);
+		rt.dispose();
+		return r;
+	});
+	add('render-target', 'Texture.dispose on a render target texture then render target dispose does not double-free', (T, side) => {
+		const rt = new T.WebGLRenderTarget(16, 16);
+		const world = new T.Scene(); world.background = new T.Color(0x884422);
+		const cam = new T.OrthographicCamera(-1, 1, 1, -1, 0.1, 10); cam.position.z = 2;
+		side.renderer.setRenderTarget(rt); side.renderer.render(world, cam); side.renderer.setRenderTarget(null);
+		const m1 = memTex(side);
+		rt.dispose();
+		const m2 = memTex(side);
+		rt.dispose();
+		return { pixels: new Uint8Array(SIZE * SIZE * 4), centre: [0, 0, 0, 0], data: { memory: [m1, m2], deletes: side.log.filter((c) => c[0] === 'deleteTexture').length } };
+	});
+	add('batching', 'twelve meshes of one geometry with four different textures (two share a Source), batched like three draws them', (T, side) => {
+		const { scene, camera } = plain(T);
+		const base = new T.DataTexture(rgbaPattern(4, 4), 4, 4, T.RGBAFormat, T.UnsignedByteType); base.needsUpdate = true; base.magFilter = T.NearestFilter;
+		const t2 = new T.DataTexture(rgbaPattern(4, 4).map((v, i) => 255 - v), 4, 4, T.RGBAFormat, T.UnsignedByteType); t2.needsUpdate = true; t2.magFilter = T.NearestFilter;
+		const t3 = base.clone(); t3.needsUpdate = true; // same Source as base: one GL texture
+		const t4 = new T.CanvasTexture(canvasPattern(8, 8)); t4.magFilter = T.NearestFilter;
+		const maps = [base, t2, t3, t4];
+		const geo = new T.PlaneGeometry(0.4, 0.4);
+		const mats = maps.map((m) => new T.MeshBasicMaterial({ map: m }));
+		for (let i = 0; i < 12; i++) { const m = new T.Mesh(geo, mats[i % 4]); m.position.set(-0.75 + (i % 4) * 0.5, 0.6 - Math.floor(i / 4) * 0.5, 0); scene.add(m); }
+		const r = shot(side, scene, camera);
+		r.data = { memory: memTex(side) };
+		return r;
+	});
+	add('batching', 'a texture swapped on a material between frames (same program, different map)', (T, side) => {
+		const { scene, camera } = plain(T);
+		const a = new T.DataTexture(rgbaPattern(4, 4), 4, 4, T.RGBAFormat, T.UnsignedByteType); a.needsUpdate = true;
+		const b = new T.DataTexture(rgbaPattern(4, 4).map((v) => 255 - v), 4, 4, T.RGBAFormat, T.UnsignedByteType); b.needsUpdate = true;
+		const mat = new T.MeshBasicMaterial({ map: a });
+		const geo = new T.PlaneGeometry(0.4, 0.4);
+		for (let i = 0; i < 8; i++) { const m = new T.Mesh(geo, mat); m.position.set(-0.75 + (i % 4) * 0.5, 0.3 - Math.floor(i / 4) * 0.6, 0); scene.add(m); }
+		side.renderer.render(scene, camera);
+		mat.map = b; mat.needsUpdate = true;
+		return shot(side, scene, camera);
+	});
+	add('batching', 'texture removed from a material between frames (map = null, needsUpdate)', (T, side) => {
+		const { scene, camera } = plain(T);
+		const a = new T.DataTexture(rgbaPattern(4, 4), 4, 4, T.RGBAFormat, T.UnsignedByteType); a.needsUpdate = true;
+		const mat = new T.MeshBasicMaterial({ map: a, color: 0xffcc88 });
+		scene.add(new T.Mesh(new T.PlaneGeometry(1.5, 1.5), mat));
+		side.renderer.render(scene, camera);
+		mat.map = null; mat.needsUpdate = true;
+		return shot(side, scene, camera);
+	});
+	add('dynamic', 'image object with complete=false: warns and keeps sampling black', (T, side) => {
+		const tex = new T.Texture({ complete: false, width: 4, height: 4 }); tex.needsUpdate = true;
+		const { scene, camera } = plain(T);
+		scene.add(new T.Mesh(new T.PlaneGeometry(2, 2), basic(T, tex)));
+		return shot(side, scene, camera);
+	});
+	add('maps', 'PointsMaterial with alphaMap, map rotation and repeat (point coordinate transform)', (T, side) => {
+		const tex = new T.CanvasTexture(canvasPattern(16, 16)); tex.colorSpace = T.SRGBColorSpace; tex.rotation = 0.5; tex.center.set(0.5, 0.5); tex.repeat.set(1.5, 1.5); tex.wrapS = tex.wrapT = T.RepeatWrapping;
+		const alpha = new T.DataTexture(new Uint8Array([0, 255, 0, 255, 255, 0, 255, 0, 0, 255, 0, 255, 255, 0, 255, 0].flatMap((v) => [0, v, 0, 255])), 4, 4, T.RGBAFormat, T.UnsignedByteType); alpha.needsUpdate = true;
+		const { scene, camera } = plain(T);
+		const g = new T.BufferGeometry(); g.setAttribute('position', new T.Float32BufferAttribute([0, 0, 0], 3));
+		scene.add(new T.Points(g, new T.PointsMaterial({ map: tex, alphaMap: alpha, size: 40, sizeAttenuation: false, transparent: true })));
+		return shot(side, scene, camera);
+	});
+	add('large', 'large DataTexture: jrs defines it with texImage2D (mapped-memory upload path), three.js uses texStorage2D + texSubImage2D', (T, side) => {
+		const n = 1024, d = new Uint8Array(n * n * 4); for (let i = 0; i < d.length; i++) d[i] = (i * 7) & 255;
+		const tex = new T.DataTexture(d, n, n, T.RGBAFormat, T.UnsignedByteType); tex.needsUpdate = true;
+		const { scene, camera } = quadScene(T, basic(T, tex));
+		const r = shot(side, scene, camera);
+		d[0] = 1; tex.needsUpdate = true; side.renderer.render(scene, camera);
+		r.info = side.log.filter((c) => /^tex(Sub)?(Image|Storage)2D$/.test(c[0])).map((c) => c[0]).join(',');
+		return r;
+	}, { verify: (va, vb, ra, rb) => {
+		const names = (r) => r.calls.map((c) => c[0]);
+		if (!names(rb).includes('texStorage2D')) return 'three.js reference unexpectedly changed its upload path';
+		return names(ra).filter((n) => n === 'texImage2D').length === 2 && !names(ra).includes('texSubImage2D') || `jrs large DataTexture should use texImage2D twice (got ${names(ra).join(',')})`;
+	}, showCalls: true });
+	add('large', 'small DataTexture keeps three.js storage path (texStorage2D + texSubImage2D)', (T, side) => {
+		const tex = new T.DataTexture(rgbaPattern(16, 16), 16, 16, T.RGBAFormat, T.UnsignedByteType); tex.needsUpdate = true;
+		const { scene, camera } = quadScene(T, basic(T, tex));
+		return shot(side, scene, camera);
+	}, { callsMatch: ['texStorage2D', 'texSubImage2D', 'texImage2D'] });
 
 	return out;
 }
