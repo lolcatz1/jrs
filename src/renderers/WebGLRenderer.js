@@ -133,6 +133,8 @@ class WebGLRenderer {
 		this._colorSpaceIds = new Map([['srgb-linear', 0], ['srgb', 1]]);
 		this._lastLightsVersion = -1;
 		this._samplerStamp = 0;
+		this._viewStamp = 0; // bumped per drawn list: the modelViewMatrix cache of a program uniform is valid within one (camera, list)
+		this._view64 = null; // the current list's view matrix (double precision when the camera still owns it)
 		this._programCounter = 0;
 		this._currentScene = null;
 		this._currentSide = -1;
@@ -1124,7 +1126,8 @@ class WebGLRenderer {
 	 */
 	_drawList(list, keys, n, scene, camera, shadowPass, commandCache = null, keysVersion = 0) {
 		if (n === 0) return;
-		this._currentScene = scene; this._listShadowPass = shadowPass;
+		this._currentScene = scene; this._listShadowPass = shadowPass; this._viewStamp++;
+		this._view64 = camera._viewElements64 !== undefined ? camera._viewElements64() : camera.matrixWorldInverse.elements;
 		if (this._traceSeq !== null) this._traceList = shadowPass ? 's' : (keys === list.transparentSorted ? 't' : 'o');
 		const batcher = this.batcher;
 		const autoBatch = this.autoBatch, minimum = this.autoBatchMinimum;
@@ -1437,6 +1440,13 @@ class WebGLRenderer {
 		if (material.isShaderMaterial) {
 			this._uploadObjectUniformsForShaderMaterial(program, object, camera);
 		} else {
+			const mvu = program.modelViewMatrixUniform;
+			if (mvu !== null && (mvu._lastObject !== object || mvu._lastVersion !== object._worldVersion || mvu._lastView !== this._viewStamp)) {
+				// view * world in double precision, rounded once (three.js's modelViewMatrix); the stamp changes per list
+				mvu._lastObject = object; mvu._lastVersion = object._worldVersion; mvu._lastView = this._viewStamp;
+				multiplyViewWorld(_mv, this._view64, s, o + 16);
+				if (!cacheArray(mvu, _mv, 16)) { gl.uniformMatrix4fv(mvu.location, false, _mv); if (this._traceUniforms !== null) this._trace(mvu); }
+			}
 			const nu = program.normalMatrixUniform;
 			if (nu !== null) {
 				if (object._normalVersion !== object._worldVersion) { computeNormalMatrix(s, o); object._normalVersion = object._worldVersion; }
@@ -1650,6 +1660,22 @@ const _wireGroup = { start: 0, count: 0, materialIndex: 0 };
 const MAP_KEYS = ['map', 'alphaMap', 'normalMap', 'emissiveMap', 'roughnessMap', 'metalnessMap', 'aoMap', 'specularMap'];
 const BATCH_SIG_SIZE = MAP_KEYS.length + 33; // see _batchGroupOf
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+const _mv = new Float32Array(16); // modelViewMatrix scratch (uploaded straight after it is built)
+
+/** out = view * world (column-major), the products and sums in double precision, rounded once into `out`. */
+function multiplyViewWorld(out, a, b, bo) {
+	const a11 = a[0], a12 = a[4], a13 = a[8], a14 = a[12];
+	const a21 = a[1], a22 = a[5], a23 = a[9], a24 = a[13];
+	const a31 = a[2], a32 = a[6], a33 = a[10], a34 = a[14];
+	const a41 = a[3], a42 = a[7], a43 = a[11], a44 = a[15];
+	for (let c = 0; c < 4; c++) {
+		const b1 = b[bo + c * 4], b2 = b[bo + c * 4 + 1], b3 = b[bo + c * 4 + 2], b4 = b[bo + c * 4 + 3];
+		out[c * 4] = a11 * b1 + a12 * b2 + a13 * b3 + a14 * b4;
+		out[c * 4 + 1] = a21 * b1 + a22 * b2 + a23 * b3 + a24 * b4;
+		out[c * 4 + 2] = a31 * b1 + a32 * b2 + a33 * b3 + a34 * b4;
+		out[c * 4 + 3] = a41 * b1 + a42 * b2 + a43 * b3 + a44 * b4;
+	}
+}
 
 /**
  * Does this context accept a std140 struct array inside a uniform block indexed by a non-constant

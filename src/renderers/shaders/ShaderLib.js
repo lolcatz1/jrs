@@ -167,6 +167,7 @@ ${MATERIAL_BLOCK}
 ${LIGHTS_BLOCK}
 #endif
 uniform mat4 modelMatrix;
+uniform mat4 modelViewMatrix; // per-object draws: built on the CPU in double precision (three.js's order of operations)
 uniform mat3 normalMatrix;
 in vec3 position;
 #ifdef USE_NORMAL
@@ -278,7 +279,11 @@ void main() {
 	${ShaderChunk.skinning_vertex}
 	#ifdef IS_SPRITE
 		// billboard: sprite plane in view space
+		#ifdef USE_OBJECT_TEXTURE
 		vec4 mvPosition = viewMatrix * model * vec4( 0.0, 0.0, 0.0, 1.0 );
+		#else
+		vec4 mvPosition = modelViewMatrix * vec4( 0.0, 0.0, 0.0, 1.0 );
+		#endif
 		vec2 scale = vec2( length( model[ 0 ].xyz ), length( model[ 1 ].xyz ) );
 		#ifndef SIZE_ATTENUATION
 		if ( cameraPosition.w < 0.5 ) scale *= - mvPosition.z;
@@ -293,7 +298,15 @@ void main() {
 		vec4 worldPosition = vec4( model[ 3 ].xyz + camRight * rotated.x + camUp * rotated.y, 1.0 );
 	#else
 		vec4 worldPosition = model * vec4( transformed, 1.0 );
+		#if defined( USE_OBJECT_TEXTURE )
 		vec4 mvPosition = viewMatrix * worldPosition;
+		#elif defined( USE_INSTANCING )
+		// three.js's order: projectionMatrix * ( modelViewMatrix * ( instanceMatrix * position ) ), modelViewMatrix
+		// rounded once from a double-precision product; same float32 operations -> same clip position
+		vec4 mvPosition = modelViewMatrix * ( instanceMatrix * vec4( transformed, 1.0 ) );
+		#else
+		vec4 mvPosition = modelViewMatrix * vec4( transformed, 1.0 );
+		#endif
 	#endif
 	#ifndef SHADOW_LEAN
 	vWorldPosition = worldPosition.xyz;
