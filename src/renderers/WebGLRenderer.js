@@ -26,7 +26,8 @@ import { WebGLMorphtargets } from './webgl/WebGLMorphtargets.js';
 import { computeNormalMatrix } from '../core/TransformSlab.js';
 import { WebGLInfo } from './webgl/WebGLInfo.js';
 import { WebGLShadowMap } from './webgl/WebGLShadowMap.js';
-import { MATERIAL_SHADER, MATERIAL_SPRITE, MATERIAL_POINTS, FRAME_BLOCK_SIZE, LIGHTS_BLOCK_SIZE, MATERIAL_BLOCK_SIZE, TEXTURE_UNITS } from './shaders/ShaderLib.js';
+import { getDFGLUT } from './shaders/DFGLUTData.js';
+import { MATERIAL_SHADER, MATERIAL_SPRITE, MATERIAL_POINTS, MATERIAL_SHADOW_DEPTH, FRAME_BLOCK_SIZE, LIGHTS_BLOCK_SIZE, MATERIAL_BLOCK_SIZE, TEXTURE_UNITS } from './shaders/ShaderLib.js';
 
 const _projScreenMatrix = /*@__PURE__*/ new Matrix4();
 const _vector3 = /*@__PURE__*/ new Vector3();
@@ -40,6 +41,7 @@ const V_INSTANCING = 1, V_INSTANCING_COLOR = 2, V_RECEIVE_SHADOW = 4, V_SHADOW_P
 const V_HAS_UV = 16, V_HAS_UV1 = 32, V_HAS_COLOR = 64, V_COLOR_ALPHA = 128, V_MULTIDRAW = 256, V_OBJTEX = 512, V_MATARRAY = 1024;
 // skinning / morph targets are per-object GPU state: their own program variants, never batched
 const V_SKINNING = 2048, V_MORPH_POSITION = 4096, V_MORPH_NORMAL = 8192, V_MORPH_COLOR = 16384, V_MORPH_COUNT_SHIFT = 15; // morph target count in bits 15..22
+const V_SIDE_BACK = 1 << 23, V_SIDE_FRONT = 1 << 24; // two-pass transparent DoubleSide materials (three.js renders back faces, then front faces); above the morph-count bits
 
 const defaultOnBeforeRender = Object3D.prototype.onBeforeRender;
 const defaultOnAfterRender = Object3D.prototype.onAfterRender;
@@ -296,7 +298,9 @@ class WebGLRenderer {
 	_applyClearColor() {
 		let a = this._clearAlpha;
 		_color.copy(this._clearColor);
-		ColorManagement.fromWorkingColorSpace(_color, this._currentRenderTarget === null ? this._outputColorSpace : this._currentRenderTarget.texture.colorSpace);
+		// three.js converts clear/background colours to the output colour space only for the canvas; render
+		// targets are cleared with the working-space (linear) value (an sRGB render target encodes in hardware)
+		if (this._currentRenderTarget === null) ColorManagement.fromWorkingColorSpace(_color, this._outputColorSpace);
 		let r = _color.r, g = _color.g, b = _color.b;
 		if (this._premultipliedAlpha) { r *= a; g *= a; b *= a; }
 		this.state.setClearColor(r, g, b, a);
@@ -304,7 +308,7 @@ class WebGLRenderer {
 	clear(color = true, depth = true, stencil = true) {
 		const gl = this._gl;
 		let bits = 0;
-		if (color) bits |= gl.COLOR_BUFFER_BIT;
+		if (color) { bits |= gl.COLOR_BUFFER_BIT; this.state.setColorMask(true); } // a colorWrite=false material may have left the mask off (three.js resets it before clearing)
 		if (depth) { bits |= gl.DEPTH_BUFFER_BIT; this.state.setDepthMask(true); }
 		if (stencil) { bits |= gl.STENCIL_BUFFER_BIT; this.state.setStencilMask(0xffffffff); }
 		gl.clear(bits);
@@ -403,7 +407,7 @@ class WebGLRenderer {
 		this._currentCamera = camera;
 		this._currentScene = scene;
 		this._materialCounter = 0; this._geometryCounter = 0; this._programCounter = 0;
-		this._currentMaterial = null; this._currentSide = -1;
+		this._currentMaterial = null; this._currentProgram = null; this._currentSide = -1; this._sideOverride = -1; this._listShadowPass = false;
 		this._traceUniforms = this.debug.traceUniforms === true ? new Map() : null;
 		this._traceSwitches = 0; this._traceDraws = this.info.render.calls; this._traceSeq = this._traceUniforms !== null ? [] : null; this._traceList = 'o';
 		this._updateEnv(scene);
@@ -442,11 +446,12 @@ class WebGLRenderer {
 		const background = scene.background;
 		if (background !== null && background.isColor) {
 			_color.copy(background);
-			ColorManagement.fromWorkingColorSpace(_color, this._currentRenderTarget === null ? this._outputColorSpace : this._currentRenderTarget.texture.colorSpace);
+			if (this._currentRenderTarget === null) ColorManagement.fromWorkingColorSpace(_color, this._outputColorSpace);
 			this.state.setClearColor(_color.r, _color.g, _color.b, 1);
 			if (this.autoClear || this.autoClearColor) this.clear(true, this.autoClearDepth, this.autoClearStencil);
 			this._applyClearColor();
 		} else if (this.autoClear) {
+			this._applyClearColor(); // the conversion depends on the current render target
 			this.clear(this.autoClearColor, this.autoClearDepth, this.autoClearStencil);
 		}
 
@@ -683,7 +688,11 @@ class WebGLRenderer {
 		d[48] = we[12]; d[49] = we[13]; d[50] = we[14]; d[51] = camera.isOrthographicCamera ? 1 : 0;
 		const fog = scene.fog;
 		if (fog !== null && fog !== undefined) {
-			d[52] = fog.color.r; d[53] = fog.color.g; d[54] = fog.color.b; d[55] = fog.isFogExp2 ? 2 : 1;
+			// three.js uploads the fog colour in the "unlit uniform colour space": the output colour space when
+			// rendering to the canvas, the (linear) working colour space when rendering to a render target
+			_color.copy(fog.color);
+			if (this._currentRenderTarget === null) ColorManagement.fromWorkingColorSpace(_color, this._outputColorSpace);
+			d[52] = _color.r; d[53] = _color.g; d[54] = _color.b; d[55] = fog.isFogExp2 ? 2 : 1;
 			d[56] = fog.near !== undefined ? fog.near : 0; d[57] = fog.far !== undefined ? fog.far : 0; d[58] = fog.density !== undefined ? fog.density : 0;
 		} else {
 			d[52] = 0; d[53] = 0; d[54] = 0; d[55] = 0; d[56] = 0; d[57] = 0; d[58] = 0;
@@ -742,13 +751,23 @@ class WebGLRenderer {
 		return vis;
 	}
 
-	/** View-space depth used for transparent sorting (the cached cull-sphere centre, or the object origin when not culled), written to out[0]. */
+	/** Transparent sort depth, written to out[0]: like three.js, the NDC depth of the world-space bounding sphere
+	 *  centre (the instance-aware sphere for InstancedMesh; cached in the slab by _cullTest when culling is on),
+	 *  or of the world position for sprites. */
 	_itemDepth(object, ve, out) {
 		const s = object._slabData, o = object._slabOffset;
 		let cx, cy, cz;
-		if (object.frustumCulled && object.isSprite !== true) { cx = s[o + 41]; cy = s[o + 42]; cz = s[o + 43]; }
-		else { cx = s[o + 28]; cy = s[o + 29]; cz = s[o + 30]; }
-		out[0] = -(ve[2] * cx + ve[6] * cy + ve[10] * cz + ve[14]);
+		if (object.isSprite === true) { cx = s[o + 28]; cy = s[o + 29]; cz = s[o + 30]; }
+		else if (object.frustumCulled) { cx = s[o + 41]; cy = s[o + 42]; cz = s[o + 43]; }
+		else {
+			const geometry = object.geometry;
+			let bs;
+			if (object.isInstancedMesh) { if (object.boundingSphere === null) object.computeBoundingSphere(); bs = object.boundingSphere; }
+			else { if (geometry.boundingSphere === null) geometry.computeBoundingSphere(); bs = geometry.boundingSphere; }
+			_vector3.copy(bs.center).applyMatrix4(object.matrixWorld);
+			cx = _vector3.x; cy = _vector3.y; cz = _vector3.z;
+		}
+		out[0] = ndcDepth(cx, cy, cz);
 	}
 
 	_projectObject(object, camera, groupOrder, sortObjects, list) {
@@ -884,6 +903,7 @@ class WebGLRenderer {
 		}
 	}
 
+	_sideVariant() { return this._sideOverride === BackSide ? V_SIDE_BACK : (this._sideOverride === FrontSide ? V_SIDE_FRONT : 0); }
 	_variantFor(object, geometry, material, shadowPass) {
 		let v = 0;
 		if (object.isInstancedMesh) { v |= V_INSTANCING; if (object.instanceColor !== null) v |= V_INSTANCING_COLOR; }
@@ -958,6 +978,7 @@ class WebGLRenderer {
 			instancing: (variant & V_INSTANCING) !== 0, instancingColor: (variant & V_INSTANCING_COLOR) !== 0,
 			receiveShadow: (variant & V_RECEIVE_SHADOW) !== 0, shadowPass: (variant & V_SHADOW_PASS) !== 0,
 			multiDraw: (variant & V_MULTIDRAW) !== 0, objectTexture: (variant & V_OBJTEX) !== 0, materialArray: (variant & V_MATARRAY) !== 0,
+			side: (variant & V_SIDE_BACK) !== 0 ? BackSide : ((variant & V_SIDE_FRONT) !== 0 ? FrontSide : material.side),
 		};
 		const parameters = this.programs.getParameters(material, object, scene || _emptyScene, this.lights, vflags);
 		if (entry !== undefined && entry.program.parameters.key === parameters.key && material.isShaderMaterial !== true) {
@@ -965,6 +986,7 @@ class WebGLRenderer {
 			return entry.program;
 		}
 		const program = this.programs.acquireProgram(parameters, material);
+		if (program.justLinked === true) { program.justLinked = false; this.state.currentProgram = program.program; } // linking made it current behind the state cache
 		if (entry !== undefined) {
 			// current program becomes the alternate; the one it displaces is released
 			if (entry.altProgram !== null) this.programs.releaseProgram(entry.altProgram);
@@ -1064,12 +1086,16 @@ class WebGLRenderer {
 		if (material.metalnessMap) t.setTexture2D(material.metalnessMap, TEXTURE_UNITS.metalnessMap);
 		if (material.aoMap) t.setTexture2D(material.aoMap, TEXTURE_UNITS.aoMap);
 		if (material.specularMap) t.setTexture2D(material.specularMap, TEXTURE_UNITS.specularMap);
+		if (material.isMeshStandardMaterial) t.setTexture2D(getDFGLUT(), TEXTURE_UNITS.dfgLUT);
 	}
 
 	// ------------------------------------------------------------------ drawing
 
 	_isBatchable(item) {
 		if (item.material.isShaderMaterial === true || item.group !== null) return false;
+		// a two-pass (back faces, then front faces) transparent material must stay per object: batching all
+		// back faces before all front faces composites overlapping objects differently from three.js
+		if (isTwoPass(item.material, this._listShadowPass)) return false;
 		const object = item.object;
 		return object.isMesh === true && object.isInstancedMesh !== true && object.isSkinnedMesh !== true &&
 			object.morphTargetInfluences === undefined &&
@@ -1083,6 +1109,10 @@ class WebGLRenderer {
 		if (!this._isBatchable(item)) return false;
 		const object = item.object, material = item.material;
 		if (object.isMesh !== true || material.wireframe === true || object.isSprite === true) return false;
+		// a sub-draw of a multi-draw covers the whole geometry: a drawRange set after the mega-buffer record was
+		// built (ensure() only checks it when creating the record) must take the per-draw path
+		const dr = item.geometry.drawRange;
+		if (dr.start !== 0 || dr.count !== Infinity) return false;
 		const rec = this.megaBuffers.ensure(item.geometry);
 		if (this._megaTouch !== null) this._megaTouch.set(item.geometry, rec);
 		if (rec === null || rec.page === null) return false;
@@ -1097,7 +1127,7 @@ class WebGLRenderer {
 	 */
 	_drawList(list, keys, n, scene, camera, shadowPass, commandCache = null, keysVersion = 0) {
 		if (n === 0) return;
-		this._currentScene = scene;
+		this._currentScene = scene; this._listShadowPass = shadowPass;
 		if (this._traceSeq !== null) this._traceList = shadowPass ? 's' : (keys === list.transparentSorted ? 't' : 'o');
 		const batcher = this.batcher;
 		const autoBatch = this.autoBatch, minimum = this.autoBatchMinimum;
@@ -1196,9 +1226,14 @@ class WebGLRenderer {
 		for (let c = 0; c < cmdN; c++) {
 			const item = this._cmdItem[c];
 			const kind = this._cmdKind[c];
-			if (kind === 2 || kind === 4) this._renderMultiDraw(item, this._cmdOffset[c], this._cmdCount[c], this._cmdMdStart[c], scene, camera, shadowPass, kind === 4);
-			else if (kind === 1 || kind === 3) this._renderBatch(item, this._cmdOffset[c], this._cmdCount[c], scene, camera, shadowPass, kind === 3);
-			else this._renderItem(item, scene, camera, shadowPass);
+			const passes = isTwoPass(item.material, shadowPass) ? 2 : 1;
+			for (let p = 0; p < passes; p++) {
+				this._sideOverride = passes === 2 ? (p === 0 ? BackSide : FrontSide) : -1;
+				if (kind === 2 || kind === 4) this._renderMultiDraw(item, this._cmdOffset[c], this._cmdCount[c], this._cmdMdStart[c], scene, camera, shadowPass, kind === 4);
+				else if (kind === 1 || kind === 3) this._renderBatch(item, this._cmdOffset[c], this._cmdCount[c], scene, camera, shadowPass, kind === 3);
+				else this._renderItem(item, scene, camera, shadowPass);
+			}
+			this._sideOverride = -1;
 			this._cmdItem[c] = null;
 		}
 	}
@@ -1269,9 +1304,9 @@ class WebGLRenderer {
 	/** One multiDrawElements/Arrays call for `count` sub-draws whose matrices start at `drawBase` in the matrix texture. */
 	_renderMultiDraw(item, drawBase, count, mdStart, scene, camera, shadowPass, materialArray) {
 		const object = item.object, material = item.material, gl = this._gl;
-		const variant = this._variantFor(object, item.geometry, material, shadowPass) | V_MULTIDRAW | (materialArray ? V_MATARRAY : 0);
+		const variant = this._variantFor(object, item.geometry, material, shadowPass) | V_MULTIDRAW | (materialArray ? V_MATARRAY : 0) | this._sideVariant();
 		const program = this._getProgram(material, object, scene, variant);
-		this._setupMaterial(item, program, material, camera, false, shadowPass ? shadowSideOf(material) : material.side);
+		this._setupMaterial(item, program, material, camera, false, this._sideOverride >= 0 ? this._sideOverride : (shadowPass ? shadowSideOf(material) : material.side));
 		const mu = program.modelMatrixUniform;
 		if (mu !== null) mu._lastObject = null;
 		if (mu !== null && !cacheArray(mu, IDENTITY, 16)) { gl.uniformMatrix4fv(mu.location, false, IDENTITY); if (this._traceUniforms !== null) this._trace(mu); }
@@ -1333,24 +1368,32 @@ class WebGLRenderer {
 				for (let i = 0, l = position.count; i < l; i += 3) indices.push(i, i + 1, i + 1, i + 2, i + 2, i);
 			}
 			wf.setIndex(indices);
+			wf._isWireframe = true;
 			wf._sourceLayout = geometry._layoutVersion;
 			wf._sourceIndexVersion = index !== null ? index.version : 0;
 			wf.boundingSphere = geometry.boundingSphere;
 			this._wireframeGeometries.set(geometry, wf);
 		}
+		// three.js draws a wireframe over the source draw range scaled by 2 (one line pair per index)
+		const dr = geometry.drawRange;
+		wf.drawRange.start = dr.start * 2; wf.drawRange.count = dr.count === Infinity ? Infinity : dr.count * 2;
 		return wf;
 	}
 
 	/** Shared setup for a draw: program, material state, textures, block binding. Returns the program. */
 	_setupMaterial(item, program, material, camera, frontFaceCW, side) {
 		const gl = this._gl, state = this.state;
-		const programChanged = state.useProgram(program.program);
+		// a program linked during this list is already current in GL, so the GL-level switch alone cannot tell
+		// a new program from the previous draw's: track the renderer-level program as well
+		const programChanged = state.useProgram(program.program) || this._currentProgram !== program;
+		this._currentProgram = program;
 		if (programChanged) { this.info.render.programSwitches++; this._traceSwitches++; if (this._traceSeq !== null) this._traceSeq.push({ id: program.id, list: this._traceList, renderOrder: item.object.renderOrder, material: material.type + (material.name ? '(' + material.name + ')' : '') }); }
 		const materialChanged = this._currentMaterial !== material || programChanged || this._currentSide !== side;
 		if (materialChanged) {
 			this._currentMaterial = material;
 			this._currentSide = side;
-			state.setMaterial(material, frontFaceCW, side);
+			if (program.parameters.materialType === MATERIAL_SHADOW_DEPTH) state.setShadowPassMaterial(frontFaceCW, side);
+			else state.setMaterial(material, frontFaceCW, side);
 			if (program.hasMaterialBlock) {
 				const props = this._materialProps(material);
 				const offset = this._syncMaterialBlock(material, props);
@@ -1381,12 +1424,13 @@ class WebGLRenderer {
 	_renderItem(item, scene, camera, shadowPass) {
 		const object = item.object, material = item.material, group = item.group;
 		let geometry = item.geometry;
-		const program = item.program;
+		const side = this._sideOverride >= 0 ? this._sideOverride : (shadowPass ? shadowSideOf(material) : material.side);
+		const program = this._sideOverride >= 0 ? this._getProgram(material, object, scene, this._variantFor(object, geometry, material, shadowPass) | this._sideVariant()) : item.program;
 		if (object.onBeforeRender !== defaultOnBeforeRender) object.onBeforeRender(this, scene, camera, geometry, material, group);
 		const gl = this._gl;
 		if (object._flipVersion !== object._worldVersion) { object._frontFaceCW = object.isMesh && object.matrixWorld.determinant() < 0; object._flipVersion = object._worldVersion; }
 		const frontFaceCW = object._frontFaceCW;
-		this._setupMaterial(item, program, material, camera, frontFaceCW, shadowPass ? shadowSideOf(material) : material.side);
+		this._setupMaterial(item, program, material, camera, frontFaceCW, side);
 		if (material.wireframe === true && object.isMesh) geometry = this._wireframeGeometry(geometry);
 		// per-object uniforms
 		const s = object._slabData, o = object._slabOffset;
@@ -1458,9 +1502,9 @@ class WebGLRenderer {
 		const object = item.object, material = item.material;
 		let geometry = item.geometry;
 		const gl = this._gl;
-		const variant = this._variantFor(object, geometry, material, shadowPass) | V_OBJTEX | (materialArray ? V_MATARRAY : 0);
+		const variant = this._variantFor(object, geometry, material, shadowPass) | V_OBJTEX | (materialArray ? V_MATARRAY : 0) | this._sideVariant();
 		const program = this._getProgram(material, object, scene, variant);
-		this._setupMaterial(item, program, material, camera, false, shadowPass ? shadowSideOf(material) : material.side);
+		this._setupMaterial(item, program, material, camera, false, this._sideOverride >= 0 ? this._sideOverride : (shadowPass ? shadowSideOf(material) : material.side));
 		if (material.wireframe === true) geometry = this._wireframeGeometry(geometry);
 		const mu = program.modelMatrixUniform;
 		if (mu !== null) mu._lastObject = null;
@@ -1479,6 +1523,7 @@ class WebGLRenderer {
 		const index = geometry.index;
 		const drawRange = geometry.drawRange;
 		let drawStart, drawCount;
+		if (group !== null && geometry._isWireframe === true) { _wireGroup.start = group.start * 2; _wireGroup.count = group.count * 2; group = _wireGroup; }
 		if (index !== null) {
 			drawStart = drawRange.start; drawCount = drawRange.count === Infinity ? index.count : drawRange.count;
 			if (group !== null) {
@@ -1592,11 +1637,22 @@ class WebGLRenderer {
 	_trace(u) { this._traceUniforms.set(u.name, (this._traceUniforms.get(u.name) || 0) + 1); }
 }
 
+/** NDC depth of a world-space point under the current projScreen matrix (three.js's transparent sort key). */
+function ndcDepth(x, y, z) {
+	const m = _projScreenMatrix.elements;
+	const w = m[3] * x + m[7] * y + m[11] * z + m[15];
+	return (m[2] * x + m[6] * y + m[10] * z + m[14]) / (w === 0 ? 1 : w);
+}
+/** True when three.js renders this material in two passes (back faces first, then front faces). */
+function isTwoPass(material, shadowPass) {
+	return shadowPass === false && material.transparent === true && material.side === DoubleSide && material.forceSinglePass === false;
+}
 function shadowSideOf(material) {
 	if (material.shadowSide !== null && material.shadowSide !== undefined) return material.shadowSide;
 	return material.side === FrontSide ? BackSide : (material.side === BackSide ? FrontSide : DoubleSide);
 }
 
+const _wireGroup = { start: 0, count: 0, materialIndex: 0 };
 const MAP_KEYS = ['map', 'alphaMap', 'normalMap', 'emissiveMap', 'roughnessMap', 'metalnessMap', 'aoMap', 'specularMap'];
 const BATCH_SIG_SIZE = MAP_KEYS.length + 33; // see _batchGroupOf
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
