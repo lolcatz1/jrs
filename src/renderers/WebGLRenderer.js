@@ -217,12 +217,18 @@ class WebGLRenderer {
 		this._lightsBuffer = gl.createBuffer();
 		gl.bindBuffer(gl.UNIFORM_BUFFER, this._lightsBuffer);
 		gl.bufferData(gl.UNIFORM_BUFFER, LIGHTS_BLOCK_SIZE, gl.DYNAMIC_DRAW);
-		this._materialStride = Math.ceil(MATERIAL_BLOCK_SIZE / this.state.uboAlignment) * this.state.uboAlignment; // bindBufferRange offsets must be multiples of the alignment
-		// Material-index batching binds a window of `_materialWindow` consecutive material records as one
-		// block; the window must fit MAX_UNIFORM_BLOCK_SIZE (16 KB on some mobile GPUs -> 64 records of
-		// 256 B) and is capped so the shader's array stays small. Records are padded to the buffer stride.
-		this._materialWindow = Math.max(1, Math.min(256, Math.floor(gl.getParameter(gl.MAX_UNIFORM_BLOCK_SIZE) / this._materialStride)));
-		this._materialPad = (this._materialStride - MATERIAL_BLOCK_SIZE) / 16;
+		// Two copies of the material records. `_materialBuffer` has one record per `_materialStride` bytes (the block size
+		// rounded up to the UNIFORM_BUFFER_OFFSET_ALIGNMENT): a single material is bound as a range at slot * stride.
+		// `_materialTight` holds the same records back to back for material-index batching, which binds a window of
+		// `_materialWindow` consecutive records as an array: the window must fit MAX_UNIFORM_BLOCK_SIZE, is capped so the
+		// shader's array stays small, and holds a multiple of align / gcd( size, align ) records so that every window starts
+		// at an aligned offset. Both copies are written whenever a record changes.
+		const align = this.state.uboAlignment;
+		this._materialStride = Math.ceil(MATERIAL_BLOCK_SIZE / align) * align;
+		let g = align, h = MATERIAL_BLOCK_SIZE; while (h !== 0) { const t = g % h; g = h; h = t; }
+		const unit = align / g;
+		this._materialWindow = Math.max(unit, Math.floor(Math.min(256, Math.floor(gl.getParameter(gl.MAX_UNIFORM_BLOCK_SIZE) / MATERIAL_BLOCK_SIZE)) / unit) * unit);
+		this._materialPad = 0;
 		this._materialArrayOk = probeMaterialArray(gl);
 		this._batchGroups = new Map();
 		this._batchSigScratch = new Float64Array(BATCH_SIG_SIZE);
@@ -231,6 +237,9 @@ class WebGLRenderer {
 		this._materialBuffer = gl.createBuffer();
 		gl.bindBuffer(gl.UNIFORM_BUFFER, this._materialBuffer);
 		gl.bufferData(gl.UNIFORM_BUFFER, this._materialStride * this._materialCapacity, gl.DYNAMIC_DRAW);
+		this._materialTight = gl.createBuffer();
+		gl.bindBuffer(gl.UNIFORM_BUFFER, this._materialTight);
+		gl.bufferData(gl.UNIFORM_BUFFER, MATERIAL_BLOCK_SIZE * this._materialCapacity, gl.DYNAMIC_DRAW);
 		gl.bindBuffer(gl.UNIFORM_BUFFER, null);
 		this._materialSlotsUsed = 0;
 		this._materialFreeSlots = [];
@@ -358,7 +367,7 @@ class WebGLRenderer {
 		this.environments.dispose();
 		this.background.dispose();
 		if (this.megaBuffers !== null) this.megaBuffers.dispose();
-		this._gl.deleteBuffer(this._frameBuffer); this._gl.deleteBuffer(this._lightsBuffer); this._gl.deleteBuffer(this._materialBuffer);
+		this._gl.deleteBuffer(this._frameBuffer); this._gl.deleteBuffer(this._lightsBuffer); this._gl.deleteBuffer(this._materialBuffer); this._gl.deleteBuffer(this._materialTight);
 		this.setAnimationLoop(null);
 	}
 	_onContextLost(event) { event.preventDefault(); this._isContextLost = true; }
@@ -1408,8 +1417,16 @@ class WebGLRenderer {
 				gl.bindBuffer(gl.COPY_READ_BUFFER, null);
 				gl.deleteBuffer(this._materialBuffer);
 				this._materialBuffer = newBuffer;
+				const newTight = gl.createBuffer();
+				gl.bindBuffer(gl.UNIFORM_BUFFER, newTight);
+				gl.bufferData(gl.UNIFORM_BUFFER, MATERIAL_BLOCK_SIZE * newCap, gl.DYNAMIC_DRAW);
+				gl.bindBuffer(gl.COPY_READ_BUFFER, this._materialTight);
+				gl.copyBufferSubData(gl.COPY_READ_BUFFER, gl.UNIFORM_BUFFER, 0, 0, MATERIAL_BLOCK_SIZE * this._materialCapacity);
+				gl.bindBuffer(gl.COPY_READ_BUFFER, null);
+				gl.deleteBuffer(this._materialTight);
+				this._materialTight = newTight;
 				this._materialCapacity = newCap;
-				this.state.currentUniformBuffer = newBuffer;
+				this.state.currentUniformBuffer = newTight;
 				this.state.currentUniformBindings[BLOCK_MATERIAL] = undefined;
 			}
 			slot = this._materialSlotsUsed++;
@@ -1481,6 +1498,8 @@ class WebGLRenderer {
 			for (let i = 0; i < used; i++) b[i] = s[i];
 			this.state.bindUniformBuffer(this._materialBuffer);
 			gl.bufferSubData(gl.UNIFORM_BUFFER, offset, b, 0, used);
+			this.state.bindUniformBuffer(this._materialTight);
+			gl.bufferSubData(gl.UNIFORM_BUFFER, props.blockSlot * MATERIAL_BLOCK_SIZE, b, 0, used);
 		}
 		return offset;
 	}
@@ -1820,8 +1839,9 @@ class WebGLRenderer {
 				const offset = this._syncMaterialBlock(material, props);
 				if (program.materialArray) {
 					// the whole window of records around this material's slot (the batch's other materials were refreshed while it was built)
-					const windowBytes = this._materialWindow * this._materialStride;
-					state.bindUniformBufferRange(BLOCK_MATERIAL, this._materialBuffer, Math.floor(offset / windowBytes) * windowBytes, windowBytes);
+					const windowBytes = this._materialWindow * MATERIAL_BLOCK_SIZE;
+					const page = Math.floor(offset / this._materialStride / this._materialWindow);
+					state.bindUniformBufferRange(BLOCK_MATERIAL, this._materialTight, page * windowBytes, windowBytes);
 				} else {
 					state.bindUniformBufferRange(BLOCK_MATERIAL, this._materialBuffer, offset, MATERIAL_BLOCK_SIZE);
 				}
