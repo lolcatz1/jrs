@@ -63,6 +63,8 @@ class Material extends EventDispatcher {
 		/** Set when `needsUpdate` is assigned; the renderer clears it after re-resolving the program. */
 		this._programDirty = true;
 		this._frameStamp = -1; this._frameRid = 0;
+		// per-frame program resolution cache (renderer-owned; frame ids are unique across renderers)
+		this._resolveStamp = -1; this._resolveVariant = -1; this._resolveProgram = null;
 	}
 	get alphaTest() { return this._alphaTest; }
 	set alphaTest(value) {
