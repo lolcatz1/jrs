@@ -10,16 +10,31 @@
  */
 import { MATRIX_TEXTURE_WIDTH, TEXELS_PER_OBJECT } from '../shaders/ShaderLib.js';
 import { computeNormalMatrix } from '../../core/TransformSlab.js';
+import { Matrix4 } from '../../math/Matrix4.js';
+import { Matrix3 } from '../../math/Matrix3.js';
 
 const TEX_STRIDE_FLOATS = TEXELS_PER_OBJECT * 4; // model matrix (4 texels) + normal matrix columns (3 texels) + spare
 const MATRICES_PER_ROW = MATRIX_TEXTURE_WIDTH / TEXELS_PER_OBJECT;
+// scratch for view-space entries: Float32Array-backed like Object3D.modelViewMatrix, so the arithmetic matches the per-object path bit for bit
+const _mv = new Matrix4();
+const _nm = new Matrix3();
+
+/**
+ * One GPU copy of the matrix texture. Every render list keeps its own slot (see WebGLRenderer._drawList), so the
+ * matrices of a list that did not change stay on the GPU while other lists (the transparent list, other passes)
+ * draw through the batcher, and the list's draw commands can be replayed without a fill or an upload.
+ */
+class MatrixTextureSlot {
+	constructor() { this.texture = null; this.textureRows = 0; this.textureHash = 0; this.textureCount = 0; }
+}
 
 class WebGLBatcher {
 	constructor(gl) {
 		this.gl = gl;
 		// matrix texture: RGBA32F, TEXELS_PER_OBJECT texels per object (world matrix + normal matrix), rows of MATRICES_PER_ROW objects.
 		// textureRows is the height the texture was last (re)defined with; see uploadTexture for why it is redefined per upload.
-		this.texture = null; this.textureRows = 0; this.textureHash = 0; this.textureCount = 0;
+		this.defaultSlot = new MatrixTextureSlot();
+		this.slot = this.defaultSlot;
 		this.texCapacity = MATRICES_PER_ROW * 8;
 		this.texData = new Float32Array(this.texCapacity * TEX_STRIDE_FLOATS);
 		this.texCount = 0; this.texHash = 0;
@@ -27,8 +42,16 @@ class WebGLBatcher {
 		// _worldVersion, same material index) at the same position already has its 32 floats in place
 		this.texIds = new Int32Array(this.texCapacity).fill(-1);
 		this.texVersions = new Float64Array(this.texCapacity);
+		this.viewDependent = false; // some entry of the current fill holds view-space matrices (depends on the camera)
+		this._viewBits = new Float32Array(16); this._viewBitsU = new Uint32Array(this._viewBits.buffer);
 	}
-	begin() { this.texCount = 0; this.texHash = 0x811c9dc5 | 0; }
+	get texture() { return this.slot.texture; }
+	get textureHash() { return this.slot.textureHash; }
+	get textureCount() { return this.slot.textureCount; }
+	/** Selects the GPU texture the next fill is uploaded to (`null` = the shared default slot). */
+	use(slot) { this.slot = slot === null ? this.defaultSlot : slot; }
+	newSlot() { return new MatrixTextureSlot(); }
+	begin() { this.texCount = 0; this.texHash = 0x811c9dc5 | 0; this.viewDependent = false; }
 	ensureTex(extra) {
 		if (this.texCount + extra > this.texCapacity) {
 			let cap = this.texCapacity;
@@ -71,6 +94,41 @@ class WebGLBatcher {
 		return p;
 	}
 	/**
+	 * Append an object's entry for a ShaderMaterial batch that reads `modelViewMatrix` / `normalMatrix`: the
+	 * model-view matrix and its normal matrix, computed exactly as the per-object uniform path computes them
+	 * (ShaderMaterialBatching.js LAYOUT_VIEW). With `both`, the world entry (`addTex`) follows (LAYOUT_BOTH).
+	 * Call `mixView(camera)` once per run before: the hash must change with the camera. The entry is always
+	 * rewritten (it depends on the camera), and the position is marked so a later world entry there is too.
+	 */
+	addTexView(object, camera, both) {
+		const p = this.texCount, d = this.texData, o = p * TEX_STRIDE_FLOATS;
+		_mv.multiplyMatrices(camera.matrixWorldInverse, object.matrixWorld);
+		_nm.getNormalMatrix(_mv);
+		const me = _mv.elements, ne = _nm.elements;
+		for (let i = 0; i < 16; i++) d[o + i] = me[i];
+		d[o + 16] = ne[0]; d[o + 17] = ne[1]; d[o + 18] = ne[2]; d[o + 19] = 0;
+		d[o + 20] = ne[3]; d[o + 21] = ne[4]; d[o + 22] = ne[5]; d[o + 23] = 0;
+		d[o + 24] = ne[6]; d[o + 25] = ne[7]; d[o + 26] = ne[8]; d[o + 27] = 0;
+		d[o + 28] = 0; d[o + 29] = 0; d[o + 30] = 0; d[o + 31] = 0;
+		this.texIds[p] = -1;
+		let h = this.texHash;
+		h = Math.imul(h ^ object.id, 16777619);
+		h = Math.imul(h ^ object._worldVersion, 16777619);
+		this.texHash = h;
+		this.texCount = p + 1;
+		if (both) this.addTex(object, 0);
+		return p;
+	}
+	/** Mixes the camera's view matrix (and the entry layout) into the hash of a run of view-space entries. */
+	mixView(camera, both) {
+		this.viewDependent = true;
+		const f = this._viewBits, u = this._viewBitsU, e = camera.matrixWorldInverse.elements;
+		for (let i = 0; i < 16; i++) f[i] = e[i];
+		let h = Math.imul(this.texHash ^ (both ? 0x5a5a : 0xa5a5), 16777619);
+		for (let i = 0; i < 16; i++) h = Math.imul(h ^ u[i], 16777619);
+		this.texHash = h;
+	}
+	/**
 	 * Upload the frame's matrices into the matrix texture (unit `unit`) if they changed. The texture stays bound to `unit`.
 	 *
 	 * The upload is a full `texImage2D` (re)definition rather than a `texSubImage2D` into immutable storage, on purpose.
@@ -84,30 +142,31 @@ class WebGLBatcher {
 	 * sub-image update it replaces (same median); the driver only reallocates when the row count changes.
 	 */
 	uploadTexture(state, unit) {
-		const gl = this.gl;
+		const gl = this.gl, slot = this.slot;
 		const rows = Math.max(1, Math.ceil(this.texCount / MATRICES_PER_ROW));
-		if (this.texture === null) {
-			this.texture = gl.createTexture();
-			state.bindTexture(gl.TEXTURE_2D, this.texture, unit);
+		if (slot.texture === null) {
+			slot.texture = gl.createTexture();
+			state.bindTexture(gl.TEXTURE_2D, slot.texture, unit);
 			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
 			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
 			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
 			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-			this.textureRows = 0; this.textureHash = 0;
+			slot.textureRows = 0; slot.textureHash = 0;
 		} else {
-			state.bindTexture(gl.TEXTURE_2D, this.texture, unit);
+			state.bindTexture(gl.TEXTURE_2D, slot.texture, unit);
 		}
 		state.activeTexture(unit); // texSubImage2D targets the ACTIVE unit: a cached binding alone does not select it
 		if (this.texCount === 0) return;
-		if (this.textureHash === this.texHash && this.textureCount === this.texCount) return;
+		if (slot.textureHash === this.texHash && slot.textureCount === this.texCount) return;
 		// texImage2D targets the *active* unit: when the cached bind above was a no-op (the texture was
 		// already on `unit`) the active unit may still be the one a material texture was uploaded to
 		state.activeTexture(unit);
 		state.setUnpack(false, false, 4);
 		gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, MATRIX_TEXTURE_WIDTH, rows, 0, gl.RGBA, gl.FLOAT, this.texData, 0);
-		this.textureRows = rows; this.textureHash = this.texHash; this.textureCount = this.texCount;
+		slot.textureRows = rows; slot.textureHash = this.texHash; slot.textureCount = this.texCount;
 	}
-	dispose() { if (this.texture !== null) this.gl.deleteTexture(this.texture); }
+	disposeSlot(slot) { if (slot.texture !== null) { this.gl.deleteTexture(slot.texture); slot.texture = null; slot.textureHash = 0; slot.textureCount = 0; } }
+	dispose() { this.disposeSlot(this.defaultSlot); }
 }
 
 export { WebGLBatcher };

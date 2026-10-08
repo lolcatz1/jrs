@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>jrs texture compatibility sweep</title>
+<style>body{font-family:system-ui,sans-serif;background:#14161a;color:#e6e6e6;margin:0;padding:16px}td{padding:4px 8px;border-top:1px solid #2a2d33;vertical-align:top;font-size:13px}.pass{color:#5fd38d}.fail{color:#ff6b6b}.skip{color:#ccb35f}</style></head>
+<body>
+<h1>jrs texture compatibility sweep (vs three.js r186)</h1>
+<div id="env">Starting…</div>
+<table id="results"></table>
+<script type="module">
+import * as JRS from '../src/index.js';
+import * as THREE from '../node_modules/three/build/three.module.js';
+import { textureCases, SIZE, installGLLogger, readAll, diffImages } from './textures-cases.js';
+
+const report = { cases: [], gpu: '', extensions: [] };
+window.texturesReport = undefined;
+
+function makeSide(lib, name) {
+	const canvas = document.createElement('canvas');
+	canvas.width = canvas.height = SIZE;
+	const gl = canvas.getContext('webgl2', { alpha: true, depth: true, stencil: true, antialias: false, premultipliedAlpha: true, preserveDrawingBuffer: true });
+	const log = installGLLogger(gl);
+	const renderer = new lib.WebGLRenderer({ canvas, context: gl, antialias: false });
+	renderer.setPixelRatio(1); renderer.setSize(SIZE, SIZE, false);
+	return { name, lib, canvas, gl, log, renderer };
+}
+
+/** Runs fn(side) with console.warn / console.error captured; returns { value, error, warnings, glErrors }. */
+async function guarded(side, fn) {
+	const warnings = [];
+	const ow = console.warn, oe = console.error;
+	console.warn = (...a) => { warnings.push('warn: ' + a.join(' ')); };
+	console.error = (...a) => { warnings.push('error: ' + a.join(' ')); };
+	let value, error = null;
+	while (side.gl.getError() !== 0) { /* drain */ }
+	side.log.length = 0;
+	side.memBase = side.renderer.info.memory.textures;
+	try { value = await fn(side); } catch (e) { error = (e && e.message) || String(e); }
+	const glErrors = [];
+	for (let e = side.gl.getError(); e !== 0 && glErrors.length < 8; e = side.gl.getError()) glErrors.push('0x' + e.toString(16));
+	console.warn = ow; console.error = oe;
+	return { value, error, warnings, glErrors, calls: side.log.slice() };
+}
+
+async function main() {
+	let jrs, three;
+	try { jrs = makeSide(JRS, 'jrs'); three = makeSide(THREE, 'three'); } catch (e) {
+		document.getElementById('env').textContent = 'WebGL2 unavailable: ' + e.message;
+		report.error = e.message; window.texturesReport = report; return;
+	}
+	const gl = jrs.gl;
+	const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+	report.gpu = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+	report.extensions = gl.getSupportedExtensions();
+	document.getElementById('env').textContent = report.gpu;
+	const env = { exts: new Set(report.extensions), SIZE };
+
+	const params = new URLSearchParams(location.search);
+	const only = params.get('only');
+	for (const c of textureCases(env)) {
+		if (only && !c.name.includes(only)) continue;
+		if (params.get('group') && !params.get('group').split(',').includes(c.group)) continue;
+		let entry;
+		if (c.skip) {
+			entry = { name: c.name, group: c.group, status: 'skip', detail: c.skip };
+		} else {
+			entry = await runCase(c, jrs, three);
+		}
+		report.cases.push(entry);
+		const tr = document.createElement('tr');
+		tr.innerHTML = `<td>${entry.name}</td><td class="${entry.status}">${entry.status.toUpperCase()}</td><td>${entry.detail}</td>`;
+		document.getElementById('results').appendChild(tr);
+		await new Promise(requestAnimationFrame);
+	}
+	window.texturesReport = report;
+}
+
+const params = new URLSearchParams(location.search);
+function toPNG(pixels) {
+	const cv = document.createElement('canvas'); cv.width = cv.height = SIZE;
+	const ctx = cv.getContext('2d'); const img = ctx.createImageData(SIZE, SIZE);
+	for (let y = 0; y < SIZE; y++) for (let x = 0; x < SIZE; x++) { const si = ((SIZE - 1 - y) * SIZE + x) * 4, di = (y * SIZE + x) * 4; img.data[di] = pixels[si]; img.data[di + 1] = pixels[si + 1]; img.data[di + 2] = pixels[si + 2]; img.data[di + 3] = 255; }
+	ctx.putImageData(img, 0, 0);
+	return cv.toDataURL('image/png');
+}
+
+async function runCase(c, jrs, three) {
+	const entry = { name: c.name, group: c.group, status: 'pass', detail: '' };
+	const details = [];
+	const ctx = { SIZE, exts: new Set(report.extensions) };
+	if (c.setup) { try { Object.assign(ctx, await c.setup(ctx)); } catch (e) { return { name: c.name, group: c.group, status: 'skip', detail: 'setup failed: ' + (e && e.message) }; } }
+	const ra = await guarded(jrs, (side) => c.run(side.lib, side, ctx));
+	const rb = await guarded(three, (side) => c.run(side.lib, side, ctx));
+	const problems = [];
+	// an exception on one side only (or a different message class) is a mismatch
+	if ((ra.error === null) !== (rb.error === null)) problems.push(`threw on ${ra.error !== null ? 'jrs' : 'three'} only: ${ra.error || rb.error}`);
+	else if (ra.error !== null) details.push(`both threw (${ra.error.slice(0, 60)})`);
+	// GL errors
+	if (ra.glErrors.join() !== rb.glErrors.join()) problems.push(`GL errors jrs [${ra.glErrors}] three [${rb.glErrors}]`);
+	// warnings: compare presence
+	if (c.compareWarnings !== false && (ra.warnings.length > 0) !== (rb.warnings.length > 0)) problems.push(`warnings jrs ${JSON.stringify(ra.warnings.slice(0, 2))} three ${JSON.stringify(rb.warnings.slice(0, 2))}`);
+	else if (rb.warnings.length) details.push(`both warn (${rb.warnings.length})`);
+	if (ra.error === null && rb.error === null) {
+		const va = ra.value, vb = rb.value;
+		if (va && va.pixels && vb && vb.pixels) {
+			if (params.get('dump') && c.name.includes(params.get('dump'))) entry.images = { jrs: toPNG(va.pixels), three: toPNG(vb.pixels) };
+			const d = diffImages(va.pixels, vb.pixels);
+			const colours = new Set(); for (let i = 0; i < vb.pixels.length; i += 4) { colours.add(vb.pixels[i] | (vb.pixels[i + 1] << 8) | (vb.pixels[i + 2] << 16)); if (colours.size > 3) break; }
+			if (colours.size <= 1) entry.blank = true;
+			const tol = c.tolerance === undefined ? 0 : c.tolerance;
+			details.push(`max diff ${d.maxDiff}, mean ${d.meanAbsDiff.toFixed(3)}${va.info ? ' | jrs: ' + va.info : ''}${vb.info && vb.info !== va.info ? ' | three: ' + vb.info : ''}`);
+			if (c.expectDiffer) { if (d.maxDiff === 0) problems.push('expected a visible difference but images are identical (test is blind)'); }
+			else if (c.pixelsAdvisory) details.push(`pixels advisory only (${c.pixelsAdvisory})`);
+			else if (d.maxDiff > tol) problems.push(`pixels differ: max ${d.maxDiff}, ${(100 * d.badFraction).toFixed(2)}% > 16, tolerance ${tol}; centre jrs [${va.centre}] three [${vb.centre}]`);
+		}
+		if (va && vb && va.data !== undefined) {
+			const sa = JSON.stringify(va.data), sb = JSON.stringify(vb.data);
+			if (c.compareData !== false) { if (sa !== sb) problems.push(`probe data differ: jrs ${sa.slice(0, 300)} three ${sb.slice(0, 300)}`); else details.push(`probe ${sa.slice(0, 120)}`); }
+			else details.push(`jrs ${sa.slice(0, 200)} | three ${sb.slice(0, 200)}`);
+		}
+		if (c.callsMatch) {
+			const pick = (calls) => JSON.stringify(calls.filter((x) => c.callsMatch.includes(x[0])));
+			const ca = pick(ra.calls), cb = pick(rb.calls);
+			if (ca !== cb) problems.push(`GL call sequences differ (${c.callsMatch.join(',')}): jrs ${ca.slice(0, 400)} three ${cb.slice(0, 400)}`);
+			else details.push(`calls identical (${summarizeCalls(ra.calls.filter((x) => c.callsMatch.includes(x[0])))})`);
+		}
+		if (c.checkCalls) {
+			const out = c.checkCalls(ra.calls, rb.calls);
+			if (out !== true) problems.push('GL calls: ' + out);
+			else details.push(`GL calls ok (${summarizeCalls(ra.calls)})`);
+		} else if (c.showCalls) details.push(`jrs: ${summarizeCalls(ra.calls)} | three: ${summarizeCalls(rb.calls)}`);
+		if (c.verify) {
+			const out = c.verify(va, vb, ra, rb);
+			if (out !== true) problems.push(out);
+		}
+	}
+	if (problems.length && c.gap) { entry.status = 'skip'; details.unshift('KNOWN GAP (' + c.gap + ') - measured: ' + problems.join(' | ')); }
+	else if (problems.length) { entry.status = 'fail'; details.unshift(...problems); }
+	else if (c.gap) details.unshift('known gap now closed (identical to three.js)');
+	if (entry.blank) details.push('(three.js image is a single colour)');
+	entry.detail = details.join('; ');
+	return entry;
+}
+
+function summarizeCalls(calls) {
+	const counts = {};
+	for (const c of calls) counts[c[0]] = (counts[c[0]] || 0) + 1;
+	return Object.entries(counts).map(([k, v]) => `${k}×${v}`).join(' ') || 'none';
+}
+
+main().catch((e) => { report.error = e.stack || e.message; window.texturesReport = report; });
+</script>
+</body></html>

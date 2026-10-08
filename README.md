@@ -62,8 +62,8 @@ over 60 frames after 10 warm-up frames, 320x240 (median frame time, so single ga
 | unique-geometries: a distinct geometry per mesh (multi-draw over the mega-buffer) | 2,000 | 4.5 ms | 0.5 ms | **9.0x** | 14 → 2 ms | 2000 → 1 | 0 / 0 |
 | hierarchy-animated: 200 chains of 40 nested objects, roots rotating | 8,000 | 13.7 ms | 3.5 ms | **3.9x** | 40 → 2341 ms | 8000 → 1 | 0 / 0 |
 | instanced-100k: one InstancedMesh, 100 000 instances | 100,000 | 0.1 ms | 0.0 ms | n/a (both < 0.1 ms) | 0 → 0 ms | 1 → 1 | 0 / 0 |
-| shader-client: 1,313 meshes, all ShaderMaterial, 12 shaders × 2 material instances sharing one 30-uniform object, 2D/3D/array/cube samplers, custom attributes, opaque + transparent (no auto-batching possible) | 1,313 | 3.9 ms | 2.4 ms | **1.6x** | 12 → 47 ms | 1313 → 1313 | 0 / 0 |
-| shader-client-static: same materials, fixed camera, nothing moving, 3 passes per frame (2 shadow render targets with `scene.overrideMaterial`, main pass with stencil shadow volumes), ~215 draws per pass | 211 | 31.9 ms | 25.4 ms | **1.3x** | 410 → 714 ms | 217 → 217 | 0 / 0 |
+| shader-client: 1,313 meshes, all ShaderMaterial, 12 shaders × 2 material instances sharing one 30-uniform object, 2D/3D/array/cube samplers, custom attributes, opaque + transparent (custom programs instanced automatically) | 1,313 | 4.7 ms | 0.9 ms | **5.2x** | 8 → 5 ms | 1313 → 297 | 0 / 0 |
+| shader-client-static: same materials, fixed camera, nothing moving, 3 passes per frame (2 shadow render targets with `scene.overrideMaterial`, main pass with stencil shadow volumes), ~215 draws per pass | 211 | 46.2 ms | 0.6 ms | **77.0x** | 728 → 4 ms | 217 → 53 | 0 / 0 |
 | shadows: 2 000 casters/receivers, 1024² directional shadow map | 2,000 | 69.0 ms | 0.5 ms | **138.0x** | 170 → 1 ms | 4001 → 2 | 0 / 0 |
 | shadows-animated: same scene, every third caster moving each frame | 2,000 | 65.4 ms | 1.1 ms | **59.5x** | 173 → 2 ms | 4001 → 3 | 0 / 0 |
 | skinned-crowd: 200 skinned meshes, 20 bones each, every bone animated by an `AnimationMixer` | 200 | 3.3 ms | 4.8 ms | **0.7x** | 501 → 6 ms | 200 → 200 | 0 / 2 |
@@ -78,16 +78,23 @@ The instanced scenario is a single draw call in both libraries; it measures only
 
 Worst frames: in this software-GL environment both libraries hit occasional stalls (garbage collection, driver, command-buffer back-pressure), so read the ratios, not the absolute numbers. Pixel differences are now 0 mean / ≤ 2 levels on every scene after the differential fuzzer's parity fixes (`npm run fuzz`, see `bench/results/swarm/parity-fuzzer.md`). The 12–17 s stalls jrs used to show in the batched scenes were traced to Chromium's transfer ring buffer on large `texSubImage2D` uploads of the matrix texture; the texture is now defined with `texImage2D` per upload, which takes the mapped-memory path, and that stall is gone (`bench/results/swarm/stall-hunter.md`). A rarer 1–3 s stall remains in 60-frame runs of the batched scenes; it also appears in three.js at smaller sizes and is still being investigated. The device check page reports per-frame times on real hardware.
 
-The two `shader-client` rows model a real three.js game client. Their gain comes from the per-draw
-path, not from batching: every uniform location caches its last uploaded value (as three.js does), so
-shared uniforms, camera matrices and per-object matrices are only re-sent when they change; a
-validated-VAO fast path; cached front-face orientation; opaque sorting by program, material and
-geometry; `ShaderMaterial` instances that share a shader (same source, defines and parameters) share
-one program and one uniform cache, exactly as in three.js. The bench counts GL calls for one frame per
-library and, for multi-pass scenes, per `render()` call. Static scene, per pass (three → jrs): shadow
-render targets `uniform*` 147 → 147, main pass 184 → 184, `useProgram` 17 → 16, `bindTexture`
-44 → 44, total GL calls 1,869 → 1,620. The remaining edge-pixel differences come from float32
-matrices (geometry at ±450 units); they are identical between this and the previous engine version.
+The two `shader-client` rows model a real three.js game client. Custom programs are batched too:
+when a `ShaderMaterial`'s vertex shader only reads `modelMatrix` / `modelViewMatrix` / `normalMatrix`
+the standard way, jrs compiles a variant that fetches them per instance from the matrix texture and
+draws every run of meshes sharing the material as one instanced or multi-draw call (ARCHITECTURE.md
+§4d; `renderer.autoBatchShaderMaterials = false` turns it off). The view-space matrices are computed
+on the CPU exactly as the per-object path computes them, so the output is bit-identical. On top of
+that, the per-draw path stays lean: every uniform location caches its last uploaded value (as
+three.js does), so shared uniforms, camera matrices and per-object matrices are only re-sent when
+they change; a validated-VAO fast path; cached front-face orientation; opaque sorting by program,
+material and geometry; `ShaderMaterial` instances that share a shader (same source, defines and
+parameters) share one program and one uniform cache, exactly as in three.js. The bench counts GL
+calls for one frame per library and, for multi-pass scenes, per `render()` call (multi-draw calls
+live on the extension object and are not in the GL `draw` count; "draw calls" is
+`renderer.info.render.calls`). Static scene, per pass (three → jrs): shadow render targets
+`uniform*` 147 → 25, main pass 184 → 94, draws 217 → 20 / 20 / 9, total GL calls 1,869 → 373; once
+warm every list replays its commands against its own matrix texture, so nothing is uploaded. The
+remaining edge-pixel differences in other scenes come from float32 matrices (geometry at ±450 units).
 
 Diagnosing uploads in your own app: set `renderer.debug.traceUniforms = true` and read
 `renderer.debug.uniformTrace` (last 16 `render()` calls: uniform name → upload count, program
@@ -142,6 +149,8 @@ space, sRGB output, physically based light units):
   vertex attributes, `InstancedBufferGeometry` / `InstancedBufferAttribute`, struct and array
   uniforms, arrays of textures, and `sampler2D` / `sampler3D` / `sampler2DArray` / `samplerCube`
   uniforms. Fog uniforms and `toneMappingExposure` are filled from the scene and renderer.
+  Meshes sharing a `ShaderMaterial` whose vertex shader reads `modelMatrix` / `modelViewMatrix` /
+  `normalMatrix` the standard way are drawn as one instanced / multi-draw call (ARCHITECTURE.md §4d).
   `lights: true` (scene-driven light uniforms) is not implemented.
 * **Lights:** `AmbientLight`, `HemisphereLight`, `DirectionalLight`, `PointLight`, `SpotLight`
   (`RectAreaLight` is accepted but not shaded). Shadow maps for directional, spot and point lights
@@ -157,9 +166,14 @@ space, sRGB output, physically based light units):
   three.js and builds 2–13x faster (pre-sized typed arrays).
 * **Math:** `Vector2/3/4`, `Matrix3/4`, `Quaternion`, `Euler`, `Color` + `ColorManagement`,
   `Box3`, `Sphere`, `Plane`, `Ray`, `Frustum`, `Triangle`, `Line3`, `Spherical`, `MathUtils`.
-* **Textures & loaders:** `Texture`, `CanvasTexture`, `DataTexture`, `Data3DTexture`,
-  `DataArrayTexture` (with `layerUpdates`), `CubeTexture`, `DepthTexture`, `TextureLoader`,
-  `ImageLoader`, `FileLoader`, `LoadingManager`, `Cache`.
+* **Textures & loaders:** `Texture`, `CanvasTexture`, `VideoTexture`, `DataTexture`, `Data3DTexture`,
+  `DataArrayTexture` (with `layerUpdates`), `CubeTexture`, `DepthTexture`, `FramebufferTexture`,
+  `CompressedTexture`, `CompressedArrayTexture`, `CompressedCubeTexture` (S3TC / ETC / ASTC / BPTC / RGTC when the
+  GPU exposes the extension), `TextureLoader`, `CubeTextureLoader`, `CompressedTextureLoader`, `DataTextureLoader`,
+  `ImageLoader`, `FileLoader`, `LoadingManager`, `Cache`, `DataUtils`, `TextureUtils`; `renderer.copyTextureToTexture`,
+  `copyFramebufferToTexture`, `initTexture`, `initRenderTarget`. Uploads follow three r186's `WebGLTextures`
+  (shared GL textures per `Source`, per-class storage paths); `node bench/textures.mjs` compares ~340 texture cases pixel for
+  pixel with three (see ARCHITECTURE.md §12 and `bench/results/swarm/texture-formats.md`).
 * **Helpers & addon support:** `AxesHelper`, `GridHelper`, `BoxHelper`; `Controls` base class, draw-mode
   constants and `InterleavedBuffer`/`InterleavedBufferAttribute` so three's `examples/jsm` addons such as
   `OrbitControls` and `BufferGeometryUtils` import and run unchanged through an import map
@@ -182,7 +196,9 @@ the controls), WebGL1.
   counts geometries the renderer has uploaded, like three.js.
 * `renderer.autoBatch` (default `true`) toggles automatic batching; `renderer.autoMultiDraw` (default `true`)
   toggles the multi-draw form (needs `WEBGL_multi_draw`, present in current Chrome, Firefox and Safari);
-  `renderer.autoBatchMinimum` (default 4) is the shortest run that is batched.
+  `renderer.autoBatchMinimum` (default 4) is the shortest run that is batched;
+  `renderer.autoBatchShaderMaterials` (default `true`) batches `ShaderMaterial` draws through an instanced variant of the
+  custom program (runs of any length; see ARCHITECTURE.md §4d for what qualifies).
 * `geometry.boundsTree`, `computeBoundsTree()`, `disposeBoundsTree()` and the `MeshBVH` class are
   additions.
 
