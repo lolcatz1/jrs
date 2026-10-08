@@ -4996,6 +4996,9 @@ var BufferGeometry = class _BufferGeometry extends EventDispatcher {
     this._layoutVersion = 0;
     this._frameStamp = -1;
     this._frameRid = 0;
+    this._mdFrame = -1;
+    this._mdRec = null;
+    this._mdTouch = -1;
     this._shadowSigStamp = -1;
     this._shadowSig = 0;
     this._attrBits = 0;
@@ -15645,6 +15648,7 @@ var WebGLRenderList = class {
   constructor() {
     this.items = [];
     this.count = 0;
+    this.flags = new Uint8Array(1024);
     this.opaque = new SortSlot(1024);
     this.transparent = new SortSlot(256);
     this.opaqueCount = 0;
@@ -15690,13 +15694,19 @@ var WebGLRenderList = class {
   /**
    * Adds an item. `item.program` is resolved later by the renderer (once the frame's lights are known).
    */
-  push(object, geometry, material, group, materialRid, geometryRid, variant, batchGroup) {
+  push(object, geometry, material, group, materialRid, geometryRid, variant, batchGroup, flags = 0) {
     if (this.count >= INDEX_RANGE) return;
     const item = this._getItem(object, geometry, material, group, variant);
     item.materialRid = materialRid;
     item.geometryRid = geometryRid;
     item.batchGroup = batchGroup;
     const index = this.count - 1;
+    if (index >= this.flags.length) {
+      const nf = new Uint8Array(this.flags.length * 2);
+      nf.set(this.flags);
+      this.flags = nf;
+    }
+    this.flags[index] = flags;
     if (material.transparent === true) {
       const slot = this.transparent;
       if (slot.n === slot.ids.length) {
@@ -16292,6 +16302,8 @@ var WebGLBatcher = class {
     this.texData = new Float32Array(this.texCapacity * TEX_STRIDE_FLOATS);
     this.texCount = 0;
     this.texHash = 0;
+    this.texIds = new Int32Array(this.texCapacity).fill(-1);
+    this.texVersions = new Float64Array(this.texCapacity);
   }
   begin() {
     this.texCount = 0;
@@ -16305,6 +16317,12 @@ var WebGLBatcher = class {
       const nd = new Float32Array(cap * TEX_STRIDE_FLOATS);
       nd.set(this.texData);
       this.texData = nd;
+      const ids = new Int32Array(cap).fill(-1);
+      ids.set(this.texIds);
+      this.texIds = ids;
+      const vers = new Float64Array(cap);
+      vers.set(this.texVersions);
+      this.texVersions = vers;
       this.texCapacity = cap;
     }
   }
@@ -16314,36 +16332,42 @@ var WebGLBatcher = class {
    * is single-material) goes into the spare eighth texel. Returns the object's index in the texture.
    */
   addTex(object, materialIndex) {
-    const d = this.texData, o = this.texCount * TEX_STRIDE_FLOATS;
-    const s = object._slabData, so = object._slabOffset + 16;
-    for (let i = 0; i < 16; i++) d[o + i] = s[so + i];
-    if (object._normalVersion !== object._worldVersion) {
-      computeNormalMatrix(s, object._slabOffset);
-      object._normalVersion = object._worldVersion;
+    const p = this.texCount, id = object.id, version = object._worldVersion;
+    const d = this.texData, o = p * TEX_STRIDE_FLOATS;
+    if (this.texIds[p] !== id || this.texVersions[p] !== version || d[o + 28] !== materialIndex) {
+      const s = object._slabData, so = object._slabOffset + 16;
+      for (let i = 0; i < 16; i++) d[o + i] = s[so + i];
+      if (object._normalVersion !== version) {
+        computeNormalMatrix(s, object._slabOffset);
+        object._normalVersion = version;
+      }
+      const no = object._slabOffset + 32;
+      d[o + 16] = s[no];
+      d[o + 17] = s[no + 1];
+      d[o + 18] = s[no + 2];
+      d[o + 19] = 0;
+      d[o + 20] = s[no + 3];
+      d[o + 21] = s[no + 4];
+      d[o + 22] = s[no + 5];
+      d[o + 23] = 0;
+      d[o + 24] = s[no + 6];
+      d[o + 25] = s[no + 7];
+      d[o + 26] = s[no + 8];
+      d[o + 27] = 0;
+      d[o + 28] = materialIndex;
+      d[o + 29] = 0;
+      d[o + 30] = 0;
+      d[o + 31] = 0;
+      this.texIds[p] = id;
+      this.texVersions[p] = version;
     }
-    const no = object._slabOffset + 32;
-    d[o + 16] = s[no];
-    d[o + 17] = s[no + 1];
-    d[o + 18] = s[no + 2];
-    d[o + 19] = 0;
-    d[o + 20] = s[no + 3];
-    d[o + 21] = s[no + 4];
-    d[o + 22] = s[no + 5];
-    d[o + 23] = 0;
-    d[o + 24] = s[no + 6];
-    d[o + 25] = s[no + 7];
-    d[o + 26] = s[no + 8];
-    d[o + 27] = 0;
-    d[o + 28] = materialIndex;
-    d[o + 29] = 0;
-    d[o + 30] = 0;
-    d[o + 31] = 0;
     let h = this.texHash;
-    h = Math.imul(h ^ object.id, 16777619);
-    h = Math.imul(h ^ object._worldVersion, 16777619);
+    h = Math.imul(h ^ id, 16777619);
+    h = Math.imul(h ^ version, 16777619);
     h = Math.imul(h ^ materialIndex, 16777619);
     this.texHash = h;
-    return this.texCount++;
+    this.texCount = p + 1;
+    return p;
   }
   /**
    * Upload the frame's matrices into the matrix texture (unit `unit`) if they changed. The texture stays bound to `unit`.
@@ -18366,6 +18390,8 @@ var V_MORPH_COLOR = 16384;
 var V_MORPH_COUNT_SHIFT = 15;
 var V_SIDE_BACK = 1 << 23;
 var V_SIDE_FRONT = 1 << 24;
+var ITEM_BATCHABLE = 1;
+var ITEM_MULTIDRAWABLE = 2;
 var defaultOnBeforeRender = Object3D.prototype.onBeforeRender;
 var defaultOnAfterRender = Object3D.prototype.onAfterRender;
 var WebGLRenderer = class {
@@ -18543,6 +18569,8 @@ var WebGLRenderer = class {
     this.reuseRenderLists = true;
     this._zTmp = new Float64Array(1);
     this._rec = null;
+    this._buildSeq = 0;
+    this._touchMap = /* @__PURE__ */ new Map();
     this._megaTouch = null;
     this._verifyList = null;
     this._currentProgram = null;
@@ -19363,7 +19391,13 @@ var WebGLRenderer = class {
       geometry._frameStamp = frame;
       geometry._frameRid = this._geometryCounter++;
     }
-    list.push(object, geometry, material, group, material._frameRid, geometry._frameRid, variant, material._batchGroup);
+    let flags = 0;
+    if (group === null && material.isShaderMaterial !== true && object.isMesh === true && object.isInstancedMesh !== true && object.isSkinnedMesh !== true && object.morphTargetInfluences === void 0 && object.onBeforeRender === defaultOnBeforeRender && object.onAfterRender === defaultOnAfterRender && isTwoPass(material, shadowPass) === false) {
+      flags = ITEM_BATCHABLE;
+      const dr = geometry.drawRange;
+      if (material.wireframe !== true && object.isSprite !== true && dr.start === 0 && dr.count === Infinity) flags |= ITEM_MULTIDRAWABLE;
+    }
+    list.push(object, geometry, material, group, material._frameRid, geometry._frameRid, variant, material._batchGroup, flags);
     const rec = this._rec;
     if (rec !== null && shadowPass === false) {
       rec.regMaterial(material);
@@ -19723,26 +19757,23 @@ var WebGLRenderer = class {
     if (material.isMeshStandardMaterial) t.setTexture2D(getDFGLUT(), TEXTURE_UNITS.dfgLUT);
   }
   // ------------------------------------------------------------------ drawing
-  _isBatchable(item) {
-    if (item.material.isShaderMaterial === true || item.group !== null) return false;
-    if (isTwoPass(item.material, this._listShadowPass)) return false;
-    const object = item.object;
-    return object.isMesh === true && object.isInstancedMesh !== true && object.isSkinnedMesh !== true && object.morphTargetInfluences === void 0 && object.onBeforeRender === defaultOnBeforeRender && object.onAfterRender === defaultOnAfterRender;
-  }
   /**
-   * Build draw commands (singles and batches) from a sorted key list, then execute them.
+   * Mega-buffer record of a geometry (null: draw it the regular way), resolved once per geometry per frame
+   * (`ensure` compares attribute layout and sizes). Geometries are also noted once per command build in the
+   * touch map, which a draw-command cache uses to validate a replay.
    */
-  _isMultiDrawable(item) {
-    if (!this._isBatchable(item)) return false;
-    const object = item.object, material = item.material;
-    if (object.isMesh !== true || material.wireframe === true || object.isSprite === true) return false;
-    const dr = item.geometry.drawRange;
-    if (dr.start !== 0 || dr.count !== Infinity) return false;
-    const rec = this.megaBuffers.ensure(item.geometry);
-    if (this._megaTouch !== null) this._megaTouch.set(item.geometry, rec);
-    if (rec === null || rec.page === null) return false;
-    item.mdRecord = rec;
-    return true;
+  _mdRecordOf(geometry) {
+    let rec;
+    if (geometry._mdFrame !== this._frameId || geometry._mdRec !== null && geometry._mdRec.layoutVersion !== geometry._layoutVersion) {
+      geometry._mdFrame = this._frameId;
+      rec = geometry._mdRec = this.megaBuffers.ensure(geometry);
+      geometry._mdTouch = -1;
+    } else rec = geometry._mdRec;
+    if (this._megaTouch !== null && geometry._mdTouch !== this._buildSeq) {
+      geometry._mdTouch = this._buildSeq;
+      this._megaTouch.set(geometry, rec);
+    }
+    return rec;
   }
   /**
    * Build draw commands from a sorted key list, then execute them. Commands are:
@@ -19764,28 +19795,41 @@ var WebGLRenderer = class {
     }
     batcher.begin();
     let cmdN = 0, mdN = 0;
-    const touch = commandCache !== null ? this._megaTouch = /* @__PURE__ */ new Map() : null;
+    const touch = commandCache !== null ? this._megaTouch = this._touchMap : null;
+    if (touch !== null) touch.clear();
+    this._buildSeq++;
+    const items = list.items, flags = list.flags, megaBuffers = this.megaBuffers;
     let i = 0;
     while (i < n) {
-      const item = list.itemFromKey(keys[i]);
+      const itemIndex = keys[i];
+      const item = items[itemIndex];
+      const fl = flags[itemIndex];
       const material = item.material, bg = item.batchGroup;
       let j = i + 1;
       let kind = 0;
       let firstOtherMaterial = -1;
-      if (multi && this._isMultiDrawable(item)) {
-        const page = item.mdRecord.page, indexed = item.mdRecord.indexed;
+      let rec0;
+      if (multi && (fl & ITEM_MULTIDRAWABLE) !== 0 && (rec0 = this._mdRecordOf(item.geometry)) !== null) {
+        item.mdRecord = rec0;
+        const page = rec0.page, indexed = rec0.indexed, program = item.program, renderOrder = item.renderOrder;
         let distinct = 1, lastGeometry = item.geometry, firstGroupEnd = -1;
         while (j < n) {
-          const next = list.itemFromKey(keys[j]);
-          if ((next.material === material || bg !== null && next.batchGroup === bg) && next.program === item.program && next.renderOrder === item.renderOrder && this._isMultiDrawable(next) && next.mdRecord.page === page && next.mdRecord.indexed === indexed) {
-            if (next.geometry !== lastGeometry) {
+          const nextIndex = keys[j];
+          const next = items[nextIndex];
+          if ((flags[nextIndex] & ITEM_MULTIDRAWABLE) === 0 || next.program !== program || next.renderOrder !== renderOrder) break;
+          if (next.material !== material && (bg === null || next.batchGroup !== bg)) break;
+          const geometry = next.geometry;
+          if (geometry !== lastGeometry || geometry._mdFrame !== this._frameId) {
+            const rec = this._mdRecordOf(geometry);
+            if (rec === null || rec.page !== page || rec.indexed !== indexed) break;
+            if (geometry !== lastGeometry) {
               distinct++;
-              lastGeometry = next.geometry;
+              lastGeometry = geometry;
               if (firstGroupEnd < 0) firstGroupEnd = j;
             }
-            if (firstOtherMaterial < 0 && next.material !== material) firstOtherMaterial = j;
-            j++;
-          } else break;
+          }
+          if (firstOtherMaterial < 0 && next.material !== material) firstOtherMaterial = j;
+          j++;
         }
         if (firstGroupEnd < 0) firstGroupEnd = j;
         if (distinct * 2 >= j - i) {
@@ -19794,10 +19838,12 @@ var WebGLRenderer = class {
           j = firstGroupEnd;
           if (j - i >= minimum) kind = 1;
         }
-      } else if (autoBatch && this._isBatchable(item)) {
+      } else if (autoBatch && (fl & ITEM_BATCHABLE) !== 0) {
+        const geometry = item.geometry, program = item.program, renderOrder = item.renderOrder;
         while (j < n) {
-          const next = list.itemFromKey(keys[j]);
-          if (next.geometry === item.geometry && (next.material === material || bg !== null && next.batchGroup === bg) && next.program === item.program && next.renderOrder === item.renderOrder && this._isBatchable(next)) {
+          const nextIndex = keys[j];
+          const next = items[nextIndex];
+          if (next.geometry === geometry && (next.material === material || bg !== null && next.batchGroup === bg) && next.program === program && next.renderOrder === renderOrder && (flags[nextIndex] & ITEM_BATCHABLE) !== 0) {
             if (firstOtherMaterial < 0 && next.material !== material) firstOtherMaterial = j;
             j++;
           } else break;
@@ -19816,10 +19862,10 @@ var WebGLRenderer = class {
         this._cmdKind[cmdN] = multiMaterial ? 4 : 2;
         this._cmdMdStart[cmdN] = mdN;
         for (let k = i; k < j; k++) {
-          const it = list.itemFromKey(keys[k]);
+          const it = items[keys[k]];
           batcher.addTex(it.object, multiMaterial ? this._materialRecordIndex(it.material, windowBase) : 0);
-          const rec = it.mdRecord;
-          this.megaBuffers.queue(rec, it.geometry);
+          const geometry = it.geometry, rec = geometry._mdRec;
+          megaBuffers.queue(rec, geometry);
           if (rec.indexed) {
             this._mdCounts[mdN] = rec.indexCount;
             this._mdOffsets[mdN] = rec.byteOffset;
@@ -19836,11 +19882,11 @@ var WebGLRenderer = class {
         this._cmdKind[cmdN] = multiMaterial ? 3 : 1;
         if (multiMaterial) {
           for (let k = i; k < j; k++) {
-            const it = list.itemFromKey(keys[k]);
+            const it = items[keys[k]];
             batcher.addTex(it.object, this._materialRecordIndex(it.material, windowBase));
           }
         } else {
-          for (let k = i; k < j; k++) batcher.addTex(list.itemFromKey(keys[k]).object, 0);
+          for (let k = i; k < j; k++) batcher.addTex(items[keys[k]].object, 0);
         }
       } else {
         j = i + 1;
