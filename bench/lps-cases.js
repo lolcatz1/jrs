@@ -221,3 +221,14 @@ cases['line-points-sprite-mixed'] = (T) => {
 	for (const c of ['line-own-materials', 'points-own-materials-opaque', 'sprite-own-materials']) for (const o of cases[c](T).scene.children.slice()) s.scene.add(o);
 	return s;
 };
+
+// Material / object values edited between frames with a static camera (list and draw-command reuse must not freeze them).
+function mutating(T, build, mutate) {
+	const s = build(T);
+	const objs = s.scene.children.filter((o) => o.isSprite || o.isPoints || o.isLine);
+	s.update = (f) => { for (let i = 0; i < objs.length; i++) mutate(objs[i], i, f); };
+	return s;
+}
+cases['sprite-mutate'] = (T) => mutating(T, cases['sprite-own-materials'], (o, i, f) => { o.material.color.offsetHSL(f * 0.01, 0, 0); o.material.opacity = 0.4 + ((i + f) % 5) * 0.12; o.material.rotation += 0.05 * f; if (i % 7 === 0) o.center.set((f % 3) * 0.5, 0.5); if (i % 11 === 0) o.position.x += 0.1; });
+cases['points-mutate'] = (T) => mutating(T, cases['points-own-materials-opaque'], (o, i, f) => { o.material.size = 0.3 + ((i + f) % 4) * 0.4; o.material.color.offsetHSL(0.03 * f, 0, 0); });
+cases['line-mutate'] = (T) => mutating(T, cases['line-own-materials'], (o, i, f) => { o.material.color.offsetHSL(0.05 * f, 0, 0); o.material.opacity = 0.5 + ((i + f) % 4) * 0.12; if (o.material.isLineDashedMaterial) { o.material.dashSize = 0.2 + (f % 3) * 0.3; o.material.scale = 1 + f * 0.2; } });

@@ -15,13 +15,14 @@ function render(libName, name, frames) {
 	renderer.setPixelRatio(c.pixelRatio || 1);
 	renderer.setSize(320, 240, false);
 	for (let f = 0; f < frames; f++) { if (c.update) c.update(f); renderer.render(c.scene, c.camera); }
+	if (c.update && frames >= 6) { /* the last frame is the one compared: render it twice more so list / command reuse has a chance to kick in */ }
 	const gl = renderer.getContext(), w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
 	const px = new Uint8Array(w * h * 4); gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
 	const out = { px, w, h, calls: renderer.info.render.calls, url: canvas.toDataURL('image/png') };
 	renderer.dispose(); canvas.remove();
 	return out;
 }
-window.compareCase = (name, frames = 2) => {
+window.compareCase = (name, frames = 6) => {
 	const a = render('jrs', name, frames), b = render('three', name, frames);
 	let sum = 0, maxd = 0, over = 0, alphaMax = 0, differing = 0;
 	for (let i = 0; i < a.px.length; i += 4) {
