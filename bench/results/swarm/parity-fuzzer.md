@@ -126,7 +126,8 @@ default feature set, `--continue`.
 | `--only=envMaps,standard,lambert,phong,basic,lights,background` (tip d38333a) | 1-12 | 12/12 identical (PMREM environment, refraction, textured backgrounds, blur/intensity/rotation) |
 | envMaps with shadows, maps, transparency, side, fog, tone mapping, instancing, hierarchy, camera, flat shading, alphaTest, mutations | 1-40 | 38 pass; seed 1 was a generator false positive (map swap left `alphaMap` on the old texture: the perMapTransform limitation), seed 12 found fix 21 (0.192 → 0.004) |
 | Tip d38333a, full default set with `envMaps` (before fixes 22, 23) | 1-100 | 89 pass; 19, 53, 65, 87, 90 (means 50-96: fix 22), 65 / 75 / 94 (fix 23), 12, 14, 97 (Open) |
-| Tip d38333a + fixes 21-23 (final code of this cycle) | 1-100 | **97 pass**; residuals 12 (0.125), 14 (0.06), 97 (0.062), see Open |
+| Tip d38333a + fixes 21-23 | 1-100 | 97 pass; residuals 12 (0.125), 14 (0.06), 97 (0.062) |
+| Tip d38333a + fixes 21-24 (final code of this cycle) | 1-100 | **99 pass**; residual 14 (0.06): transparent custom-blend DoubleSide wireframe boxes with vertex colours, line endpoint pixels (the wireframe class under Open) |
 
 Feature-isolated batches with the final code (30 seeds each, `--only=basic,<feature>` plus
 `lambert,lights` where lighting is needed): fog, transparency, side, wireframe+drawRange, stencil,
@@ -168,7 +169,7 @@ Merge log (the branch keeps absorbing the integration tip; each row is one merge
 | 2c03d79 | 87e7aaf | 117/117, 27/27, ok, ok | all scenes 0 / 0 (shared-animated 0 / 1) | 88 pass, 12 known residuals | none |
 | 646caba | ad397c3 | 130/130, 33/33, ok, ok | all 12 scenes 0 mean (max 0; shared-animated 1 px, skinned-crowd 3 px ≤ 2) | 89 pass with the new mutation feature on; the 11 residuals are a subset of the known set (seed 78 now passes) | two real regressions/bugs, fixed in 8716722 (fixes 18, 19): material-array batches left their record window bound for the next plain batch of the same material (frame 0 of about 1 in 15 scenes with shared materials), and multi-draw ignored a drawRange set after the record was built (only reachable with the new per-frame mutations) |
 | 6858f51 | fc9e2b7 | 139/139, 34/34, ok, ok | all 17 scenes 0 mean (max ≤ 2 on ≤ 5 px; the three new point-shadow scenes 0 / 0, 0 / 0, 1 on 5 px) | 87 pass (point shadows + mutations on, so seeds no longer map to the earlier set); 11 residuals of the known kinds plus seed 2 (0.467) and seed 14 (0.05), both logged under Open | one compile failure (fix 20, d8f1052); point-light shadows added to the generator and pixel-identical |
-| d38333a (ShaderMaterial batching, envmaps/PMREM/CubeCamera/textured backgrounds, flat scene update, draw-list build, page VAOs) | fast-forward (this branch was already merged into the tip) | 152/152, 44/44, ok, ok | all 18 scenes 0 mean (max ≤ 2 on ≤ 5 px; the new pbr-envmap scene 0 / 0; instanced-100k 0 / 0 when its compare page loads: on this container that page times out at `page.goto` about every other run, on the untouched tip as well, so the row has to be re-run alone) | first run (envMaps on) 89 pass, 11 failing: the 5 ortho-background seeds (fix 22), 65 / 75 / 94 (fix 23), 12 / 14 / 97 (Open) → after fixes 21-23: **97 pass**, residuals 12 (0.125), 14 (0.06), 97 (0.062), all logged under Open | no merge regression: every parity fix is in place (fix 19's drawRange check now lives at push time as `ITEM_MULTIDRAWABLE`); the generator gained `envMaps` for the new environment code (identical on every seed tried); fix 21 (shadow-pass alpha test, 0c1706c) is a pre-existing mismatch the new subset exposed |
+| d38333a (ShaderMaterial batching, envmaps/PMREM/CubeCamera/textured backgrounds, flat scene update, draw-list build, page VAOs) | fast-forward (this branch was already merged into the tip) | 152/152, 44/44, ok, ok | all 18 scenes 0 mean (max ≤ 2 on ≤ 5 px; the new pbr-envmap scene 0 / 0; instanced-100k 0 / 0 when its compare page loads: on this container that page times out at `page.goto` about every other run, on the untouched tip as well, so the row has to be re-run alone) | first run (envMaps on) 89 pass, 11 failing: the 5 ortho-background seeds (fix 22), 65 / 75 / 94 (fix 23), 12 / 14 / 97 (Open) → after fixes 21-23: 97 pass → after fix 24: **99 pass**, the one residual (14, 0.06) is the wireframe-line class | no merge regression: every parity fix is in place (fix 19's drawRange check now lives at push time as `ITEM_MULTIDRAWABLE`); the generator gained `envMaps` for the new environment code (identical on every seed tried); fixes 21-24 (shadow-pass alpha test, sticky clear colour, OPAQUE alpha, no tone mapping into render targets) are pre-existing mismatches the new seeds exposed; they also close the custom-blend and render-target residual classes of the earlier generator |
 
 ## Mismatches found and what was done
 
@@ -286,6 +287,14 @@ each with the reasoning.
     (0.467), 413 (0.847) and 93 (0.098) of the earlier generator and 65 (0.79 after fix 22), 75, 94 of
     the current one are identical now. `opaque` is a program key bit; material-array batches share it
     because their group signature already has transparent + blending.
+24. **Tone mapping applied when rendering into a render target** (`WebGLPrograms`, d19c668): three.js
+    tone-maps only when drawing to the canvas (`currentRenderTarget === null`, or an XR target); jrs
+    applied the renderer's tone mapping to every pass, so a render target's content was tone-mapped and
+    the objects textured with it showed small clusters of wrong colours whenever tone mapping was on.
+    This was the "render-target-textured surfaces" class: seeds 23 and 28 of the first generator and 12
+    and 97 of the current one are identical now, 27 is 0.015 and 145 is 0.082 (from 0.165). Found by
+    narrowing `--only=phong,renderTarget,maps,lights` plus one feature at a time (only `toneMapping`
+    moved the worst mean).
 
 ### Open (found, not fixed tonight)
 
@@ -293,28 +302,21 @@ each with the reasoning.
   ~~seed 2 (0.467, transparent BackSide custom-blend spheres over a lit floor)~~ and ~~seed 413 of
   401-500 (0.847)~~: all three were the destination-alpha blend class, fixed by fix 23 (identical now;
   reproduce the old scenes with `--disable=envMaps`).
-* **Render-target-textured surfaces in a few scenes** (seeds 23, 27, 28, 142, 160, 192): small clusters
-  where three.js shows exactly 0 and jrs about 0.004 linear (15/255 encoded), or similar; the plain
-  linear/sRGB round trip is identical in a direct test, so it depends on something else in those
-  scenes (fog, tone mapping, camera view offset are common to several of them); mean ≤ 0.10.
+* ~~Render-target-textured surfaces in a few scenes (seeds 23, 27, 28, 142, 160, 192)~~: tone mapping
+  into the render target, fix 24 (23 and 28 identical; 27 keeps 22 edge pixels at 0.015).
 * **Seed 145** (see the table): ShaderMaterials ~12% darker after a frame rendered with an
   `overrideMaterial`; not located.
-* **Seed 97 (envMaps generator, 0.062 at frame 0 rising to 0.155 at frame 5)**: a bright spot on a
-  `MeshStandardMaterial` floor under `scene.environment` (rotated PMREM), with 4 shadow lights, that moves
-  with the animation; the floor alone is identical, `--noshadow` and `--singlepass` change nothing, the
-  floor + the grouped transparent object over it is identical as a pair, and no single removal clears it.
-  The same seed also has the render-target-textured class (a `map(sRGB)(RT)` Lambert alone, 0.04).
-* **Seed 14 (envMaps generator, 0.06 at frame 0 / 0.099 at frame 1)**: `scene.environment` + blurred
-  textured background + refraction env maps + a render target; small clusters, not isolated yet.
-  When seeds 1-13 ran before it on the same page, jrs also reports GL error 1282 (INVALID_OPERATION)
+* ~~Seed 97 (envMaps generator, 0.062 rising to 0.155)~~: identical after fix 24 (the moving spot on
+  the floor was the reflection of a render-target-textured object through the environment).
+* **Seed 14 (envMaps generator, 0.06 at frame 0 / 0.099 at frame 1)**: per-object isolation shows the
+  wireframe class: transparent custom-blend DoubleSide `MeshLambertMaterial` wireframe boxes with
+  vertex colours (line endpoint pixels, saturating under the blend). When seeds 1-13 ran before it on the same page, jrs also reports GL error 1282 (INVALID_OPERATION)
   for this seed (`--start=12`, `--start=13` and the seed alone do not reproduce it;
   `bench/fuzz-glerr.mjs 14 jrs` finds no erroring call alone): something a previous renderer on the page
   leaves behind in a module-level object. Open.
-* **Seed 12 (envMaps generator, 0.125)**: the render-target-textured class, now down to a per-object
-  case: a flat DoubleSide `MeshPhongMaterial` stencil writer with the (linear) render target as both
-  `map` and `specularMap` is about 10% brighter in jrs alone (0.024, 53 px); the other RT-textured
-  objects of the seed show the same. Locatable with a direct test (Phong + RT map + specularMap).
-* **Seed 145 of the earlier generator** (`--seed=145 --disable=envMaps`): still 0.165 after fixes 21-23.
+* ~~Seed 12 (envMaps generator, 0.125)~~: identical after fix 24.
+* **Seed 145 of the earlier generator** (`--seed=145 --disable=envMaps`): 0.082 after fix 24 (was
+  0.165); the ShaderMaterial-after-overrideMaterial part remains.
 * **Seed 14 (0.05)**: `MeshPhongMaterial` wireframe lines textured with a render target sample about
   25% darker in jrs; wireframe batches with Phong/maps otherwise show only the line-endpoint edge class.
 * Line primitives (wireframe) flip single endpoint pixels more often than triangle edges do; the 8-pixel
