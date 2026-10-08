@@ -269,3 +269,13 @@ test('applyMatrix4, attach, lookAt, copy and getWorldPosition on bones match thr
 	ca.updateMatrix(); cb.updateMatrix();
 	for (let i = 0; i < 16; i++) near(ca.matrix.elements[i], cb.matrix.elements[i], 2e-5, 'copy matrix ' + i);
 });
+
+test('bone transform objects serialise without cycles', () => {
+	const bone = new JRS.Bone();
+	bone.position.set(1, 2, 3); bone.rotation.set(0.1, 0.2, 0.3);
+	assert.deepEqual(JSON.parse(JSON.stringify(bone.position)), { isVector3: true, x: 1, y: 2, z: 3 });
+	assert.equal(JSON.parse(JSON.stringify(bone.quaternion)).length, 4);
+	const e = JSON.parse(JSON.stringify(bone.rotation));
+	assert.equal(e._x, 0.1); assert.equal(e._order, 'XYZ');
+	assert.ok(!Object.keys(bone.position).includes('_owner'));
+});

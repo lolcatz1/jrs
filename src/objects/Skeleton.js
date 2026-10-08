@@ -71,7 +71,7 @@ class Skeleton {
 		this.bones = bones.slice(0);
 		this.boneInverses = boneInverses;
 		this.boneMatrices = null;
-		this.boneTexture = null;
+		this._boneTexture = null;
 		/** Frame stamp used by the renderer to call update() once per frame. */
 		this.frame = -1;
 		// bone atlas bookkeeping (renderer): the atlas holding this skeleton's matrices, its slot range, and which `_dataVersion` was copied
@@ -200,7 +200,7 @@ class Skeleton {
 			boneMatrices[o + 15] = a41 * b14 + a42 * b24 + a43 * b34 + a44 * b44;
 		}
 		this._dataVersion++;
-		if (this.boneTexture !== null) this.boneTexture.needsUpdate = true;
+		if (this._boneTexture !== null) this._boneTexture.needsUpdate = true;
 	}
 	/**
 	 * Caches, per bone, the transform record and matrix slab it lives in so `update()` runs from flat arrays without
@@ -249,8 +249,18 @@ class Skeleton {
 			multiply4x4(ae, be, boneMatrices, i * 16);
 		}
 		this._dataVersion++;
-		if (this.boneTexture !== null) this.boneTexture.needsUpdate = true;
+		if (this._boneTexture !== null) this._boneTexture.needsUpdate = true;
 	}
+	/**
+	 * The bone texture, as in three.js: null until `computeBoneTexture()` has run. Skeletons drawn with built-in
+	 * materials are served from the renderer's shared bone atlas and have no texture of their own, so reading this
+	 * on a skeleton the renderer has drawn creates it on demand (three.js would already have created it).
+	 */
+	get boneTexture() {
+		if (this._boneTexture === null && this._atlas !== null) this.computeBoneTexture();
+		return this._boneTexture;
+	}
+	set boneTexture(value) { this._boneTexture = value; }
 	clone() { return new Skeleton(this.bones, this.boneInverses); }
 	/** Allocates the RGBA float bone texture (4 texels per bone), same layout and size rule as three.js. */
 	computeBoneTexture() {
@@ -264,7 +274,7 @@ class Skeleton {
 		// re-uploaded every frame it changes: the renderer streams it with texImage2D (see WebGLTextures)
 		boneTexture._stream = true;
 		this.boneMatrices = boneMatrices;
-		this.boneTexture = boneTexture;
+		this._boneTexture = boneTexture;
 		return this;
 	}
 	getBoneByName(name) {
@@ -273,7 +283,7 @@ class Skeleton {
 	}
 	dispose() {
 		if (this._atlas !== null) this._atlas.release(this);
-		if (this.boneTexture !== null) { this.boneTexture.dispose(); this.boneTexture = null; }
+		if (this._boneTexture !== null) { this._boneTexture.dispose(); this._boneTexture = null; }
 	}
 	fromJSON(json, bones) {
 		this.uuid = json.uuid;

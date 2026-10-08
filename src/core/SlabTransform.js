@@ -39,7 +39,7 @@ const noopOnChange = Quaternion.prototype._onChangeCallback;
 class SlabVector3 extends Vector3 {
 	constructor(owner, d, record, base) {
 		super();
-		this._owner = owner; // keeps the owning bone (and so its slab record) alive while this vector is referenced
+		Object.defineProperty(this, '_owner', { value: owner }); // keeps the owning bone (and so its slab record) alive while this vector is referenced; not enumerable (JSON.stringify, Object.keys)
 		this._d = d;
 		this._b = record + base;
 		this._v = record + TRS_VERSION;
@@ -74,7 +74,7 @@ SlabVector3.prototype.isSlabTransform = true;
 class SlabQuaternion extends Quaternion {
 	constructor(owner, d, record) {
 		super();
-		this._owner = owner;
+		Object.defineProperty(this, '_owner', { value: owner });
 		this._d = d;
 		this._b = record + 3;
 		this._v = record + TRS_VERSION;
@@ -107,7 +107,7 @@ SlabQuaternion.prototype.isSlabTransform = true;
 class SlabEuler extends Euler {
 	constructor(owner, d, record) {
 		super();
-		this._owner = owner;
+		Object.defineProperty(this, '_owner', { value: owner });
 		this._d = d;
 		this._qv = record + TRS_QUAT_VERSION;
 		this._seen = 0; // quaternion version the angles were last synchronised to
@@ -115,6 +115,7 @@ class SlabEuler extends Euler {
 	get _stale() { const d = this._d; return d !== undefined && d[this._qv] !== this._seen; }
 	set _stale(value) { const d = this._d; if (d !== undefined) this._seen = value ? -1 : d[this._qv]; }
 	clone() { if (this._stale) this._flush(); return new Euler(this._x, this._y, this._z, this._order); }
+	toJSON() { if (this._stale) this._flush(); return { isEuler: true, _x: this._x, _y: this._y, _z: this._z, _order: this._order }; }
 }
 
 export { SlabVector3, SlabQuaternion, SlabEuler, noopOnChange };

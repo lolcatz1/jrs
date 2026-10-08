@@ -1529,8 +1529,8 @@ class WebGLRenderer {
 				if (bb.cache !== base) { bb.cache = base; gl.uniform1i(bb.location, base); if (this._traceUniforms !== null) this._trace(bb); }
 				this.textures.setTexture2D(this._boneAtlas.flush(), bt.unit);
 			} else {
-				if (skeleton.boneTexture === null) skeleton.computeBoneTexture();
-				this.textures.setTexture2D(skeleton.boneTexture, bt.unit);
+				if (skeleton._boneTexture === null) skeleton.computeBoneTexture();
+				this.textures.setTexture2D(skeleton._boneTexture, bt.unit);
 			}
 		}
 	}
