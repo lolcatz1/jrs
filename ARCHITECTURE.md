@@ -22,6 +22,45 @@ For a static object the per-frame cost is ten float compares.
 The `rotation` (Euler) and `quaternion` objects stay synchronised through the same
 `_onChange` callbacks three.js uses, so `mesh.rotation.y += 0.01` keeps working.
 
+### 1b. Flat scene update (`src/core/FlatGraph.js`, `WebGLRenderer._flatPass`)
+
+three.js (and jrs until now) walk the scene twice per frame: `scene.updateMatrixWorld()` recurses through
+`children` to update matrices, then `projectObject` recurses again to cull and collect render items. Both walks
+are call-heavy and every property they read (`children`, `visible`, `matrixAutoUpdate`, `layers`, `parent`, ...)
+comes from receivers of many shapes.
+
+jrs keeps, per rendered scene, a `FlatGraph`: the objects in `traverse` order in one array (parent before
+child), with the parent index, the end of each subtree, the child count and a kind bitmask (renderable / light /
+sprite / LOD / custom `updateMatrixWorld` / camera or skinned-mesh post hook) in typed arrays, plus per-frame
+scratch (world version seen, "descendants must recompute", effective visibility). One loop over that array does
+what the two walks did: change-detect and recompose the local matrix, remultiply the world matrix straight in the
+slab (same expression order as `Matrix4.multiplyMatrices`, so results are bit-identical), refresh the world
+bounding sphere, test the frustum, compute the normal matrix while the record is hot, and push the render item.
+Items come out in exactly `traverseVisible` order, so draw order and `onBeforeRender` / `onAfterRender` order are
+unchanged.
+
+Invalidation: `add` / `remove` / `attach` patch the array in place (the subtree is spliced in after its parent's
+last descendant, or spliced out; more than 16 patches between two frames, or a parent that is not in the graph,
+mark it for a rebuild). The pass also compares every entry's `children.length` with the count it was built with,
+so a direct `children` edit rebuilds the graph and reruns the pass. Nested scenes rendered alternately each keep
+their own graph; a scene rendered by two renderers shares one.
+
+Semantics kept exactly (see `test/flat-scene-update.test.js` and `bench/flat-check.mjs`): `matrixAutoUpdate =
+false` (user-written `matrix`), `matrixWorldAutoUpdate = false` (user-written `matrixWorld`, children recomputed
+only when the object is flagged or its parent moves), `updateMatrixWorld(force)` / `updateWorldMatrix()` called
+by the app between frames (they still run recursively and the pass finds nothing to do), subclasses overriding
+`updateMatrixWorld` (the override is called, recursively, for its subtree), cameras in the hierarchy (updated with
+their ancestor chain before the frustum is built), lights (collected in traversal order; targets are read later),
+skinned meshes whose bones follow them in traversal order (`skeleton.update()` is deferred to the end of the pass),
+invisible subtrees (matrices updated, nothing pushed), layers, `frustumCulled = false`, a scene with
+`matrixWorldAutoUpdate = false` (projected, not updated).
+
+The pass runs in one of two modes per `render()`: when the list cannot be reused anyway (no recorded
+dependencies, an epoch moved, or the previous pass recomputed a world matrix: the scene is animating) matrices
+and items are produced in the same loop; otherwise an update-only loop runs first so an unchanged frame reuses
+its render list (§3b) without projecting. `renderer.flatSceneUpdate = false` restores the recursive walks;
+`renderer.debug.flatUpdate` counts merged / split passes and rebuilds.
+
 ## 2. Slab-allocated matrices (`src/core/TransformSlab.js`)
 
 Every `Object3D` owns a 48-float record in a large `Float32Array` page:
@@ -87,7 +126,7 @@ render-order ranks and per-frame ids are replayed. Camera moved only -> every ca
 flips the opaque list stays and the transparent keys are rebuilt from fresh depths (the same keys a full rebuild
 produces). Anything else -> a normal rebuild. Dependencies are recorded only on a build that follows an unchanged
 frame, so animated scenes pay for a signature copy. Draw commands are cached per list too and replayed when the
-matrix texture still holds that list's matrices (`renderer.debug.listReuse` counts rebuilds, reuses and replays).
+list's own matrix texture (§4d) still holds its matrices (`renderer.debug.listReuse` counts rebuilds, reuses and replays).
 
 `renderer.reuseRenderLists = false` disables it; `renderer.debug.verifyListReuse = true` rebuilds every reused list
 from scratch and compares (`node bench/reuse-check.mjs` renders twin scenes through ~60 scene mutations that way).
@@ -122,8 +161,8 @@ more per vertex than an attribute would on software GL; on GPUs it is the same t
 
 Instanced batching needs identical geometry. For runs of **different** geometries that share a
 material, jrs uses `WEBGL_multi_draw` (Chrome, Firefox, Safari): geometries with the same
-attribute layout (names, item sizes, types, indexed or not) are sub-allocated into large shared
-vertex and index buffers ("pages", 262k vertices each, one VAO per page). Indices are rebased to
+attribute layout (names, item sizes, types, indexed or not; custom attributes included) are sub-allocated
+into large shared vertex and index buffers ("pages", 262k vertices each, one VAO per page). Indices are rebased to
 the page's vertex base at upload time, so no base-vertex extension is needed. A run becomes one
 `multiDrawElementsWEBGL` (or `multiDrawArraysWEBGL`) call whose sub-draws read their object
 matrix and normal matrix from the same per-frame matrix texture, indexed by `gl_DrawID`. This is the transform-texture technique that three's `BatchedMesh` asks the
@@ -176,6 +215,91 @@ Limits and fallbacks:
 meshes, 200 Phong materials, 3 geometries) goes from 600 instanced draws plus 200 block binds to
 3 draws.
 
+### 4d. ShaderMaterial draws: automatic instancing of custom programs
+
+Custom programs used to end every batch: a `ShaderMaterial` reads its object transforms through
+plain uniforms (`modelMatrix`, `modelViewMatrix`, `normalMatrix`), so a scene of 1,300 custom-shader
+meshes was 1,300 draws in jrs as in three.js. `src/renderers/shaders/ShaderMaterialBatching.js`
+removes that limit without touching the application's shader:
+
+* **Eligibility** is decided once per material version by scanning the include-resolved vertex
+  shader (comments stripped): every reference to the three uniforms must be a plain read inside a
+  function body (no mention on a preprocessor line such as `#define` / `#if`, none in a global
+  initialiser), the shader must not read `gl_InstanceID` / `gl_DrawID` itself, there must be exactly
+  one `main()`, and the fragment shader must not declare the uniforms for itself. `RawShaderMaterial`
+  qualifies when it declares each of the three as a single plain `uniform mat4 modelMatrix;` style
+  line. Chunks such as `project_vertex`, `worldpos_vertex` and `defaultnormal_vertex` pass as they
+  are. A per-instance attribute (`InstancedBufferGeometry`), an `InstancedMesh`, skinning, morph
+  targets, `onBeforeRender` / `onAfterRender` hooks, geometry groups and mirrored objects
+  (negative-determinant world matrix, which flips the front face per object) keep their own draws.
+* **The rewrite.** The batched variant of the program replaces the three uniform declarations by
+  globals and a `jrs_fetchObject()` function, and inserts a call to it as the first statement of
+  `main()`. The function fills the globals from the matrix texture of §4, indexed by
+  `drawBase + gl_InstanceID + gl_DrawID` (one variant serves instanced runs and multi-draw runs:
+  `gl_DrawID` is 0 outside a multi-draw call). Which entries it fetches depends on what the shader
+  reads: `modelMatrix` only -> the world matrix entry (the same entry built-in batches use);
+  `modelViewMatrix` / `normalMatrix` -> an entry holding the model-view matrix and its normal
+  matrix; both kinds -> two entries per object. The view-space matrices are computed on the CPU
+  while the texture is filled, with the same `Matrix4.multiplyMatrices` / `Matrix3.getNormalMatrix`
+  calls on the same float32 inputs the per-object uniform path uses, so a batched draw is
+  bit-identical to the unbatched one (computing `viewMatrix * modelMatrix` in the shader would
+  round each product to float32 and sum in an unspecified order, an ulp or two away from the CPU's
+  double-precision accumulate, enough to move an edge pixel). The sampler of the matrix texture keeps
+  its fixed unit (15) in the custom program; the material's own samplers are numbered around it.
+* **One program per material.** A batchable mesh resolves straight to the batched variant while
+  the render list is built, so an eligible material compiles one program, and every run of its
+  meshes, however short (even a single mesh), goes through the batched path: switching between the
+  per-object and the batched variant would re-send every uniform of the material at each switch.
+  Runs follow the sort order, so transparent runs keep their back-to-front order as instance /
+  sub-draw order, and a run spans consecutive items of the *same material instance* only (two
+  instances of one shader with different uniform values never share a draw).
+* **Camera dependence.** A list whose batches hold view-space entries hashes the camera's view
+  matrix into the matrix-texture hash and records it with its cached draw commands; a camera move
+  rebuilds the commands and refills the texture, a static frame replays them.
+* **Matrix texture per list.** Every sorted list (opaque / transparent, per scene, pass and camera)
+  owns its own GPU copy of the matrix texture, so a list that did not change replays its commands
+  against matrices that are still on the GPU while other lists and passes draw through the batcher.
+  The static client frame (two shadow passes plus the main pass, each with opaque and transparent
+  batches) therefore uploads nothing at all once warm.
+* Multi-draw runs of custom programs need their custom attributes in the mega-buffers: custom
+  attributes have fixed per-name locations (§4b) and are packed into the pages, and a run is only
+  multi-drawn when its page carries every custom attribute the batched program reads.
+
+Effect: the client-shaped `shader-client` scene goes from 1,313 draws to 297 (132 instanced /
+single draws plus 165 multi-draws) and 3,320 to 955 GL calls per frame, pixel-identical to three.js;
+the static three-pass client frame goes from 651 to 53 draws and replays entirely.
+`renderer.autoBatchShaderMaterials = false` turns it off.
+
+### 4e. Lines, points and sprites (`INSTANCE_MATERIAL`)
+
+`Sprite`, `Points`, `Line`, `LineSegments` and `LineLoop` batch like meshes, with two differences.
+
+* **Per-object material values.** A mesh batch spans materials through the Materials record array (§4c).
+  Sprites, points and lines instead carry the few values their shaders read from the material
+  (colour and opacity, a sprite's rotation and size-attenuation flag, a point's size and attenuation
+  scale, a dashed line's scale / dash / gap sizes, `alphaTest`) in the matrix-texture entry itself:
+  texels 4-5 (the normal-matrix slots, unused by these objects), a sprite's anchor (`center`) in texel 6. The
+  batched program variant (`INSTANCE_MATERIAL`) reads them in the vertex shader and passes them on as
+  `flat` varyings. Materials that draw identically apart from those values (same type, textures,
+  blending, depth/stencil/polygon-offset state, side, fog, `alphaTest > 0`, `vertexColors`, ...) therefore share a
+  run, however many material instances there are: 5,000 sprites with 3,500 distinct `SpriteMaterial`s
+  become one draw per compatible stretch of the depth-sorted list. There is no limit like the
+  material window, and a colour / opacity / rotation edit is picked up the next frame because the values are
+  re-read (and hashed into the upload-skip hash) whenever a batch is built. Lists that contain such batches do
+  not replay cached draw commands (§3b), for the same reason.
+* **One draw for any mix of lines.** A `Line` (strip), `LineLoop` and `LineSegments` are expanded when
+  they enter a mega-buffer page (§4b) to indexed `LINES` pairs, and points are paged as they are, so one
+  `multiDrawElements(LINES)` / `multiDrawArrays(POINTS)` covers any mix of geometries of one layout. Pages hold only the
+  attributes the material reads (position, plus colour / `lineDistance` / uv when `vertexColors`, dashing or a map
+  is on), and the opaque sort key carries that layout class, so geometries that differ in attributes the material ignores still
+  share a page. Geometries above 65,536 vertices are drawn alone (a private copy of a huge buffer buys nothing).
+  Sprites share one quad geometry, so they use the instanced path.
+
+Parity details that live here: `LineDashedMaterial` dashes in the fragment shader (`mod(scale * lineDistance, dashSize + gapSize) > dashSize`),
+point sprites flip `gl_PointCoord.y` and use the geometry's `uv` when it has one, point size and attenuation follow
+`size * pixelRatio` and `height / 2` of the renderer (not of the render target), opaque materials force alpha 1 (`OPAQUE`), and
+`Fog` colour is uploaded in the output colour space like three.js does.
+
 ## 5. Uniform blocks instead of uniform uploads (`src/renderers/shaders/ShaderLib.js`)
 
 Three std140 blocks replace most `uniform*` calls:
@@ -199,7 +323,10 @@ Only the number of shadow-casting lights is a compile-time constant, because GLS
 3.00 sampler arrays must be indexed with constants.
 
 Sampler uniforms are bound to fixed texture units at link time (`map` → 0,
-`alphaMap` → 1, …, shadow maps → 8–15) and never set again.
+`alphaMap` → 1, …, shadow maps → 8–14, the environment map → 15, the vertex-shader data
+textures (bones, morph targets, batched matrices) → 16–18) and never set again. The DFG
+lookup table of the physical model shares unit 7 with `specularMap` / `bumpMap`, which a
+`MeshStandardMaterial` never uses.
 
 ## 6. Program cache keyed by integer (`src/renderers/webgl/WebGLPrograms.js`)
 
@@ -272,32 +399,90 @@ and morph textures live on fixed units 16 and 17 (above the 16 fragment units; W
 32 combined). Output is pixel-identical to three.js. `ShaderMaterial` gets the same defines and
 uniforms, so custom shaders that `#include <skinning_pars_vertex>` work unchanged.
 
-What differs is the CPU side:
+What differs is the CPU side. A skinned crowd is thousands of identical bones, and on a JS engine the cost of animating
+a bone is not arithmetic but memory: the object model (Bone -> Vector3 / Quaternion / Euler -> a HeapNumber per
+component, promoted in breadth-first GC order) costs ~10 cache misses per bone per frame. The pieces below keep the
+three.js API and take the bone out of the hot loops:
 
-* `Skeleton.update()` multiplies each bone's slab-resident world matrix with its inverse bind
-  matrix straight into the `boneMatrices` Float32Array (no `Matrix4` temporaries, no `toArray`),
-  and it remembers every bone's `_worldVersion`: when no bone moved the whole step, including
-  the texture upload, is skipped. Idle characters cost a few compares.
-* `SkinnedMesh.bindMatrixInverse` is recomputed only when the world matrix version changed, and
-  the renderer re-sends `bindMatrix` / `bindMatrixInverse` only when their values changed.
-* The bone texture is streamed with `texImage2D` (not `texSubImage2D` into immutable storage),
-  the upload path that does not stall Chromium's command buffer (§ stall-hunter report), and
-  its sampler parameters are set once. Unpack pixel-store state is cached in `WebGLState`.
-* The skeleton is updated once per `render()` call, from the render list build, so a mesh drawn
-  in the shadow pass and the main pass uploads its bones once.
-* Skinned and morphed meshes carry per-object GPU state (bone texture, influences) and are never
-  auto-batched; they go through the per-object path like `ShaderMaterial` meshes do.
+* **Slab-resident bone transform** (`src/core/SlabTransform.js`, `src/objects/Bone.js`). A Bone's position,
+  quaternion and scale live in its record of the transform slab's snapshot page (`Float64Array`, 16 doubles per object),
+  next to a write version, the `_worldVersion` / `_parentWorldVersion` and the `matrixAutoUpdate`-family flags.
+  `bone.position` / `quaternion` / `scale` / `rotation` are `Vector3` / `Quaternion` / `Euler` subclasses whose
+  components are accessors over the record (every write bumps the version), so `bone.position.x += 1`,
+  `quaternion.multiply(q)`, `rotation.y = a` and `matrix.decompose(...)` work as in three.js. `Bone.updateMatrix` is a
+  version compare. `rotation` follows the quaternion lazily (it is stale while the quaternion's own write version
+  differs), and plain `Object3D.rotation` does the same with a dirty flag instead of converting on every
+  quaternion write.
+* **Rig update plans** (`src/objects/RigPlan.js`). The root of a bone hierarchy (a Bone whose parent is not a Bone) caches
+  per bone the record and matrix slab it lives in and its parent's index, and `updateMatrixWorld` runs the same
+  computation as `Object3D.updateMatrixWorld` (recompose the local matrix when the TRS changed, multiply with the parent
+  when the local matrix, the parent's world version or `force` changed; affine 3x4 product) in one loop over those
+  arrays, without touching the Bone objects. Non-bone children are updated through their own `updateMatrixWorld`.
+  A plan is dropped (and rebuilt on the next update) by an add / remove / attach that involves a bone of its hierarchy, so spawning a character rebuilds only the rigs it touches; rigs with Bone subclasses
+  use the generic path.
+* **Animation writes the record directly.** `PropertyBinding` bound to a bone `quaternion` / `position` / `scale`
+  resolves the record at bind time and its setter stores the components and bumps the versions, no bone access, no
+  `matrixWorldNeedsUpdate`. `QuaternionLinearInterpolant` interpolates inside the generic `evaluate` frame (no boxed
+  doubles per track and frame) and memoises the slerp angle terms (`sqrt` / `atan2` of the keyframe dot product are
+  pure functions of data that does not change while the clip time stays inside one interval); `PropertyMixer`
+  buffers are carved from shared chunks.
+* **`Skeleton.update()`** runs from flat per-bone arrays too: it compares the bones' world versions in their records and
+  multiplies the world matrices (slab) with the inverse bind matrices, which are held in one `Float32Array` shared by
+  every skeleton using the same `boneInverses` array (each Matrix4's `elements` is a slice of it, so in-place edits
+  still take effect; replacing a matrix or the list is detected by identity). Skeletons that contain non-Bones
+  fall back to reading the objects. An unchanged skeleton costs a loop of integer compares.
+* **One bone atlas** (`src/renderers/webgl/WebGLBoneAtlas.js`). Every skeleton drawn with a built-in material owns a
+  stable range of bone slots in one RGBA32F texture; the shader adds the draw's `boneBase` uniform to the bone index
+  (`ShaderMaterial` programs keep three.js's unmodified chunk and one texture per skeleton). A frame uploads the
+  changed matrices with one `texImage2D` instead of one bind + upload per skeleton, and the texture stays bound
+  across draws. `skeleton.boneTexture` is created on demand if user code reads it.
+* Skinned and morphed meshes carry per-object GPU state and are never auto-batched; they sort by their own material
+  (not the batch group's shared id) so the material block is bound once per material instead of once per draw.
+* `SkinnedMesh.bindMatrixInverse` is recomputed only when the world matrix version changed, and the renderer
+  re-sends `bindMatrix` / `bindMatrixInverse` / `boneBase` only when their values changed. The skeleton is updated once
+  per `render()` call, from the render list build, so a mesh drawn in the shadow pass and the main pass uploads its
+  bones once. Subtrees made only of Bones are skipped by the render traversal.
+* The bone atlas is streamed with `texImage2D` (not `texSubImage2D` into immutable storage), the upload path that does
+  not stall Chromium's command buffer (§ stall-hunter report). Unpack pixel-store state is cached in `WebGLState`.
 
-The animation system (`src/animation/`) is the three.js r186 code, which already runs without
-per-frame allocation; `AnimationMixer.update` writes into bone `position` / `quaternion` / `scale`
-and the change-detected `updateMatrix` picks it up.
+## 12. Environment maps and image-based lighting (`src/renderers/webgl/WebGLEnvironments.js`)
+
+The texture a material samples is resolved once per material per frame from `material.envMap`
+or `scene.environment`, exactly as three.js does: equirectangular textures become cube maps
+(a `WebGLCubeRenderTarget` of the image height), and the PMREM path (`MeshStandardMaterial`,
+`scene.environment`, blurred backgrounds) turns cube and equirectangular textures into the
+CubeUV layout of `PMREMGenerator`, which is a verbatim port (same GGX VNDF prefilter, same
+`cube_uv_reflection_fragment` sampling with `CUBEUV_TEXEL_WIDTH/HEIGHT` and `CUBEUV_MAX_MIP`
+defines). Conversions are cached per source texture and redone when a `CubeCamera` target sets
+`needsPMREMUpdate`. They render while a frame may be in flight, so the renderer parks the
+frame's collected lights, render-order ranks, dense-id counters and trace state around them
+(`_beginNestedRender` / `_endNestedRender`).
+
+The built-in `Standard` shader is three.js r186's physical model: the DFG lookup table (a 16x16
+RG16F `DataTexture` copied from three), `computeMultiscattering`, the multi-scattering
+compensation of direct specular, the Fresnel-weighted direct diffuse and the
+single/multi-scatter split of the indirect terms. Lighting stays in world space; the only
+view-space conversion is the geometric-roughness derivative, which three.js takes on the
+view-space normal. Basic / Lambert / Phong get three's `envmap_fragment` blending (reflection
+or refraction vector, `combine`, `reflectivity`, `specularMap` strength), with
+`MeshBasicMaterial`'s reflection vector computed per vertex and interpolated like three does.
+The per-material environment data (`envMapIntensity`, `reflectivity`, `refractionRatio`, `ior`
+and the inverse rotation matrix, with the px/nx flip of non-render-target cube textures) lives
+in the material record, so batches spanning several materials keep working; materials that
+sample different environment textures are kept in separate batches, because the environment
+map is one sampler unit per draw.
+
+`scene.background` textures are drawn like three.js draws them: the `backgroundCube` shader on
+a camera-centred BackSide box (cube map, or the PMREM layout when `backgroundBlurriness > 0`),
+or the `background` shader on a screen plane for 2D textures, through the ShaderMaterial path,
+before the opaque list and without depth writes.
 
 ## What is intentionally not there (yet)
 
-* Environment maps / image-based lighting, `MeshPhysicalMaterial`'s extra layers
-  (the class exists; it renders as `MeshStandardMaterial`).
-* VSM (and `BasicShadowMap` for directional/spot lights, which always use hardware PCF), `Scene.background` textures, `InstancedMesh`
-  morph targets (`morphTexture`), clipping planes, WebGL1.
+* `MeshPhysicalMaterial`'s extra layers (the class exists; it renders as `MeshStandardMaterial`
+  with the 0.04 dielectric F0), `lightMap`, `bumpMap`.
+* VSM (and `BasicShadowMap` for directional/spot lights, which always use hardware PCF), rendering
+  into mip levels of a render target, `InstancedMesh` morph targets (`morphTexture`), clipping planes, WebGL1.
 * `ShaderMaterial` with `lights: true`: three.js fills light uniforms from the scene in
   view space; here lighting data lives in the `Lights` block, which custom shaders do not
   see. Everything else about `ShaderMaterial` (prefix, chunks, `UniformsLib`, GLSL 1.00

@@ -297,10 +297,38 @@ export const scenarios = {
 		n: 211,
 		build(T, n) { return buildShaderClient(T, n, { scale: 211 / 1313, staticFrame: true }); }
 	},
+	// 5000 Line / LineSegments / LineLoop objects: LineBasicMaterial and LineDashedMaterial
+	// (computeLineDistances), vertex colours, linewidth set (ignored by WebGL), fog.
+	'lines-many': {
+		n: 5000,
+		build(T, n) { return buildLinesMany(T, n); }
+	},
+	// One Points object with 1,000,000 vertices (size, sizeAttenuation, map, alphaMap, alphaTest,
+	// vertex colours) plus 2,000 small Points objects over a handful of materials.
+	'points-cloud': {
+		n: 1000000,
+		build(T, n) { return buildPointsCloud(T, n, 2000); }
+	},
+	// 5000 Sprites: SpriteMaterial with rotation, center, sizeAttenuation off/on, map, transparent
+	// (depth sorted), fog.
+	'sprites-many': {
+		n: 5000,
+		build(T, n) { return buildSpritesMany(T, n); }
+	},
 	// 200 skinned characters (20-bone chains, 4 weights per vertex) each driven by its own AnimationMixer.
 	'skinned-crowd': {
 		n: 200,
 		build(T, n) { return buildSkinnedCrowd(T, n); }
+	},
+	// Larger rigs: 1000 skinned characters with 40 bones each (40 000 bones animated per frame).
+	'skinned-crowd-large': {
+		n: 1000,
+		build(T, n) { return buildSkinnedCrowd(T, n, { bones: 40, height: 8, spacing: 1.6, camera: [0, 22, 61] }); }
+	},
+	// Morph targets: 500 meshes sharing one geometry with 8 position + normal targets, influences animated every frame.
+	'morph-crowd': {
+		n: 500,
+		build(T, n) { return buildMorphCrowd(T, n); }
 	},
 	// Shadows: 2000 casters/receivers under a shadow-casting directional light.
 	'shadows': {
@@ -339,16 +367,55 @@ export const scenarios = {
 			return { scene, camera };
 		}
 	},
+	// 2000 MeshStandardMaterial spheres lit by scene.environment (a procedural equirectangular DataTexture
+	// run through PMREMGenerator): image-based lighting through the PMREM path on every object, 8 materials.
+	'pbr-envmap': {
+		n: 2000,
+		build(T, n) {
+			const scene = new T.Scene();
+			const camera = new T.PerspectiveCamera(60, 4 / 3, 0.1, 500);
+			camera.position.set(0, 0, 35); camera.lookAt(0, 0, 0);
+			const w = 256, h = 128, data = new Uint8Array(w * h * 4);
+			for (let y = 0; y < h; y++) {
+				const v = (y + 0.5) / h;
+				for (let x = 0; x < w; x++) {
+					const u = (x + 0.5) / w;
+					let r, g, b;
+					if (v > 0.5) { const t = (v - 0.5) * 2; r = 80 + 50 * (1 - t); g = 130 + 70 * (1 - t); b = 255; } else { const t = v * 2; r = 120 * t + 30; g = 90 * t + 25; b = 50 * t + 15; }
+					const du = Math.min(Math.abs(u - 0.3), 1 - Math.abs(u - 0.3)), dv = v - 0.8;
+					const sun = Math.exp(-(du * du + dv * dv) * 400);
+					r += 255 * sun; g += 230 * sun; b += 160 * sun;
+					if (u > 0.6 && u < 0.75 && v > 0.45 && v < 0.6) { r = 255; g = 60; b = 30; }
+					const i = (y * w + x) * 4;
+					data[i] = Math.min(255, r | 0); data[i + 1] = Math.min(255, g | 0); data[i + 2] = Math.min(255, b | 0); data[i + 3] = 255;
+				}
+			}
+			const env = new T.DataTexture(data, w, h, T.RGBAFormat, T.UnsignedByteType);
+			env.mapping = T.EquirectangularReflectionMapping; env.magFilter = T.LinearFilter; env.minFilter = T.LinearFilter; env.needsUpdate = true;
+			scene.environment = env;
+			scene.environmentIntensity = 1.2;
+			const sun = new T.DirectionalLight(0xffffff, 1.5); sun.position.set(1, 2, 3); scene.add(sun);
+			const geometry = new T.SphereGeometry(0.45, 16, 12);
+			const materials = [];
+			for (let i = 0; i < 8; i++) materials.push(new T.MeshStandardMaterial({ color: new T.Color().setHSL(i / 8, 0.6, 0.55), roughness: (i % 4) / 3, metalness: i < 4 ? 1 : 0.1 }));
+			for (let i = 0; i < n; i++) {
+				const m = new T.Mesh(geometry, materials[(i * 5) % 8]);
+				const p = grid(i, n, 1.3); m.position.set(p[0], p[1], p[2]);
+				scene.add(m);
+			}
+			return { scene, camera };
+		}
+	},
 };
 
-function buildSkinnedCrowd(T, n) {
+function buildSkinnedCrowd(T, n, opts = {}) {
 	const scene = new T.Scene();
 	scene.background = new T.Color(0x202830);
 	const camera = new T.PerspectiveCamera(60, 4 / 3, 0.1, 500);
-	camera.position.set(0, 14, 34); camera.lookAt(0, 2, 0);
+	camera.position.set(...(opts.camera || [0, 14, 34])); camera.lookAt(0, 2, 0);
 	scene.add(new T.AmbientLight(0xffffff, 0.5));
 	const sun = new T.DirectionalLight(0xffffff, 2); sun.position.set(1, 2, 3); scene.add(sun);
-	const bones = 20, height = 6;
+	const bones = opts.bones || 20, height = opts.height || 6, spacing = opts.spacing || 2.2;
 	// one shared geometry: a tapered tube, every vertex weighted over 4 consecutive bones of a chain along Y
 	const geometry = new T.CylinderGeometry(0.35, 0.5, height, 10, bones * 2);
 	const position = geometry.attributes.position, count = position.count;
@@ -388,7 +455,7 @@ function buildSkinnedCrowd(T, n) {
 			bone.position.y = b === 0 ? -height / 2 : height / (bones - 1);
 			parent.add(bone); chain.push(bone); parent = bone;
 		}
-		mesh.position.set(((i % side) - side / 2) * 2.2, height / 2 - 1, (Math.floor(i / side) - side / 2) * 2.2);
+		mesh.position.set(((i % side) - side / 2) * spacing, height / 2 - 1, (Math.floor(i / side) - side / 2) * spacing);
 		mesh.rotation.y = i * 0.37;
 		mesh.updateMatrixWorld(true);
 		mesh.bind(new T.Skeleton(chain));
@@ -400,6 +467,51 @@ function buildSkinnedCrowd(T, n) {
 		mixers.push(mixer);
 	}
 	return { scene, camera, update: (f) => { for (let i = 0; i < mixers.length; i++) mixers[i].update(1 / 60); } };
+}
+
+function buildMorphCrowd(T, n) {
+	const scene = new T.Scene();
+	scene.background = new T.Color(0x202830);
+	const camera = new T.PerspectiveCamera(60, 4 / 3, 0.1, 500);
+	camera.position.set(0, 18, 40); camera.lookAt(0, 0, 0);
+	scene.add(new T.AmbientLight(0xffffff, 0.5));
+	const sun = new T.DirectionalLight(0xffffff, 2); sun.position.set(1, 2, 3); scene.add(sun);
+	const geometry = new T.SphereGeometry(0.8, 24, 16);
+	const position = geometry.attributes.position, normal = geometry.attributes.normal, count = position.count;
+	const targets = 8, morphPos = [], morphNor = [];
+	for (let t = 0; t < targets; t++) {
+		const p = new Float32Array(count * 3), nn = new Float32Array(count * 3);
+		for (let i = 0; i < count; i++) {
+			const x = position.getX(i), y = position.getY(i), z = position.getZ(i);
+			const k = 0.35 * Math.sin((t + 1) * 1.7 + y * 3.1 + x * (t + 2)) + 0.25 * (t % 2 ? x : z);
+			p[i * 3] = x * (1 + k * 0.5) - x; p[i * 3 + 1] = y * (1 + 0.4 * Math.cos(t + z * 2)) - y; p[i * 3 + 2] = z * (1 - k * 0.4) - z;
+			nn[i * 3] = normal.getX(i) * 0.2 * Math.sin(t + i); nn[i * 3 + 1] = normal.getY(i) * 0.2; nn[i * 3 + 2] = normal.getZ(i) * 0.2 * Math.cos(t);
+		}
+		morphPos.push(new T.BufferAttribute(p, 3)); morphNor.push(new T.BufferAttribute(nn, 3));
+	}
+	geometry.morphAttributes.position = morphPos; geometry.morphAttributes.normal = morphNor;
+	geometry.morphTargetsRelative = true;
+	const materials = [];
+	for (let i = 0; i < 8; i++) materials.push(new T.MeshLambertMaterial({ color: new T.Color().setHSL(i / 8, 0.5, 0.55) }));
+	const side = Math.ceil(Math.sqrt(n)), meshes = [];
+	for (let i = 0; i < n; i++) {
+		const mesh = new T.Mesh(geometry, materials[i % materials.length]);
+		mesh.position.set(((i % side) - side / 2) * 2.1, 0, (Math.floor(i / side) - side / 2) * 2.1);
+		mesh.updateMatrix();
+		scene.add(mesh);
+		meshes.push(mesh);
+	}
+	let frame = 0;
+	return {
+		scene, camera,
+		update: () => {
+			frame++;
+			for (let i = 0; i < meshes.length; i++) {
+				const inf = meshes[i].morphTargetInfluences;
+				for (let t = 0; t < targets; t++) inf[t] = 0.5 + 0.5 * Math.sin(frame * 0.05 * (1 + t * 0.15) + i * 0.37 + t);
+			}
+		}
+	};
 }
 
 function buildShadows(T, n, animated, point = false) {
@@ -606,4 +718,157 @@ function buildShaderClient(T, n, opts) {
 			return { scene, camera, warm, frame, passes: ['shadow RT (overrideMaterial)', 'near shadow RT (overrideMaterial)', 'main + stencil volumes'] };
 		}
 	}
+}
+
+// deterministic pseudo random numbers so both libraries build the same scene
+function rng(seed) {
+	let s = seed >>> 0;
+	return () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
+}
+
+// 64x64 RGBA soft disc (colour varies with position), and a 32x32 single-channel alpha ring
+function makeDiscTexture(T) {
+	const size = 64, d = new Uint8Array(size * size * 4);
+	for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+		const dx = (x + 0.5) / size * 2 - 1, dy = (y + 0.5) / size * 2 - 1, r = Math.sqrt(dx * dx + dy * dy), i = (y * size + x) * 4;
+		d[i] = 255 - x * 2; d[i + 1] = 160 + y; d[i + 2] = 255; d[i + 3] = r < 1 ? Math.round(255 * Math.min(1, (1 - r) * 3)) : 0;
+	}
+	const t = new T.DataTexture(d, size, size, T.RGBAFormat, T.UnsignedByteType);
+	t.minFilter = T.LinearFilter; t.magFilter = T.LinearFilter; t.generateMipmaps = false; t.colorSpace = T.SRGBColorSpace; t.needsUpdate = true;
+	return t;
+}
+function makeAlphaTexture(T) {
+	const size = 32, d = new Uint8Array(size * size * 4);
+	for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+		const dx = (x + 0.5) / size * 2 - 1, dy = (y + 0.5) / size * 2 - 1, r = Math.sqrt(dx * dx + dy * dy), i = (y * size + x) * 4;
+		const v = r > 0.35 && r < 0.95 ? 255 : 90;
+		d[i] = 0; d[i + 1] = v; d[i + 2] = 0; d[i + 3] = 255;
+	}
+	const t = new T.DataTexture(d, size, size, T.RGBAFormat, T.UnsignedByteType);
+	t.minFilter = T.LinearFilter; t.magFilter = T.LinearFilter; t.generateMipmaps = false; t.needsUpdate = true;
+	return t;
+}
+
+function buildLinesMany(T, n) {
+	const rand = rng(4321);
+	const scene = new T.Scene();
+	scene.fog = new T.Fog(0x203040, 40, 110);
+	scene.background = new T.Color(0x101820);
+	const camera = new T.PerspectiveCamera(60, 4 / 3, 0.1, 300);
+	camera.position.set(0, 0, 70); camera.lookAt(0, 0, 0);
+	const palette = [0xff5544, 0x44ff88, 0x4488ff, 0xffcc33, 0xff66ff, 0x66ffff];
+	const basic = palette.map((c, i) => new T.LineBasicMaterial({ color: c, linewidth: 1 + (i % 3) * 2 }));
+	const colored = new T.LineBasicMaterial({ vertexColors: true, linewidth: 4 });
+	const noFog = new T.LineBasicMaterial({ color: 0xffffff, fog: false, transparent: true, opacity: 0.6 });
+	const dashed = [
+		new T.LineDashedMaterial({ color: 0xffaa33, dashSize: 0.6, gapSize: 0.4, linewidth: 2 }),
+		new T.LineDashedMaterial({ color: 0x33aaff, dashSize: 1.5, gapSize: 0.5, scale: 2 }),
+		new T.LineDashedMaterial({ vertexColors: true, dashSize: 0.25, gapSize: 0.25, scale: 0.5 }),
+	];
+	const makeGeometry = (kind, pts, coloured) => {
+		const pos = new Float32Array(pts * 3);
+		let x = 0, y = 0, z = 0;
+		for (let i = 0; i < pts; i++) { x += (rand() - 0.5) * 2.5; y += (rand() - 0.5) * 2.5; z += (rand() - 0.5) * 2.5; pos[i * 3] = x; pos[i * 3 + 1] = y; pos[i * 3 + 2] = z; }
+		const g = new T.BufferGeometry(); g.setAttribute('position', new T.BufferAttribute(pos, 3));
+		if (coloured) { const col = new Float32Array(pts * 3); for (let i = 0; i < col.length; i++) col[i] = rand(); g.setAttribute('color', new T.BufferAttribute(col, 3)); }
+		return g;
+	};
+	const sharedGeo = [makeGeometry('line', 6, false), makeGeometry('line', 9, true)];
+	for (let i = 0; i < n; i++) {
+		const kind = i % 3; // 0 Line, 1 LineSegments, 2 LineLoop
+		const useDash = i % 5 === 0, coloured = i % 7 === 0;
+		let geometry;
+		if (i % 4 === 0) geometry = sharedGeo[coloured ? 1 : 0]; else geometry = makeGeometry(kind, kind === 1 ? 8 : 4 + (i % 5), coloured);
+		let material;
+		if (i % 5 === 1 || i % 5 === 3) {
+			// per-object material instance (a distinct colour and opacity per line), as scenes that colour each line individually do
+			material = i % 10 < 5 ? new T.LineBasicMaterial({ color: new T.Color().setHSL(rand(), 0.8, 0.6), transparent: i % 3 === 0, opacity: 0.5 + rand() * 0.5, linewidth: 2 })
+				: new T.LineDashedMaterial({ color: new T.Color().setHSL(rand(), 0.8, 0.6), dashSize: 0.3 + rand(), gapSize: 0.2 + rand() * 0.6, scale: 0.5 + rand() * 2 });
+		} else if (useDash) material = dashed[coloured ? 2 : i % 2];
+		else if (coloured) material = colored;
+		else if (i % 11 === 0) material = noFog;
+		else material = basic[i % basic.length];
+		const Ctor = kind === 0 ? T.Line : kind === 1 ? T.LineSegments : T.LineLoop;
+		const o = new Ctor(geometry, material);
+		if (useDash || material.isLineDashedMaterial) o.computeLineDistances();
+		o.position.set((rand() - 0.5) * 90, (rand() - 0.5) * 60, (rand() - 0.5) * 60 - 10);
+		o.rotation.set(rand() * 6.28, rand() * 6.28, rand() * 6.28);
+		o.scale.setScalar(0.4 + rand() * 1.2);
+		scene.add(o);
+	}
+	return { scene, camera, update: (f) => { const a = f * 0.004; camera.position.set(Math.sin(a) * 12, Math.cos(a) * 6, 70); camera.lookAt(0, 0, 0); } };
+}
+
+function buildPointsCloud(T, n, smallCount) {
+	const rand = rng(99);
+	const scene = new T.Scene();
+	scene.fog = new T.Fog(0x000000, 60, 160);
+	scene.background = new T.Color(0x080810);
+	const camera = new T.PerspectiveCamera(60, 4 / 3, 0.1, 400);
+	camera.position.set(0, 0, 80); camera.lookAt(0, 0, 0);
+	const disc = makeDiscTexture(T), ring = makeAlphaTexture(T);
+	const big = new T.BufferGeometry();
+	{
+		const pos = new Float32Array(n * 3), col = new Float32Array(n * 3);
+		for (let i = 0; i < n; i++) {
+			pos[i * 3] = (rand() - 0.5) * 100; pos[i * 3 + 1] = (rand() - 0.5) * 70; pos[i * 3 + 2] = (rand() - 0.5) * 100;
+			col[i * 3] = rand(); col[i * 3 + 1] = rand(); col[i * 3 + 2] = rand();
+		}
+		big.setAttribute('position', new T.BufferAttribute(pos, 3)); big.setAttribute('color', new T.BufferAttribute(col, 3));
+	}
+	const bigMat = new T.PointsMaterial({ size: 0.45, sizeAttenuation: true, map: disc, alphaMap: ring, alphaTest: 0.3, vertexColors: true, transparent: false });
+	const cloud = new T.Points(big, bigMat); cloud.frustumCulled = false;
+	scene.add(cloud);
+	const smallMats = [
+		new T.PointsMaterial({ color: 0xff8844, size: 2.5, sizeAttenuation: false }),
+		new T.PointsMaterial({ color: 0x88ccff, size: 0.8, sizeAttenuation: true, map: disc, alphaTest: 0.2 }),
+		new T.PointsMaterial({ vertexColors: true, size: 3, sizeAttenuation: false, alphaMap: ring, transparent: true, depthWrite: false }),
+		new T.PointsMaterial({ color: 0xffffff, size: 1.2, sizeAttenuation: true, fog: false, transparent: true, opacity: 0.7, map: disc }),
+	];
+	const smallGeo = [];
+	for (let g = 0; g < 8; g++) {
+		const count = 8 + g * 2, pos = new Float32Array(count * 3), col = new Float32Array(count * 3);
+		for (let i = 0; i < count; i++) { pos[i * 3] = (rand() - 0.5) * 3; pos[i * 3 + 1] = (rand() - 0.5) * 3; pos[i * 3 + 2] = (rand() - 0.5) * 3; col[i * 3] = rand(); col[i * 3 + 1] = rand(); col[i * 3 + 2] = rand(); }
+		const geo = new T.BufferGeometry(); geo.setAttribute('position', new T.BufferAttribute(pos, 3)); geo.setAttribute('color', new T.BufferAttribute(col, 3));
+		smallGeo.push(geo);
+	}
+	for (let i = 0; i < smallCount; i++) {
+		// half of the small clouds have a material of their own (colour, size and opacity per object)
+		const mat = i % 2 ? new T.PointsMaterial({ color: new T.Color().setHSL(rand(), 0.8, 0.6), size: 0.5 + rand() * 2, sizeAttenuation: i % 4 === 1, map: disc, alphaTest: 0.2, opacity: 0.6 + rand() * 0.4 }) : smallMats[(i >> 1) % smallMats.length];
+		const p = new T.Points(smallGeo[i % smallGeo.length], mat);
+		p.position.set((rand() - 0.5) * 90, (rand() - 0.5) * 60, (rand() - 0.5) * 60 + 10);
+		p.rotation.set(rand() * 6, rand() * 6, 0); p.scale.setScalar(0.5 + rand());
+		scene.add(p);
+	}
+	return { scene, camera, update: (f) => { const a = f * 0.004; camera.position.set(Math.sin(a) * 15, Math.cos(a) * 8, 80); camera.lookAt(0, 0, 0); } };
+}
+
+function buildSpritesMany(T, n) {
+	const rand = rng(7);
+	const scene = new T.Scene();
+	scene.fog = new T.Fog(0x304050, 30, 120);
+	scene.background = new T.Color(0x182028);
+	const camera = new T.PerspectiveCamera(60, 4 / 3, 0.1, 300);
+	camera.position.set(0, 0, 60); camera.lookAt(0, 0, 0);
+	const disc = makeDiscTexture(T), ring = makeAlphaTexture(T);
+	const mats = [
+		new T.SpriteMaterial({ map: disc }),
+		new T.SpriteMaterial({ map: disc, color: 0xffaa66, rotation: 0.6 }),
+		new T.SpriteMaterial({ color: 0x66aaff, rotation: 1.3, opacity: 0.5 }),
+		new T.SpriteMaterial({ map: disc, sizeAttenuation: false, rotation: -0.4, color: 0xaaffaa }),
+		new T.SpriteMaterial({ alphaMap: ring, color: 0xffee88, fog: false, depthWrite: false }),
+		new T.SpriteMaterial({ map: disc, alphaTest: 0.5, transparent: false, rotation: 0.2 }),
+	];
+	for (let i = 0; i < n; i++) {
+		// 70% of the sprites own a SpriteMaterial (colour / opacity / rotation / size attenuation per sprite, sharing one texture)
+		const own = i % 10 < 7;
+		const mat = own ? new T.SpriteMaterial({ map: disc, color: new T.Color().setHSL(rand(), 0.7, 0.6), opacity: 0.5 + rand() * 0.5, rotation: (rand() - 0.5) * 6, sizeAttenuation: i % 4 !== 0 }) : mats[i % mats.length];
+		const s = new T.Sprite(mat);
+		s.position.set((rand() - 0.5) * 90, (rand() - 0.5) * 60, (rand() - 0.5) * 80);
+		s.scale.setScalar(mat.sizeAttenuation === false ? 0.03 + rand() * 0.03 : 0.8 + rand() * 1.6);
+		if (i % 4 === 1) s.scale.x *= 1.8;
+		s.center.set(i % 3 === 0 ? 0 : 0.5, i % 5 === 0 ? 1 : 0.5);
+		scene.add(s);
+	}
+	return { scene, camera, update: (f) => { const a = f * 0.004; camera.position.set(Math.sin(a) * 15, Math.cos(a) * 8, 60); camera.lookAt(0, 0, 0); } };
 }

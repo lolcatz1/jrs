@@ -38,7 +38,7 @@ async function openPage() {
 	const page = await browser.newPage();
 	page.on('pageerror', (e) => console.log('[pageerror]', e.message));
 	page.on('console', (m) => { if (m.type() === 'error') console.log('[browser]', m.text()); });
-	await page.goto(`http://127.0.0.1:${port}/bench/index.html`);
+	await page.goto(`http://127.0.0.1:${port}/bench/index.html`, { timeout: 90000 }); // module graph occasionally loads slowly
 	await page.waitForFunction(() => window.ready === true, null, { timeout: 60000 });
 	return page;
 }

@@ -45,6 +45,7 @@ class Texture extends EventDispatcher {
 		this.isRenderTargetTexture = false;
 		this.isArrayTexture = !!(image && image.depth && image.depth > 1);
 		this.pmremVersion = 0;
+		this.normalized = false;
 	}
 	get width() { return this.source.getSize(_tempVec3).x; }
 	get height() { return this.source.getSize(_tempVec3).y; }
@@ -64,6 +65,7 @@ class Texture extends EventDispatcher {
 		this.magFilter = source.magFilter; this.minFilter = source.minFilter;
 		this.anisotropy = source.anisotropy;
 		this.format = source.format; this.internalFormat = source.internalFormat; this.type = source.type;
+		this.normalized = source.normalized;
 		this.offset.copy(source.offset); this.repeat.copy(source.repeat); this.center.copy(source.center);
 		this.rotation = source.rotation;
 		this.matrixAutoUpdate = source.matrixAutoUpdate;

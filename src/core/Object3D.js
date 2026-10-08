@@ -8,6 +8,7 @@ import { Matrix3 } from '../math/Matrix3.js';
 import * as MathUtils from '../math/MathUtils.js';
 import { transformSlab, LOCAL_OFFSET, WORLD_OFFSET } from './TransformSlab.js';
 import { epochs, trackRenderProperty } from './epochs.js';
+import { notifyAdd, notifyRemove } from './FlatGraph.js';
 
 let _object3DId = 0;
 
@@ -37,6 +38,16 @@ const _childremovedEvent = { type: 'childremoved', child: null };
  * A monotonically increasing `_worldVersion` lets the renderer cache derived
  * data (normal matrix, world bounding sphere, instance buffers) per object.
  */
+/** A Bone add / remove drops the cached update plan of the rig it touches (the root bone above `parent`) and of `child` (which may become a root). */
+function invalidateRigs(parent, child) {
+	if (child._plan !== undefined) child._plan = null;
+	if (parent.isBone === true) {
+		let root = parent;
+		while (root.parent !== null && root.parent.isBone === true) root = root.parent;
+		root._plan = null;
+	}
+}
+
 class Object3D extends EventDispatcher {
 	constructor() {
 		super();
@@ -55,7 +66,8 @@ class Object3D extends EventDispatcher {
 		const scale = new Vector3(1, 1, 1);
 
 		function onRotationChange() { quaternion.setFromEuler(rotation, false); }
-		function onQuaternionChange() { rotation.setFromQuaternion(quaternion, undefined, false); }
+		function onQuaternionChange() { rotation._stale = true; }
+		rotation._source = quaternion;
 		rotation._onChange(onRotationChange);
 		quaternion._onChange(onQuaternionChange);
 
@@ -88,6 +100,7 @@ class Object3D extends EventDispatcher {
 		this._flipVersion = -1; this._frontFaceCW = false;
 		this._cullVersion = -1; this._cullSphere = null; // cull-cache doubles (radius, centre) live in the snapshot record at +10..+13
 		// cached frustum test result per pass (0 = camera, 1 = shadow): frustum version it was computed for, and the result
+		this._skipStamp = -1; // renderer: epochs.structure value at which this (pure bone) subtree was proven to draw nothing
 		this._cullFV0 = -1; this._cullVis0 = false; this._cullFV1 = -1; this._cullVis1 = false;
 
 		this.matrixAutoUpdate = Object3D.DEFAULT_MATRIX_AUTO_UPDATE;
@@ -97,6 +110,8 @@ class Object3D extends EventDispatcher {
 		this.layers = new Layers();
 		this._visible = true; this._receiveShadow = false; this._frustumCulled = true; this._renderOrder = 0; // tracked accessors (see epochs.js)
 		this._countsWorld = true; // Camera sets this to false: a moving camera must not look like a moving scene
+		// flat scene update (see FlatGraph.js): the graph this object is an entry of and its index; roots keep their graph
+		this._flat = null; this._flatIndex = -1; this._flatGraph = null;
 		this.castShadow = false;
 		this.animations = [];
 		this.customDepthMaterial = undefined;
@@ -117,7 +132,7 @@ class Object3D extends EventDispatcher {
 		if (this.matrixAutoUpdate) this.updateMatrix();
 		this._matrix.premultiply(matrix);
 		this._matrix.decompose(this.position, this.quaternion, this.scale);
-		this._snapData[this._snapOffset] = NaN; // force the next updateMatrix() to recompose from TRS, as three.js does
+		this._forceRecompose(); // the next updateMatrix() recomposes from TRS, as in three.js
 		this.matrixWorldNeedsUpdate = true;
 	}
 	applyQuaternion(q) { this.quaternion.premultiply(q); return this; }
@@ -165,6 +180,8 @@ class Object3D extends EventDispatcher {
 			object.parent = this;
 			this.children.push(object);
 			epochs.structure++;
+			if (object.isBone === true || this.isBone === true) invalidateRigs(this, object);
+			notifyAdd(this, object);
 			object.matrixWorldNeedsUpdate = true;
 			object.dispatchEvent(_addedEvent);
 			_childaddedEvent.child = object;
@@ -185,6 +202,8 @@ class Object3D extends EventDispatcher {
 			object.parent = null;
 			this.children.splice(index, 1);
 			epochs.structure++;
+			if (object.isBone === true || this.isBone === true) invalidateRigs(this, object);
+			notifyRemove(this, object);
 			object.dispatchEvent(_removedEvent);
 			_childremovedEvent.child = object;
 			this.dispatchEvent(_childremovedEvent);
@@ -206,6 +225,8 @@ class Object3D extends EventDispatcher {
 		object.parent = this;
 		this.children.push(object);
 		epochs.structure++;
+		if (object.isBone === true || this.isBone === true) invalidateRigs(this, object);
+		notifyAdd(this, object);
 		object.updateWorldMatrix(false, true);
 		object.dispatchEvent(_addedEvent);
 		_childaddedEvent.child = object;
@@ -254,6 +275,8 @@ class Object3D extends EventDispatcher {
 		if (parent !== null) { callback(parent); parent.traverseAncestors(callback); }
 	}
 
+	_forceRecompose() { this._snapData[this._snapOffset] = NaN; }
+
 	_snapshot() {
 		const p = this.position, q = this.quaternion, s = this.scale, d = this._snapData, o = this._snapOffset;
 		d[o] = p.x; d[o + 1] = p.y; d[o + 2] = p.z;
@@ -299,10 +322,13 @@ class Object3D extends EventDispatcher {
 		if (this.matrixWorldNeedsUpdate || force || (parent !== null && parent._worldVersion !== this._parentWorldVersion)) {
 			if (this.matrixWorldAutoUpdate === true) {
 				if (parent === null) this._matrixWorld.copy(this._matrix);
-				else { this._matrixWorld.multiplyMatrices(parent._matrixWorld, this._matrix); this._parentWorldVersion = parent._worldVersion; }
+				else this._matrixWorld.multiplyMatrices(parent._matrixWorld, this._matrix);
 				this._worldVersion++;
 				if (this._countsWorld) epochs.world++;
 			}
+			// also noted for a user-owned world matrix (matrixWorldAutoUpdate = false), so its children are recomputed when the
+			// parent moves or the flag is set, not on every frame
+			if (parent !== null) this._parentWorldVersion = parent._worldVersion;
 			this.matrixWorldNeedsUpdate = false;
 			force = true;
 		}
@@ -385,6 +411,12 @@ for (const hook of ['onBeforeRender', 'onAfterRender']) {
 		set(fn) { epochs.structure++; Object.defineProperty(this, hook, { value: fn, writable: true, configurable: true, enumerable: true }); },
 	});
 }
+
+// Flat scene update (FlatGraph.js): `_flatUMW` is the updateMatrixWorld the flat pass knows how to replace; an object whose
+// `updateMatrixWorld` differs (a subclass override) is updated by calling it, recursively, for its whole subtree.
+// `_flatPostUpdate` runs after the pass recomputed an object's world matrix (Camera / SkinnedMesh set it).
+Object3D.prototype._flatUMW = Object3D.prototype.updateMatrixWorld;
+Object3D.prototype._flatPostUpdate = null;
 
 Object3D.DEFAULT_UP = /*@__PURE__*/ new Vector3(0, 1, 0);
 Object3D.DEFAULT_MATRIX_AUTO_UPDATE = true;

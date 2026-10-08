@@ -7,7 +7,16 @@ const [seed, lib, only] = [Number(process.argv[2]), process.argv[3] || 'jrs', pr
 const { server, port } = await startServer();
 const browser = await launchBrowser();
 const page = await browser.newPage();
-page.on('pageerror', (e) => console.log('[pageerror]', e.message)); page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') console.log('[browser]', m.text().slice(0, 3000)); });
+page.on('pageerror', (e) => console.log('[pageerror]', e.message)); page.on('console', (m) => {
+	if (m.type() !== 'error' && m.type() !== 'warning') return;
+	const text = m.text();
+	if (/link failed|Shader Error/.test(text)) {
+		// shader logs are long: print the program defines, then every GLSL error with 3 lines of context
+		const lines = text.split('\n');
+		console.log('[browser] ' + lines[0] + ' | defines: ' + lines.filter((l) => /^\s*\d+: #define/.test(l)).map((l) => l.replace(/^\s*\d+: #define /, '')).join(' '));
+		lines.forEach((l, i) => { if (/ERROR:/.test(l)) console.log('[browser]   ' + lines.slice(Math.max(0, i - 1), i + 4).join('\n[browser]   ')); });
+	} else console.log('[browser]', text.slice(0, 400));
+});
 await page.goto(`http://127.0.0.1:${port}/bench/fuzz.html`);
 await page.waitForFunction(() => window.ready === true, null, { timeout: 60000 });
 const r = await page.evaluate(async ([seed, lib, only]) => {
