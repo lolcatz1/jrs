@@ -752,3 +752,83 @@ allocations: 1078807 bytes/frame; top:
   60        0%      from [(native)]  <- window.__runFrames [(native)]
   56        0%      setFromProjectionMatrix [Frustum.js:31]  <- render [WebGLRenderer.js:354]
   44        0%      innerSerialize [(native)]  <- serialize [(native)]
+
+==== hierarchy-animated / three  (n=8000, draws=8000, programs=1, build 61.3 ms)
+frame ms  plain median 24.7 (mean 34.9, p90 26.5, worst 1232.4) | repeat 24.2 | +gl.finish/frame 24.5 | draws stubbed 21.9 | wall/frame 34.914 | trailing finish 0 ms
+worst frames: #1 1232.4ms (heap +0KB), #44 52.2ms (heap +0KB), #10 33ms (heap +0KB), #3 31.4ms (heap +0KB), #4 31.3ms (heap +0KB) | GC frames 0/120 | heap growth 0 KB/frame
+expensive GL calls in 0/60 frames
+profiled frame median 30.3 ms; steady-state sampled 40.561 ms/frame over 90 frames (100533 samples), GL native 3.06 ms/frame; 2 stall frames totalling 10959.3 ms excluded
+  stall frame #1 10827.2 ms: drawElements [(native)] 10786.1ms | projectObject [WebGLRenderer:17897] 6.3ms | updateMatrixWorld [Object3D:13067] 4.8ms
+  stall frame #22 132 ms: updateMatrixWorld [Object3D:13067] 15.2ms | projectObject [WebGLRenderer:17897] 14.7ms | multiplyMatrices [Matrix4:10570] 13.2ms
+steady-state phases (ms/frame, %, of which native GL):
+  scene graph update           7.218    17.8%   gl 0
+  project + cull               9.451    23.3%   gl 0
+  sort                         3.263    8%      gl 0
+  draw-list build              2.149    5.3%    gl 0
+  per-draw state               7.154    17.6%   gl 1.633
+  uniform upload               0.014    0%      gl 0
+  geometry bind                0.541    1.3%    gl 0
+  draw issue                   5.26     13%     gl 0
+  frame setup/other renderer   4.88     12%     gl 1.427
+  GC                           0.202    0.5%    gl 0
+  (program)/VM                 0.13     0.3%    gl 0
+  other JS                     0.3      0.7%    gl 0
+top self time:
+  6.466    15.9%   updateMatrixWorld [Object3D:13067]
+  5.2      12.8%   projectObject [WebGLRenderer:17897]
+  4.272    10.5%   multiplyMatrices [Matrix4:10570]
+  3.361    8.3%    WebGLRenderer.renderBufferDirect [WebGLRenderer:17233]
+  2.55     6.3%    intersectsObject [Frustum:25925]
+  2.161    5.3%    setProgram [WebGLRenderer:18407]
+  2.149    5.3%    renderObjects [WebGLRenderer:18165]
+  1.824    4.5%    sort [WebGLRenderList:8213]
+  1.671    4.1%    setMaterial [WebGLState:10409]
+  1.647    4.1%    setValueM4 [setValueM4:5284]
+  1.633    4%      uniformMatrix4fv [(native)]
+  1.472    3.6%    painterSortStable [painterSortStable:8048]
+  1.418    3.5%    drawElements [(native)]
+  1.39     3.4%    test [Layers:11882]
+  1.258    3.1%    renderObject [WebGLRenderer:18192]
+  0.308    0.8%    applyMatrix4 [Vector4:8516]
+  0.271    0.7%    invert [Matrix3:6347]
+  0.268    0.7%    needsUpdate [WebGLBindingStates:1759]
+  0.202    0.5%    (garbage collector) [(native)]
+  0.17     0.4%    update [WebGLAttributes:242]
+  0.138    0.3%    now [(native)]
+  0.108    0.3%    setFromMatrix4 [Matrix3:6227]
+  0.101    0.2%    update [WebGLObjects:4612]
+  0.099    0.2%    (program) [(native)]
+  0.063    0.2%    set [Matrix3:6153]
+top inclusive:
+  40.561   100%    (root) [(native)]
+  40.159   99%     (anonymous) [(native)]
+  40.156   99%     evaluate [(native)]
+  40.148   99%     window.__runFrames [(native)]
+  39.97    98.5%   doFrame [(native)]
+  39.9     98.4%   WebGLRenderer.render [WebGLRenderer:17674]
+  21.171   52.2%   renderScene [WebGLRenderer:18015]
+  21.162   52.2%   renderObjects [WebGLRenderer:18165]
+  17.623   43.4%   renderObject [WebGLRenderer:18192]
+  12.363   30.5%   WebGLRenderer.renderBufferDirect [WebGLRenderer:17233]
+  8.16     20.1%   projectObject [WebGLRenderer:17897]
+  7.218    17.8%   updateMatrixWorld [Object3D:13067]
+  5.427    13.4%   setProgram [WebGLRenderer:18407]
+  4.272    10.5%   multiplyMatrices [Matrix4:10570]
+  3.28     8.1%    setValueM4 [setValueM4:5284]
+native GL by call:
+  1.633    4%      uniformMatrix4fv
+  1.418    3.5%    drawElements
+  0.008    0%      clear
+allocations: 1074387 bytes/frame; top:
+  888009    82.7%   painterSortStable [painterSortStable:8048]  <- sort [(native)]
+  118424    11%     projectObject [WebGLRenderer:17897]  <- projectObject [WebGLRenderer:17897]
+  64342     6%      sort [(native)]  <- sort [WebGLRenderList:8213]
+  2629      0.2%    doFrame [(native)]  <- window.__runFrames [(native)]
+  420       0%      sort [(native)]  <- setup [WebGLLights:8516]
+  82        0%      pushLight [WebGLRenderState:8966]  <- projectObject [WebGLRenderer:17897]
+  69        0%      setFromProjectionMatrix [Frustum:25874]  <- WebGLRenderer.render [WebGLRenderer:17674]
+  57        0%      from [(native)]  <- window.__runFrames [(native)]
+  55        0%      innerSerialize [(native)]  <- serialize [(native)]
+  52        0%      setup [WebGLLights:8516]  <- WebGLRenderer.render [WebGLRenderer:17674]
+  48        0%      next [(native)]  <- from [(native)]
+  35        0%      (anonymous) [(native)]  <- innerSerialize [(native)]
