@@ -118,7 +118,28 @@ morph-sequence clip creation, `AnimationObjectGroup`.
 20-bone chain), 8 Lambert materials, each mesh with its own `AnimationMixer` playing a shared 20-track quaternion
 clip at its own phase, `mixer.update(1/60)` every frame. 4 000 bones move every frame.
 
-RESULTS_PLACEHOLDER
+`node bench/run.mjs skinned-crowd --compare --frames=60` (two full runs of the suite, the merged tree; medians of
+60 timed frames after 10 warm-up frames, 320x240):
+
+| run | three.js r186 median | jrs median | three mean / worst | jrs mean / worst |
+|---|---:|---:|---|---|
+| 1 | 5.0 ms | 3.4 ms | 4.74 / 7.0 ms | 3.70 / 7.3 ms |
+| 2 | 6.4 ms | 3.0 ms | 6.59 / 9.4 ms | 3.03 / 4.4 ms |
+
+Better medians: **three.js 5.0 ms, jrs 3.0 ms (1.7x)**. A single-scenario run before the integration merge gave
+4.3 / 3.4 ms. Pixel comparison: **meanAbsDiff 0.000, maxDiff 2, 3 differing pixels** of 76 800 (threshold
+0.5 / 33). GL calls per frame: three 2 209 (808 `uniform*`, 200 `bindTexture`, 200 draws, 1 000 `pixelStorei`
+and `texParameteri` in the rest), jrs 1 413 (800 `uniform*`: model, normal, bind and inverse bind matrix per
+mesh; 200 `bindTexture`; 200 draws; 200 `texImage2D`).
+
+Where the jrs frame goes (node-side measurement of the CPU part, 200 rigs, 4 000 bones): `mixer.update` ~1.0 ms,
+`scene.updateMatrixWorld` ~0.75 ms, `skeleton.update` ~0.4 ms; three.js measures the same within noise for the
+first two (same code / same amount of work) and ~0.45 ms for the skeleton. The remaining gain is on the GL side
+(no per-upload pixel-store and sampler-parameter calls, fewer uniform uploads, cached state).
+
+The rest of the suite is unchanged within noise and every scenario's `compare` numbers are identical to the
+committed baseline (shared-static 0.347 / 8, shared-animated 0.346 / 9, shadows 0.134 / 33, shadows-animated
+0.121 / 31, everything else 0 / 0).
 
 ## Risks
 
