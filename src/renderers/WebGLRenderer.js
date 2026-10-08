@@ -86,6 +86,8 @@ function boneTreeIsPure(bone) {
 	for (let i = 0, l = children.length; i < l; i++) { const c = children[i]; if (c.isBone !== true || !boneTreeIsPure(c)) return false; }
 	return true;
 }
+const GL_DELETERS = ['deleteBuffer', 'deleteTexture', 'deleteVertexArray', 'deleteProgram', 'deleteShader', 'deleteFramebuffer', 'deleteRenderbuffer'];
+const _noop = () => {};
 
 class WebGLRenderer {
 	constructor(parameters = {}) {
@@ -186,86 +188,10 @@ class WebGLRenderer {
 		canvas.addEventListener && canvas.addEventListener('webglcontextlost', this._onContextLost, false);
 		canvas.addEventListener && canvas.addEventListener('webglcontextrestored', this._onContextRestore, false);
 
-		this.info = new WebGLInfo(gl);
-		this.state = new WebGLState(gl);
-		this.attributes = new WebGLAttributes(gl);
-		this.textures = new WebGLTextures(gl, this.state, this.info);
-		this.programs = new WebGLPrograms(gl, this);
-		this.renderLists = new WebGLRenderLists();
-		this.lights = new WebGLLights();
-		this.bindingStates = new WebGLBindingStates(gl, this.state, this.attributes, this.info);
-		this.batcher = new WebGLBatcher(gl);
-		this._maxLineWidth = gl.getParameter(gl.ALIASED_LINE_WIDTH_RANGE)[1];
-		this.multiDrawExt = gl.getExtension('WEBGL_multi_draw');
-		this.megaBuffers = this.multiDrawExt !== null ? new WebGLMegaBuffers(gl, this.state, this.info) : null;
-		// the one batched variant of a custom program serves instanced and multi-draw runs alike (gl_DrawID is 0 outside multi-draw calls)
-		this._shaderBatchBits = V_OBJTEX | (this.multiDrawExt !== null ? V_MULTIDRAW : 0);
-		this._mdCounts = new Int32Array(1024); this._mdOffsets = new Int32Array(1024); this._mdN = 0;
-		this._mdUsedThisFrame = false;
-		this.morphtargets = new WebGLMorphtargets(this.textures.maxTextureSize);
-		this.shadowMap = new WebGLShadowMap(this);
-		this.environments = new WebGLEnvironments(this);
-		this.background = new WebGLBackground(this);
-		this.properties = { get: (obj) => this._materialProps(obj) };
-		this.info.programs = this.programs.programs;
-		this.capabilities = {
-			isWebGL2: true,
-			maxTextures: gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS),
-			maxVertexTextures: gl.getParameter(gl.MAX_VERTEX_TEXTURE_IMAGE_UNITS),
-			maxTextureSize: gl.getParameter(gl.MAX_TEXTURE_SIZE),
-			maxCubemapSize: gl.getParameter(gl.MAX_CUBE_MAP_TEXTURE_SIZE),
-			maxAttributes: gl.getParameter(gl.MAX_VERTEX_ATTRIBS),
-			maxVertexUniforms: gl.getParameter(gl.MAX_VERTEX_UNIFORM_VECTORS),
-			maxVaryings: gl.getParameter(gl.MAX_VARYING_VECTORS),
-			maxFragmentUniforms: gl.getParameter(gl.MAX_FRAGMENT_UNIFORM_VECTORS),
-			maxSamples: gl.getParameter(gl.MAX_SAMPLES),
-			precision: 'highp', logarithmicDepthBuffer: false, reversedDepthBuffer: false, vertexTextures: true, floatFragmentTextures: true, floatVertexTextures: true,
-			getMaxAnisotropy: () => this.textures.maxAnisotropy, getMaxPrecision: () => 'highp',
-		};
-		const extCache = {};
-		this.extensions = {
-			get: (name) => { if (extCache[name] === undefined) extCache[name] = gl.getExtension(name); return extCache[name]; },
-			has: (name) => this.extensions.get(name) !== null,
-			init: () => {},
-		};
 		this.xr = { enabled: false, isPresenting: false, cameraAutoUpdate: true, getCamera: () => null, updateCamera: () => {}, setAnimationLoop: () => {}, addEventListener: () => {}, removeEventListener: () => {}, getSession: () => null, setSession: async () => {}, getFrame: () => null, getReferenceSpace: () => null, setReferenceSpaceType: () => {}, setFramebufferScaleFactor: () => {}, getFoveation: () => undefined, setFoveation: () => {}, hasDepthSensing: () => false, getDepthSensingMesh: () => null };
-
-		// uniform buffers
-		this._frameData = new Float32Array(FRAME_BLOCK_SIZE / 4);
-		// copies of what the GPU buffers currently hold: an unchanged block is not re-uploaded
-		this._frameUploaded = new Float32Array(FRAME_BLOCK_SIZE / 4);
-		this._lightsUploaded = new Float32Array(LIGHTS_BLOCK_SIZE / 4);
-		this._blocksValid = false;
-		this._frameBuffer = gl.createBuffer();
-		gl.bindBuffer(gl.UNIFORM_BUFFER, this._frameBuffer);
-		gl.bufferData(gl.UNIFORM_BUFFER, FRAME_BLOCK_SIZE, gl.DYNAMIC_DRAW);
-		this._lightsBuffer = gl.createBuffer();
-		gl.bindBuffer(gl.UNIFORM_BUFFER, this._lightsBuffer);
-		gl.bufferData(gl.UNIFORM_BUFFER, LIGHTS_BLOCK_SIZE, gl.DYNAMIC_DRAW);
-		this._materialStride = Math.max(MATERIAL_BLOCK_SIZE, this.state.uboAlignment);
-		// Material-index batching binds a window of `_materialWindow` consecutive material records as one
-		// block; the window must fit MAX_UNIFORM_BLOCK_SIZE (16 KB on some mobile GPUs -> 128 records of
-		// 128 B) and is capped so the shader's array stays small. Records are padded to the buffer stride.
-		this._materialWindow = Math.max(1, Math.min(256, Math.floor(gl.getParameter(gl.MAX_UNIFORM_BLOCK_SIZE) / this._materialStride)));
-		this._materialPad = (this._materialStride - MATERIAL_BLOCK_SIZE) / 16;
-		this._materialArrayOk = probeMaterialArray(gl);
-		this._batchGroups = new Map();
-		this._batchSigScratch = new Float64Array(BATCH_SIG_SIZE);
-		// capacity is a multiple of the window so every window lies inside the buffer
-		this._materialCapacity = Math.ceil(256 / this._materialWindow) * this._materialWindow;
-		this._materialBuffer = gl.createBuffer();
-		gl.bindBuffer(gl.UNIFORM_BUFFER, this._materialBuffer);
-		gl.bufferData(gl.UNIFORM_BUFFER, this._materialStride * this._materialCapacity, gl.DYNAMIC_DRAW);
-		gl.bindBuffer(gl.UNIFORM_BUFFER, null);
-		this._materialSlotsUsed = 0;
-		this._materialFreeSlots = [];
-		this._materialScratch = new Float32Array(MATERIAL_BLOCK_SIZE / 4);
-		this.state.bindUniformBufferRange(BLOCK_FRAME, this._frameBuffer, 0, FRAME_BLOCK_SIZE);
-		this.state.bindUniformBufferRange(BLOCK_LIGHTS, this._lightsBuffer, 0, LIGHTS_BLOCK_SIZE);
-
-		this._materialProperties = new WeakMap();
-		this._wireframeGeometries = new WeakMap();
+		this._glEpoch = 0;
 		this._onMaterialDispose = this._onMaterialDispose.bind(this);
+		this._initGLContext();
 
 		// render-order ranking (renderOrder -> 0..63), rebuilt per frame
 		this._renderOrderList = [];
@@ -306,6 +232,101 @@ class WebGLRenderer {
 		this._animationLoop = null;
 		this._requestId = null;
 		this._onAnimationFrame = this._onAnimationFrame.bind(this);
+	}
+
+	/** Creates every GL object and GL-dependent subsystem of the renderer (constructor, and again after a lost context is restored). */
+	_initGLContext() {
+		const gl = this._gl, canvas = this.domElement;
+		const epoch = ++this._glEpoch;
+		if (this.info === undefined) this.info = new WebGLInfo(gl); else this.info.rebind(gl);
+		this.state = new WebGLState(gl);
+		this.attributes = new WebGLAttributes(gl);
+		this.textures = new WebGLTextures(gl, this.state, this.info);
+		this.programs = new WebGLPrograms(gl, this);
+		this.renderLists = new WebGLRenderLists();
+		this.lights = new WebGLLights();
+		this.bindingStates = new WebGLBindingStates(gl, this.state, this.attributes, this.info);
+		this.batcher = new WebGLBatcher(gl);
+		this._maxLineWidth = gl.getParameter(gl.ALIASED_LINE_WIDTH_RANGE)[1];
+		this.multiDrawExt = gl.getExtension('WEBGL_multi_draw');
+		this.megaBuffers = this.multiDrawExt !== null ? new WebGLMegaBuffers(gl, this.state, this.info) : null;
+		this._mdCounts = new Int32Array(1024); this._mdOffsets = new Int32Array(1024); this._mdN = 0;
+		this._mdUsedThisFrame = false;
+		// the one batched variant of a custom program serves instanced and multi-draw runs alike (gl_DrawID is 0 outside multi-draw calls)
+		this._shaderBatchBits = V_OBJTEX | (this.multiDrawExt !== null ? V_MULTIDRAW : 0);
+		this.morphtargets = new WebGLMorphtargets(this.textures.maxTextureSize);
+		if (this.shadowMap === undefined) this.shadowMap = new WebGLShadowMap(this); // keeps enabled / type / autoUpdate across a context restore
+		this.environments = new WebGLEnvironments(this);
+		this.background = new WebGLBackground(this);
+		this.properties = { get: (obj) => this._materialProps(obj) };
+		this.info.programs = this.programs.programs;
+		this.capabilities = {
+			isWebGL2: true,
+			maxTextures: gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS),
+			maxVertexTextures: gl.getParameter(gl.MAX_VERTEX_TEXTURE_IMAGE_UNITS),
+			maxTextureSize: gl.getParameter(gl.MAX_TEXTURE_SIZE),
+			maxCubemapSize: gl.getParameter(gl.MAX_CUBE_MAP_TEXTURE_SIZE),
+			maxAttributes: gl.getParameter(gl.MAX_VERTEX_ATTRIBS),
+			maxVertexUniforms: gl.getParameter(gl.MAX_VERTEX_UNIFORM_VECTORS),
+			maxVaryings: gl.getParameter(gl.MAX_VARYING_VECTORS),
+			maxFragmentUniforms: gl.getParameter(gl.MAX_FRAGMENT_UNIFORM_VECTORS),
+			maxSamples: gl.getParameter(gl.MAX_SAMPLES),
+			precision: 'highp', logarithmicDepthBuffer: false, reversedDepthBuffer: false, vertexTextures: true, floatFragmentTextures: true, floatVertexTextures: true,
+			getMaxAnisotropy: () => this.textures.maxAnisotropy, getMaxPrecision: () => 'highp',
+		};
+		const extCache = {};
+		this.extensions = {
+			get: (name) => { if (extCache[name] === undefined) extCache[name] = gl.getExtension(name); return extCache[name]; },
+			has: (name) => this.extensions.get(name) !== null,
+			init: () => {},
+		};
+
+		// uniform buffers
+		this._frameData = new Float32Array(FRAME_BLOCK_SIZE / 4);
+		// copies of what the GPU buffers currently hold: an unchanged block is not re-uploaded
+		this._frameUploaded = new Float32Array(FRAME_BLOCK_SIZE / 4);
+		this._lightsUploaded = new Float32Array(LIGHTS_BLOCK_SIZE / 4);
+		this._blocksValid = false;
+		this._frameBuffer = gl.createBuffer();
+		gl.bindBuffer(gl.UNIFORM_BUFFER, this._frameBuffer);
+		gl.bufferData(gl.UNIFORM_BUFFER, FRAME_BLOCK_SIZE, gl.DYNAMIC_DRAW);
+		this._lightsBuffer = gl.createBuffer();
+		gl.bindBuffer(gl.UNIFORM_BUFFER, this._lightsBuffer);
+		gl.bufferData(gl.UNIFORM_BUFFER, LIGHTS_BLOCK_SIZE, gl.DYNAMIC_DRAW);
+		// Two copies of the material records. `_materialBuffer` has one record per `_materialStride` bytes (the block size
+		// rounded up to the UNIFORM_BUFFER_OFFSET_ALIGNMENT): a single material is bound as a range at slot * stride.
+		// `_materialTight` holds the same records back to back for material-index batching, which binds a window of
+		// `_materialWindow` consecutive records as an array: the window must fit MAX_UNIFORM_BLOCK_SIZE, is capped so the
+		// shader's array stays small, and holds a multiple of align / gcd( size, align ) records so that every window starts
+		// at an aligned offset. Both copies are written whenever a record changes.
+		const align = this.state.uboAlignment;
+		this._materialStride = Math.ceil(MATERIAL_BLOCK_SIZE / align) * align;
+		let g = align, h = MATERIAL_BLOCK_SIZE; while (h !== 0) { const t = g % h; g = h; h = t; }
+		const unit = align / g;
+		this._materialWindow = Math.max(unit, Math.floor(Math.min(256, Math.floor(gl.getParameter(gl.MAX_UNIFORM_BLOCK_SIZE) / MATERIAL_BLOCK_SIZE)) / unit) * unit);
+		this._materialPad = 0;
+		this._materialArrayOk = probeMaterialArray(gl);
+		this._batchGroups = new Map(); // signature key -> group, reference-counted by the materials using it (see _setBatchGroup)
+		// materials collected without dispose() give their batch group reference and material-buffer slot back
+		this._lifetimeRegistry = typeof FinalizationRegistry !== 'undefined' ? new FinalizationRegistry((held) => this._releaseHeld(held)) : null;
+		this._batchSigScratch = new Float64Array(BATCH_SIG_SIZE);
+		// capacity is a multiple of the window so every window lies inside the buffer
+		this._materialCapacity = Math.ceil(256 / this._materialWindow) * this._materialWindow;
+		this._materialBuffer = gl.createBuffer();
+		gl.bindBuffer(gl.UNIFORM_BUFFER, this._materialBuffer);
+		gl.bufferData(gl.UNIFORM_BUFFER, this._materialStride * this._materialCapacity, gl.DYNAMIC_DRAW);
+		this._materialTight = gl.createBuffer();
+		gl.bindBuffer(gl.UNIFORM_BUFFER, this._materialTight);
+		gl.bufferData(gl.UNIFORM_BUFFER, MATERIAL_BLOCK_SIZE * this._materialCapacity, gl.DYNAMIC_DRAW);
+		gl.bindBuffer(gl.UNIFORM_BUFFER, null);
+		this._materialSlotsUsed = 0;
+		this._materialFreeSlots = [];
+		this._materialScratch = new Float32Array(MATERIAL_BLOCK_SIZE / 4);
+		this.state.bindUniformBufferRange(BLOCK_FRAME, this._frameBuffer, 0, FRAME_BLOCK_SIZE);
+		this.state.bindUniformBufferRange(BLOCK_LIGHTS, this._lightsBuffer, 0, LIGHTS_BLOCK_SIZE);
+		this._materialProperties = new WeakMap();
+		this._wireframeGeometries = new WeakMap();
+		this._currentProgram = null; this._currentMaterial = null; this._currentGeometryRecord = null; this._currentSide = -1;
 	}
 
 	// ------------------------------------------------------------------ public API
@@ -376,21 +397,72 @@ class WebGLRenderer {
 	clearColor() { this.clear(true, false, false); }
 	clearDepth() { this.clear(false, true, false); }
 	clearStencil() { this.clear(false, false, true); }
+	/** Releases every GPU resource the renderer owns or created for scene objects: programs, buffers, VAOs, textures, framebuffers. */
 	dispose() {
+		if (this._disposed === true) return;
 		const canvas = this.domElement;
 		canvas.removeEventListener && canvas.removeEventListener('webglcontextlost', this._onContextLost, false);
 		canvas.removeEventListener && canvas.removeEventListener('webglcontextrestored', this._onContextRestore, false);
-		this.programs.dispose();
-		this.batcher.dispose();
+		this.setAnimationLoop(null);
+		this._releaseGL();
+		this._disposed = true; // using the renderer again re-creates its GL objects (_ensureGL)
+	}
+	/**
+	 * Releases every GL object. With `discard` (a restored context) the objects are already gone with the old context, so
+	 * the delete calls would only raise "object does not belong to this context": they are replaced by no-ops meanwhile.
+	 */
+	_releaseGL(discard = false) {
+		const gl = this._gl;
+		if (discard === true) { for (let i = 0; i < GL_DELETERS.length; i++) gl[GL_DELETERS[i]] = _noop; }
+		try { this._releaseGLObjects(gl); } finally {
+			if (discard === true) for (let i = 0; i < GL_DELETERS.length; i++) delete gl[GL_DELETERS[i]];
+		}
+	}
+	_releaseGLObjects(gl) {
 		this.environments.dispose();
 		this.background.dispose();
 		if (this._boneAtlas !== null) { this._boneAtlas.dispose(); this._boneAtlas = null; }
+		this.textures.releaseAll();
+		this.bindingStates.releaseAll();
+		this.attributes.releaseAll();
+		this.programs.dispose();
+		this.batcher.dispose();
 		if (this.megaBuffers !== null) this.megaBuffers.dispose();
-		this._gl.deleteBuffer(this._frameBuffer); this._gl.deleteBuffer(this._lightsBuffer); this._gl.deleteBuffer(this._materialBuffer);
-		this.setAnimationLoop(null);
+		gl.deleteBuffer(this._frameBuffer); gl.deleteBuffer(this._lightsBuffer); gl.deleteBuffer(this._materialBuffer); gl.deleteBuffer(this._materialTight);
+		this.renderLists.dispose();
+		this.shadowMap.dispose();
+		this._materialProperties = new WeakMap();
+		this._wireframeGeometries = new WeakMap();
+		this._batchGroups.clear();
+		this._materialSlotsUsed = 0; this._materialFreeSlots = [];
+		this._glEpoch++; // registrations of the released objects must not release into the next generation
+		this.info.memory.geometries = 0; this.info.memory.textures = 0;
+		this.info.programs.length = 0;
+	}
+	_ensureGL() {
+		if (this._disposed !== true) return;
+		this._disposed = false;
+		const canvas = this.domElement;
+		canvas.addEventListener && canvas.addEventListener('webglcontextlost', this._onContextLost, false);
+		canvas.addEventListener && canvas.addEventListener('webglcontextrestored', this._onContextRestore, false);
+		this._rebuildGL();
+	}
+	/** Fresh GL-dependent subsystems on the (possibly new) context state. */
+	_rebuildGL() {
+		this._initGLContext();
+		this.state.reset();
+		this._blocksValid = false;
+		this._lastLightsVersion = -1;
+		this._currentRenderTarget = null;
+		this.setViewport(this._viewport); this.setScissor(this._scissor); this.setScissorTest(this._scissorTest);
+		this._applyClearColor();
 	}
 	_onContextLost(event) { event.preventDefault(); this._isContextLost = true; }
-	_onContextRestore() { this._isContextLost = false; this._blocksValid = false; this.state.reset(); this.programs.dispose(); this._materialProperties = new WeakMap(); this.shadowMap._epoch++; this.renderLists.dispose(); }
+	_onContextRestore() {
+		this._releaseGL(true); // the old objects are gone with the context: this only drops the references
+		this._isContextLost = false;
+		this._rebuildGL();
+	}
 	setAnimationLoop(callback) {
 		this._animationLoop = callback;
 		if (this._requestId !== null) { cancelAnimationFrame(this._requestId); this._requestId = null; }
@@ -603,6 +675,7 @@ class WebGLRenderer {
 	render(scene, camera) {
 		if (camera === undefined || camera.isCamera !== true) { console.error('jrs.WebGLRenderer.render: camera is not an instance of Camera.'); return; }
 		if (this._isContextLost === true) return;
+		if (this._disposed === true) this._ensureGL();
 		const gl = this._gl;
 		// environment-map conversions (equirect -> cube, PMREM) render on their own; run them before this frame's state is live
 		const backgroundTexture = this.background.resolve(scene);
@@ -619,6 +692,7 @@ class WebGLRenderer {
 			if (camera.parent === null && camera.matrixWorldAutoUpdate === true) camera.updateMatrixWorld();
 		}
 		this._frameId = ++_frameCounter;
+		if (this._renderCallDepth === 0 && this.megaBuffers !== null) this.megaBuffers.sweep(this._frameId);
 		this._renderCallDepth++;
 		this._currentCamera = camera;
 		this._currentScene = scene;
@@ -689,10 +763,13 @@ class WebGLRenderer {
 			if (this._currentRenderTarget === null) ColorManagement.fromWorkingColorSpace(_color, this._outputColorSpace);
 			this.state.setClearColor(_color.r, _color.g, _color.b, 1);
 			if (this.autoClear || this.autoClearColor) this.clear(true, this.autoClearDepth, this.autoClearStencil);
-			this._applyClearColor();
-		} else if (this.autoClear) {
-			this._applyClearColor(); // the conversion depends on the current render target
-			this.clear(this.autoClearColor, this.autoClearDepth, this.autoClearStencil);
+			// like three.js, the background colour stays the GL clear colour afterwards
+		} else {
+			// three.js sets the clear colour only for a null background (the conversion depends on the current
+			// render target); a texture background clears with whatever clear colour is current, which after a
+			// shadow pass is white (WebGLShadowMap) and after a colour-background frame that colour
+			if (background === null) this._applyClearColor();
+			if (this.autoClear) this.clear(this.autoClearColor, this.autoClearDepth, this.autoClearStencil);
 		}
 
 		if (backgroundTexture !== null) this.background.render(scene, camera, backgroundTexture);
@@ -1434,10 +1511,10 @@ class WebGLRenderer {
 	_batchGroupOf(material) {
 		if (this._materialArrayOk !== true || this.autoBatch !== true || this.autoBatchMaterials !== true || material.isShaderMaterial === true) return null;
 		const props = this._materialProps(material);
-		if (props.blockSlot < 0) this._allocMaterialSlot(props);
+		if (props.blockSlot < 0) this._allocMaterialSlot(props, material);
 		const s = this._batchSigScratch;
 		let k = 0;
-		for (let i = 0; i < MAP_KEYS.length; i++) { const t = material[MAP_KEYS[i]]; s[k++] = t ? t.id : -1; }
+		for (let i = 0; i < MAP_KEYS.length; i++) { const t = material[MAP_KEYS[i]]; s[k++] = t ? t.id * 4 + (t.channel > 3 ? 3 : t.channel) : -1; } // the uv channel selects the program
 		s[k++] = material.side; s[k++] = material.shadowSide === null || material.shadowSide === undefined ? -1 : material.shadowSide;
 		s[k++] = material.transparent ? 1 : 0; s[k++] = material.blending; s[k++] = material.blendEquation; s[k++] = material.blendSrc; s[k++] = material.blendDst;
 		s[k++] = material.blendEquationAlpha === null ? -1 : material.blendEquationAlpha; s[k++] = material.blendSrcAlpha === null ? -1 : material.blendSrcAlpha; s[k++] = material.blendDstAlpha === null ? -1 : material.blendDstAlpha;
@@ -1460,9 +1537,31 @@ class WebGLRenderer {
 		props.batchSig.set(s);
 		const key = Array.prototype.join.call(s, ',');
 		let group = this._batchGroups.get(key);
-		if (group === undefined) { group = { _frameStamp: -1, _frameRid: 0, page: s[BATCH_SIG_SIZE - 1] }; this._batchGroups.set(key, group); }
-		props.batchGroup = group;
+		if (group === undefined) { group = { _frameStamp: -1, _frameRid: 0, page: s[BATCH_SIG_SIZE - 1], key, refs: 0 }; this._batchGroups.set(key, group); }
+		this._setBatchGroup(props, material, group);
 		return group;
+	}
+	_setBatchGroup(props, material, group) {
+		if (props.batchGroup === group) return;
+		if (props.batchGroup !== null) this._releaseGroup(props.batchGroup);
+		group.refs++;
+		props.batchGroup = group;
+		this._registerLifetime(props, material);
+	}
+	_releaseGroup(group) {
+		if (--group.refs <= 0 && this._batchGroups.get(group.key) === group) this._batchGroups.delete(group.key);
+	}
+	/** (Re)registers what the material holds (batch group, buffer slot) to be given back if it is collected without dispose(). */
+	_registerLifetime(props, material) {
+		const registry = this._lifetimeRegistry;
+		if (registry === null) return;
+		registry.unregister(props);
+		registry.register(material, { group: props.batchGroup, slot: props.blockSlot, epoch: this._glEpoch }, props);
+	}
+	_releaseHeld(held) {
+		if (held.epoch !== this._glEpoch) return; // belonged to a context that has been replaced
+		if (held.group !== null) this._releaseGroup(held.group);
+		if (held.slot >= 0) this._materialFreeSlots.push(held.slot);
 	}
 
 	/** Resolve the program of every item in the list. Runs after the frame's lights are collected. */
@@ -1529,7 +1628,9 @@ class WebGLRenderer {
 		const props = this._materialProperties.get(material);
 		if (props !== undefined) {
 			for (let i = 0; i < props.programs.length; i++) { const e = props.programs[i]; if (e) { this.programs.releaseProgram(e.program); if (e.altProgram !== null) this.programs.releaseProgram(e.altProgram); } }
-			if (props.blockSlot >= 0) this._materialFreeSlots.push(props.blockSlot);
+			if (props.batchGroup !== null) { this._releaseGroup(props.batchGroup); props.batchGroup = null; }
+			if (props.blockSlot >= 0) { this._materialFreeSlots.push(props.blockSlot); props.blockSlot = -1; }
+			if (this._lifetimeRegistry !== null) this._lifetimeRegistry.unregister(props);
 		}
 		this._materialProperties.delete(material);
 	}
@@ -1604,7 +1705,7 @@ class WebGLRenderer {
 	}
 
 	/** Give the material a record slot in the shared material buffer (growing the buffer when full). */
-	_allocMaterialSlot(props) {
+	_allocMaterialSlot(props, material) {
 		const gl = this._gl;
 		let slot = this._materialFreeSlots.pop();
 		if (slot === undefined) {
@@ -1619,14 +1720,23 @@ class WebGLRenderer {
 				gl.bindBuffer(gl.COPY_READ_BUFFER, null);
 				gl.deleteBuffer(this._materialBuffer);
 				this._materialBuffer = newBuffer;
+				const newTight = gl.createBuffer();
+				gl.bindBuffer(gl.UNIFORM_BUFFER, newTight);
+				gl.bufferData(gl.UNIFORM_BUFFER, MATERIAL_BLOCK_SIZE * newCap, gl.DYNAMIC_DRAW);
+				gl.bindBuffer(gl.COPY_READ_BUFFER, this._materialTight);
+				gl.copyBufferSubData(gl.COPY_READ_BUFFER, gl.UNIFORM_BUFFER, 0, 0, MATERIAL_BLOCK_SIZE * this._materialCapacity);
+				gl.bindBuffer(gl.COPY_READ_BUFFER, null);
+				gl.deleteBuffer(this._materialTight);
+				this._materialTight = newTight;
 				this._materialCapacity = newCap;
-				this.state.currentUniformBuffer = newBuffer;
+				this.state.currentUniformBuffer = newTight;
 				this.state.currentUniformBindings[BLOCK_MATERIAL] = undefined;
 			}
 			slot = this._materialSlotsUsed++;
 		}
 		props.blockSlot = slot;
 		props.blockData.fill(NaN); // force upload
+		this._registerLifetime(props, material);
 	}
 
 	/** Refresh the material's uniform block (once per frame per material) and return its byte offset. */
@@ -1634,7 +1744,7 @@ class WebGLRenderer {
 		if (props.blockStamp === this._frameId) return props.blockSlot * this._materialStride;
 		props.blockStamp = this._frameId;
 		const gl = this._gl;
-		if (props.blockSlot < 0) this._allocMaterialSlot(props);
+		if (props.blockSlot < 0) this._allocMaterialSlot(props, material);
 		const s = this._materialScratch;
 		const color = material.color;
 		if (color !== undefined) { s[0] = color.r; s[1] = color.g; s[2] = color.b; } else { s[0] = 1; s[1] = 1; s[2] = 1; }
@@ -1654,39 +1764,47 @@ class WebGLRenderer {
 		s[18] = material.size !== undefined ? material.size * this._pixelRatio : 1;
 		s[19] = material.isSpriteMaterial ? material.rotation : material.isPointsMaterial ? this._height * 0.5 : (material.bumpScale !== undefined ? material.bumpScale : 1);
 		if (material.isLineDashedMaterial === true) { s[12] = material.scale; s[13] = material.dashSize; s[14] = material.dashSize + material.gapSize; }
-		const map = material.map || material.alphaMap || material.emissiveMap || material.normalMap || material.roughnessMap || material.metalnessMap || material.aoMap || material.specularMap;
-		if (map && map.isTexture) {
-			if (map.matrixAutoUpdate === true) map.updateMatrix();
-			const m = map.matrix.elements;
-			s[20] = m[0]; s[21] = m[1]; s[22] = m[2]; s[23] = 0;
-			s[24] = m[3]; s[25] = m[4]; s[26] = m[5]; s[27] = 0;
-			s[28] = m[6]; s[29] = m[7]; s[30] = m[8]; s[31] = 0;
-		} else {
-			s[20] = 1; s[21] = 0; s[22] = 0; s[23] = 0; s[24] = 0; s[25] = 1; s[26] = 0; s[27] = 0; s[28] = 0; s[29] = 0; s[30] = 1; s[31] = 0;
+		// one uv transform per present map (three.js refreshTransformUniform: Texture.matrix, refreshed when matrixAutoUpdate),
+		// 6 floats each: the affine part (m0 m1 m3 m4 m6 m7) of the 3x3 matrix, at floats UV_BASE + 6 * slot, after the environment block
+		let used = UV_BASE;
+		for (let slot = 0; slot < UV_SLOT_COUNT; slot++) {
+			const tex = (slot === 5 && material.isMeshStandardMaterial !== true) ? material.specularMap : material[UV_SLOT_KEYS[slot]];
+			const o = UV_BASE + slot * 6;
+			if (tex !== undefined && tex !== null && tex.isTexture === true) {
+				if (tex.matrixAutoUpdate === true) tex.updateMatrix();
+				const m = tex.matrix.elements;
+				s[o] = m[0]; s[o + 1] = m[1]; s[o + 2] = m[3]; s[o + 3] = m[4]; s[o + 4] = m[6]; s[o + 5] = m[7];
+				used = o + 6;
+			} else {
+				s[o] = 0; s[o + 1] = 0; s[o + 2] = 0; s[o + 3] = 0; s[o + 4] = 0; s[o + 5] = 0;
+			}
 		}
 		// environment map: intensity / reflectivity / refractionRatio / ior and the rotation (as three.js: the
 		// inverse of the Euler rotation, with the px/nx flip of non-render-target cube textures)
-		s[32] = props.envMapIntensity;
-		s[33] = material.reflectivity !== undefined ? material.reflectivity : 1;
-		s[34] = material.refractionRatio !== undefined ? material.refractionRatio : 0.98;
-		s[35] = material.ior !== undefined ? material.ior : 1.5;
+		s[20] = props.envMapIntensity;
+		s[21] = material.reflectivity !== undefined ? material.reflectivity : 1;
+		s[22] = material.refractionRatio !== undefined ? material.refractionRatio : 0.98;
+		s[23] = material.ior !== undefined ? material.ior : 1.5;
 		const envMap = props.envMap;
 		if (envMap !== null) {
 			_envRotation.setFromMatrix4(_envRotation4.makeRotationFromEuler(props.envMapRotation)).transpose();
 			if (envMap.isCubeTexture && envMap.isRenderTargetTexture === false) _envRotation.premultiply(_envFlip);
 			const e = _envRotation.elements;
-			s[36] = e[0]; s[37] = e[1]; s[38] = e[2]; s[39] = 0; s[40] = e[3]; s[41] = e[4]; s[42] = e[5]; s[43] = 0; s[44] = e[6]; s[45] = e[7]; s[46] = e[8]; s[47] = 0;
+			s[24] = e[0]; s[25] = e[1]; s[26] = e[2]; s[27] = 0; s[28] = e[3]; s[29] = e[4]; s[30] = e[5]; s[31] = 0; s[32] = e[6]; s[33] = e[7]; s[34] = e[8]; s[35] = 0;
 		} else {
-			s[36] = 1; s[37] = 0; s[38] = 0; s[39] = 0; s[40] = 0; s[41] = 1; s[42] = 0; s[43] = 0; s[44] = 0; s[45] = 0; s[46] = 1; s[47] = 0;
+			s[24] = 1; s[25] = 0; s[26] = 0; s[27] = 0; s[28] = 0; s[29] = 1; s[30] = 0; s[31] = 0; s[32] = 0; s[33] = 0; s[34] = 1; s[35] = 0;
 		}
 		const b = props.blockData;
+		// b mirrors what the GPU holds (NaN where nothing was uploaded yet), so only the used prefix is compared and sent
 		let dirty = false;
-		for (let i = 0; i < 48; i++) { if (b[i] !== s[i]) { dirty = true; break; } }
+		for (let i = 0; i < used; i++) { if (b[i] !== s[i]) { dirty = true; break; } }
 		const offset = props.blockSlot * this._materialStride;
 		if (dirty) {
-			b.set(s);
+			for (let i = 0; i < used; i++) b[i] = s[i];
 			this.state.bindUniformBuffer(this._materialBuffer);
-			gl.bufferSubData(gl.UNIFORM_BUFFER, offset, b);
+			gl.bufferSubData(gl.UNIFORM_BUFFER, offset, b, 0, used);
+			this.state.bindUniformBuffer(this._materialTight);
+			gl.bufferSubData(gl.UNIFORM_BUFFER, props.blockSlot * MATERIAL_BLOCK_SIZE, b, 0, used);
 		}
 		return offset;
 	}
@@ -2113,8 +2231,9 @@ class WebGLRenderer {
 				const offset = this._syncMaterialBlock(material, props);
 				if (program.materialArray) {
 					// the whole window of records around this material's slot (the batch's other materials were refreshed while it was built)
-					const windowBytes = this._materialWindow * this._materialStride;
-					state.bindUniformBufferRange(BLOCK_MATERIAL, this._materialBuffer, Math.floor(offset / windowBytes) * windowBytes, windowBytes);
+					const windowBytes = this._materialWindow * MATERIAL_BLOCK_SIZE;
+					const page = Math.floor(offset / this._materialStride / this._materialWindow);
+					state.bindUniformBufferRange(BLOCK_MATERIAL, this._materialTight, page * windowBytes, windowBytes);
 				} else {
 					state.bindUniformBufferRange(BLOCK_MATERIAL, this._materialBuffer, offset, MATERIAL_BLOCK_SIZE);
 				}
@@ -2412,6 +2531,10 @@ function shadowSideOf(material) {
 }
 
 const _wireGroup = { start: 0, count: 0, materialIndex: 0 };
+// uv-transform slot of each map in the Material block (roughnessMap and specularMap share slot 5: never on one material type)
+const UV_SLOT_KEYS = ['map', 'alphaMap', 'emissiveMap', 'normalMap', 'aoMap', 'roughnessMap', 'metalnessMap'];
+const UV_SLOT_COUNT = UV_SLOT_KEYS.length;
+const UV_BASE = 36; // float index of the first uv transform in the Material block (5 vec4 + environment vec4 + mat3)
 const MAP_KEYS = ['map', 'alphaMap', 'normalMap', 'emissiveMap', 'roughnessMap', 'metalnessMap', 'aoMap', 'specularMap'];
 const BATCH_SIG_SIZE = MAP_KEYS.length + 34; // see _batchGroupOf
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);

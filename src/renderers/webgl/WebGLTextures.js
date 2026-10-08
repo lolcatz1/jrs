@@ -1,3 +1,4 @@
+import { LiveSet } from './LiveSet.js';
 import {
 	LinearFilter, LinearMipmapLinearFilter, LinearMipmapNearestFilter, NearestFilter, NearestMipmapLinearFilter, NearestMipmapNearestFilter,
 	RGBAFormat, DepthFormat, DepthStencilFormat,
@@ -25,6 +26,7 @@ class WebGLTextures {
 		this.state = state;
 		this.info = info;
 		this.properties = new WeakMap();
+		this.live = new LiveSet(); // every property record created by get(), for releaseAll()
 		this._sources = new WeakMap(); // Source -> { [cacheKey]: { texture: WebGLTexture, usedTimes } }
 		this._videoTextures = new WeakMap();
 		this._extCache = {};
@@ -91,10 +93,29 @@ class WebGLTextures {
 
 	get(obj) {
 		let p = this.properties.get(obj);
-		if (p === undefined) { p = {}; this.properties.set(obj, p); }
+		if (p === undefined) { p = {}; this.properties.set(obj, p); this.live.add(p); }
 		return p;
 	}
 
+	_forget(obj) {
+		const p = this.properties.get(obj);
+		if (p !== undefined) this.live.delete(p);
+		this.properties.delete(obj);
+	}
+
+	/** Deletes every texture, framebuffer and renderbuffer still alive, placeholders included (renderer.dispose()). */
+	releaseAll() {
+		const gl = this.gl;
+		this.live.drain((p) => {
+			if (p.webglTexture) gl.deleteTexture(p.webglTexture);
+			if (p.framebuffer) gl.deleteFramebuffer(p.framebuffer);
+			if (p.depthbuffer) gl.deleteRenderbuffer(p.depthbuffer);
+		});
+		if (this._empty !== undefined) { for (const key in this._empty) gl.deleteTexture(this._empty[key]); this._empty = undefined; }
+		this.properties = new WeakMap();
+		this._sources = new WeakMap(); this._videoTextures = new WeakMap();
+		this.info.memory.textures = 0;
+	}
 	// ------------------------------------------------------------------ disposal
 
 	_onTextureDispose(event) {
@@ -115,7 +136,7 @@ class WebGLTextures {
 			if (webglTexture.usedTimes === 0) this._deleteTexture(texture);
 			if (Object.keys(webglTextures).length === 0) this._sources.delete(source);
 		}
-		this.properties.delete(texture);
+		this._forget(texture);
 	}
 	_deleteTexture(texture) {
 		const p = this.properties.get(texture);
@@ -137,10 +158,10 @@ class WebGLTextures {
 		if (renderTarget.depthTexture) {
 			const dp = this.properties.get(renderTarget.depthTexture);
 			if (dp !== undefined && dp.webglTexture !== undefined) { this.gl.deleteTexture(dp.webglTexture); this.info.memory.textures--; }
-			this.properties.delete(renderTarget.depthTexture);
+			this._forget(renderTarget.depthTexture);
 		}
-		this.properties.delete(renderTarget.texture);
-		this.properties.delete(renderTarget);
+		this._forget(renderTarget.texture);
+		this._forget(renderTarget);
 	}
 
 	// ------------------------------------------------------------------ formats

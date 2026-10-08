@@ -68,6 +68,13 @@ class WebGLShadowMap {
 		this.skipped = 0; this.rendered = 0;
 	}
 
+	/** Forgets every per-light record and list; the depth maps themselves are render targets released with the textures. */
+	dispose() {
+		this.lists = new WeakMap(); this.records = new WeakMap();
+		this._epoch++;
+		this._renderOrders.clear(); this._casterCount = 0; this._casters.length = 0;
+	}
+
 	render(lights, scene, camera) {
 		const renderer = this.renderer;
 		if (this.enabled === false) return;
@@ -78,6 +85,9 @@ class WebGLShadowMap {
 		for (let i = 0; i < lights.numSpotShadows; i++) shadowLights.push(lights.spot[i]);
 		for (let i = 0; i < lights.numPointShadows; i++) shadowLights.push(lights.point[i]);
 		if (shadowLights.length === 0) return;
+		// three.js clears its shadow maps to white and leaves that as the GL clear colour (visible when a
+		// texture background does not cover the frame, e.g. the cube box under an orthographic camera)
+		renderer.state.setClearColor(1, 1, 1, 1);
 
 		const state = renderer.state;
 		let previousTarget = null, previousFace = 0;

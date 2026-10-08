@@ -6,6 +6,8 @@ class WebGLInfo {
 		this.programs = null;
 		this.autoReset = true;
 	}
+	/** A new GL context replaced the old one: nothing the old one held exists any more. */
+	rebind(gl) { this.gl = gl; this.memory.geometries = 0; this.memory.textures = 0; }
 	update(count, mode, instanceCount) {
 		const gl = this.gl;
 		this.render.calls++;

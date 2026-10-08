@@ -33,12 +33,13 @@ export const FEATURES = {
 	hierarchy: 'nested groups with animated transforms',
 	cameraMoves: 'camera orbit, fov/zoom changes, orthographic camera',
 	renderTarget: 'a sub-scene rendered into a WebGLRenderTarget used as a map',
+	envMaps: 'procedural equirectangular environment: scene.environment (PMREM for Standard, irradiance for Lambert/Phong), material.envMap with reflection/refraction mapping, combine, reflectivity, envMapIntensity/rotation, textured scene.background with blurriness/intensity/rotation',
 	overrideMaterial: 'scene.overrideMaterial on some frames',
 	background: 'scene.background colour / clear colour',
 	toneMapping: 'tone mapping operators and exposure',
+	perMapTransform: 'a texture transform and uv channel (uv / uv1) per map on one material, incl. normal / ao / roughness / metalness maps',
 	mutations: 'per-frame scene mutations: meshes added/removed/hidden, material colour/opacity/transparent/flatShading changed, lights added/changed, renderOrder, drawRange, geometry attribute updates, fog/background/exposure changes',
 	// off by default: known differences, see bench/results/swarm/parity-fuzzer.md
-	perMapTransform: 'different offset/repeat/rotation per map on one material (one uv transform per map, as three.js)',
 	shaderFog: 'ShaderMaterial with fog: true (three fog chunks)',
 	agx: 'AgX tone mapping (not implemented in jrs)',
 	points: 'Points objects (point size rasterisation)',
@@ -195,6 +196,47 @@ export function buildFuzzScene(T, seed, features = defaultFeatures(), opts = {})
 	const nTextures = features.maps ? 1 + rng.int(4) : 0;
 	for (let i = 0; i < nTextures; i++) makeTexture(rng.pick(['checker', 'wave', 'wave']));
 
+	// ---------- environment map (procedural equirectangular sky: gradient, horizon band, a sun blob, a few stripes) ----------
+	let envTextures = null;
+	if (features.envMaps && rng.chance(0.5)) {
+		const ew = rng.pick([32, 64]), eh = ew / 2;
+		const hue = rng(), sunU = rng(), sunV = rng.range(0.15, 0.5), bright = rng.range(0.6, 1), stripes = rng.int(5);
+		const sRGB = rng.chance(0.5);
+		const col = new T.Color(), sky = new T.Color().setHSL(hue, 0.6, 0.6), ground = new T.Color().setHSL((hue + 0.5) % 1, 0.4, 0.25);
+		const data = new Uint8Array(ew * eh * 4);
+		for (let y = 0; y < eh; y++) for (let x = 0; x < ew; x++) {
+			const u = (x + 0.5) / ew, v = (y + 0.5) / eh; // v = 0 bottom row
+			col.copy(ground).lerp(sky, v);
+			if (Math.abs(v - 0.5) < 0.04) col.setHSL(hue + 0.3, 0.8, 0.5);
+			const du = Math.min(Math.abs(u - sunU), 1 - Math.abs(u - sunU)), dv = Math.abs(v - sunV);
+			if (du * du + dv * dv < 0.01) col.setRGB(bright, bright, bright * 0.9);
+			if (stripes > 0 && Math.floor(u * stripes * 2) % 2 === 0 && v > 0.6) col.multiplyScalar(0.7);
+			const i = (y * ew + x) * 4;
+			data[i] = Math.round(col.r * 255); data[i + 1] = Math.round(col.g * 255); data[i + 2] = Math.round(col.b * 255); data[i + 3] = 255;
+		}
+		const makeEquirect = (mapping) => {
+			const t = new T.DataTexture(data, ew, eh);
+			t.mapping = mapping; t.minFilter = T.LinearFilter; t.magFilter = T.LinearFilter;
+			if (sRGB) t.colorSpace = T.SRGBColorSpace;
+			t.needsUpdate = true;
+			return t;
+		};
+		envTextures = { reflect: makeEquirect(T.EquirectangularReflectionMapping), refract: makeEquirect(T.EquirectangularRefractionMapping) };
+		const envNotes = [];
+		if (rng.chance(0.6)) {
+			scene.environment = envTextures.reflect; envNotes.push('scene.environment');
+			if (rng.chance(0.4)) { scene.environmentIntensity = rng.range(0.3, 2); envNotes.push('intensity ' + scene.environmentIntensity.toFixed(2)); }
+			if (rng.chance(0.3)) { scene.environmentRotation.set(0, rng.range(0, 6.28), 0); envNotes.push('rotation'); }
+		}
+		if (features.background && rng.chance(0.4)) {
+			scene.background = envTextures.reflect; background = null; envNotes.push('background texture');
+			if (rng.chance(0.5)) { scene.backgroundBlurriness = rng.range(0, 1); envNotes.push('blur ' + scene.backgroundBlurriness.toFixed(2)); }
+			if (rng.chance(0.4)) { scene.backgroundIntensity = rng.range(0.3, 2); envNotes.push('bg intensity'); }
+			if (rng.chance(0.3)) { scene.backgroundRotation.set(0, rng.range(0, 6.28), 0); envNotes.push('bg rotation'); }
+		}
+		note(`envmap ${ew}x${eh}${sRGB ? ' sRGB' : ''}${envNotes.length ? ': ' + envNotes.join(', ') : ''}`);
+	}
+
 	// ---------- render target (sub-scene rendered to a texture used as a map) ----------
 	let renderTarget = null, rtScene = null, rtCamera = null, rtAnim = null;
 	if (features.renderTarget && rng.chance(0.35)) {
@@ -297,6 +339,12 @@ export function buildFuzzScene(T, seed, features = defaultFeatures(), opts = {})
 			}
 			g.userData.groupCount = nGroups;
 		}
+		if (features.perMapTransform) {
+			// second uv channel for texture.channel = 1 (derived from the positions: no rng draws, scenes keep their shape)
+			const pos = g.attributes.position, uv1 = new Float32Array(pos.count * 2);
+			for (let i = 0; i < pos.count; i++) { uv1[i * 2] = pos.getX(i) * 0.35 + pos.getZ(i) * 0.15 + 0.5; uv1[i * 2 + 1] = pos.getY(i) * 0.3 - pos.getX(i) * 0.1 + 0.4; }
+			g.setAttribute('uv1', new T.BufferAttribute(uv1, 2));
+		}
 		geometries.push(g);
 	}
 
@@ -388,6 +436,37 @@ export function buildFuzzScene(T, seed, features = defaultFeatures(), opts = {})
 		},
 	];
 	const shaderUniformsShared = [];
+	// perMapTransform: independent texture clones (own offset / repeat / rotation / centre / wrap, and uv or uv1) for maps the
+	// main generator does not cover (normal, ao, roughness, metalness) and for some existing ones. Uses its own rng stream so
+	// the rest of the scene is the same with or without the feature.
+	const extraTextures = [];
+	let extraCounter = 0;
+	const addExtraMaps = (mat, kind) => {
+		// wireframe lines are 1 px wide: texture LOD / derivative-based normal maps there depend on the rasteriser's line setup
+		if (mat.wireframe) return;
+		const bases = textures.filter((t) => t.isDataTexture === true);
+		if (bases.length === 0) return;
+		const x = makeRng(seed * 7919 + (++extraCounter) * 104729);
+		const fresh = () => {
+			const t = x.pick(bases).clone();
+			t.wrapS = x.pick([T.RepeatWrapping, T.ClampToEdgeWrapping, T.MirroredRepeatWrapping]); t.wrapT = x.pick([T.RepeatWrapping, T.MirroredRepeatWrapping]);
+			t.repeat.set(x.range(0.4, 3), x.range(0.4, 3)); t.offset.set(x.range(-1, 1), x.range(-1, 1));
+			if (x.chance(0.5)) { t.rotation = x.range(-3.2, 3.2); t.center.set(x.range(0, 1), x.range(0, 1)); }
+			if (x.chance(0.4)) t.channel = 1;
+			t.needsUpdate = true; extraTextures.push(t);
+			return t;
+		};
+		const lit = kind !== 'basic';
+		if (mat.map && x.chance(0.4)) mat.map = fresh();
+		if (x.chance(0.3)) { mat.alphaMap = fresh(); if (!mat.transparent && x.chance(0.5)) mat.alphaTest = 0.35; }
+		if (lit && x.chance(0.3)) mat.normalMap = fresh();
+		if (kind === 'standard' && x.chance(0.3)) mat.roughnessMap = fresh();
+		if (kind === 'standard' && x.chance(0.3)) mat.metalnessMap = fresh();
+		if (kind !== 'basic' && x.chance(0.3)) { mat.emissiveMap = fresh(); mat.emissive.setRGB(0.6, 0.6, 0.6); }
+		if (kind === 'phong' && x.chance(0.3)) mat.specularMap = fresh();
+		if (x.chance(0.3)) { mat.aoMap = fresh(); mat.aoMapIntensity = x.range(0.3, 1.2); }
+		mat.needsUpdate = true;
+	};
 	const makeMaterial = () => {
 		const kinds = [];
 		if (features.basic) kinds.push('basic');
@@ -430,9 +509,11 @@ export function buildFuzzScene(T, seed, features = defaultFeatures(), opts = {})
 		if (features.depthState && !transparent && rng.chance(0.08)) { params.depthWrite = false; sensitive = true; }
 		if (features.flatShading && kind !== 'basic' && kind !== 'shader' && !params.wireframe && rng.chance(0.3)) params.flatShading = true;
 		if (features.maps && textures.length) {
-			// jrs has one uv transform per material (the first map's); unless perMapTransform is on, every
-			// extra map on a material is the same texture object as its first map
-			const extra = () => (features.perMapTransform || !params.map) ? rng.pick(textures) : (rng(), params.map);
+			// with perMapTransform every extra map is an independent texture (own transform); without it every
+			// extra map is the same texture object as the first map
+			const isRt = (t) => renderTarget !== null && t === renderTarget.texture;
+			// independent extra maps never sample a render target (its content differs slightly between the libraries, and alpha tests / emissive amplify that)
+			const extra = () => { if (!(features.perMapTransform || !params.map)) { rng(); return params.map; } const t = rng.pick(textures); return isRt(t) ? (textures.find((u) => !isRt(u)) || t) : t; };
 			if (rng.chance(0.2)) params.alphaMap = extra();
 			if ((kind === 'lambert' || kind === 'phong' || kind === 'standard') && rng.chance(0.25)) { params.emissive = randomColor(); params.emissiveIntensity = rng.range(0.1, 1); if (rng.chance(0.5)) params.emissiveMap = extra(); }
 			if (kind === 'phong' && rng.chance(0.3)) params.specularMap = extra();
@@ -443,6 +524,12 @@ export function buildFuzzScene(T, seed, features = defaultFeatures(), opts = {})
 			}
 		}
 		if (kind === 'phong') { params.shininess = rng.range(1, 120); params.specular = new T.Color().setHSL(rng(), 0.2, rng.range(0.05, 0.5)); }
+		if (envTextures !== null && kind !== 'shader' && rng.chance(0.5)) {
+			params.envMap = rng.chance(0.75) ? envTextures.reflect : envTextures.refract;
+			if (kind === 'standard') params.envMapIntensity = rng.range(0.2, 2);
+			else { params.combine = rng.pick([T.MultiplyOperation, T.MixOperation, T.AddOperation]); params.reflectivity = rng.range(0, 1); params.refractionRatio = rng.range(0.5, 1); }
+			if (rng.chance(0.3)) params.envMapRotation = new T.Euler(0, rng.range(0, 6.28), 0);
+		}
 		if (kind === 'standard') { params.roughness = rng.range(0, 1); params.metalness = rng.range(0, 1); }
 		if ((kind === 'lambert' || kind === 'phong' || kind === 'standard') && rng.chance(0.2)) params.emissive = randomColor();
 		if (features.fog && rng.chance(0.15)) params.fog = false;
@@ -479,7 +566,8 @@ export function buildFuzzScene(T, seed, features = defaultFeatures(), opts = {})
 			mat.userData.stencilRef = ref;
 			sensitive = true;
 		}
-		mat.userData.kind = kind;
+		mat.userData.kind = kind + (params.envMap === undefined ? '' : params.envMap === envTextures.refract ? '+envRefract' : '+envMap');
+		if (features.perMapTransform && features.maps && kind !== 'shader') addExtraMaps(mat, kind);
 		if (sensitive) orderSensitive.add(mat);
 		return mat;
 	};
@@ -695,7 +783,11 @@ export function buildFuzzScene(T, seed, features = defaultFeatures(), opts = {})
 					else if (kind === 'fog' && features.fog) op = () => { if (scene.fog && scene.fog.isFog) { scene.fog.near = 2 + 6 * r1; scene.fog.far = 12 + 12 * r2; } else if (scene.fog) scene.fog.density = 0.02 + 0.07 * r1; else scene.fog = new T.Fog(new T.Color().setHSL(r1, 0.5, 0.5), 3, 20); };
 					else if (kind === 'background' && features.background) op = () => { scene.background = new T.Color().setHSL(r1, 0.5, 0.3); };
 					else if (kind === 'exposure' && features.toneMapping && toneMapping !== T.NoToneMapping) op = () => { renderer_.toneMappingExposure = 0.5 + 1.5 * r1; };
-					else if (kind === 'map' && mat && mat.map && textures.length) { const t = textures[rng.int(textures.length)]; op = () => { mat.map = t; mat.needsUpdate = true; if (mat.uniforms && mat.uniforms.tex) mat.uniforms.tex.value = t; }; }
+					else if (kind === 'map' && mat && mat.map && textures.length) {
+						const t = textures[rng.int(textures.length)];
+						// the extra maps that shared the old map's texture follow it (one uv transform per material in jrs, see perMapTransform)
+						op = () => { const old = mat.map; for (const k of ['alphaMap', 'emissiveMap', 'specularMap']) if (!features.perMapTransform && mat[k] === old) mat[k] = t; mat.map = t; mat.needsUpdate = true; if (mat.uniforms && mat.uniforms.tex) mat.uniforms.tex.value = t; };
+					}
 					else if (kind === 'instanceCount') { const ims = meshes.filter((x) => x.isInstancedMesh); if (ims.length) { const im = ims[rng.int(ims.length)]; op = () => { im.count = Math.max(1, Math.floor(im.instanceMatrix.count * (0.3 + 0.7 * r1))); }; } }
 					else if (kind === 'scale' && m) op = () => { m.scale.multiplyScalar(0.6 + 0.8 * r1); };
 					if (op) { ops.push(op); mutationLog.push(`f${f}:${kind}`); }
@@ -732,6 +824,7 @@ export function buildFuzzScene(T, seed, features = defaultFeatures(), opts = {})
 	};
 	const dispose = (renderer) => {
 		for (const t of textures) t.dispose();
+		for (const t of extraTextures) t.dispose();
 		for (const g of geometries) g.dispose();
 		for (const m of materials) m.dispose();
 		if (renderTarget) renderTarget.dispose();

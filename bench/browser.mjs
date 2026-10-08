@@ -8,11 +8,11 @@ const candidates = [
 	'/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome',
 ];
 
-export async function launchBrowser() {
+export async function launchBrowser(extraArgs = []) {
 	const executablePath = process.env.CHROME_PATH || candidates.find((p) => fs.existsSync(p));
 	return chromium.launch({
 		headless: true,
 		executablePath,
-		args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--no-sandbox', '--disable-dev-shm-usage', '--enable-webgl'],
+		args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--no-sandbox', '--disable-dev-shm-usage', '--enable-webgl', ...extraArgs],
 	});
 }

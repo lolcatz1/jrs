@@ -8,6 +8,8 @@
  * Growing an attribute (array of a different byte length) re-specifies the existing buffer with
  * bufferData instead of creating a new one, so the VAOs that point at it stay valid.
  */
+import { LiveSet } from './LiveSet.js';
+
 /** Sorts and merges adjacent/overlapping ranges in place (same algorithm as three.js). */
 function mergeUpdateRanges(updateRanges) {
 	updateRanges.sort((a, b) => a.start - b.start);
@@ -27,6 +29,13 @@ function mergeUpdateRanges(updateRanges) {
 class WebGLAttributes {
 	constructor(gl) {
 		this.gl = gl;
+		this.buffers = new WeakMap();
+		this.live = new LiveSet();
+	}
+	/** Deletes every buffer still alive (renderer.dispose()). */
+	releaseAll() {
+		const gl = this.gl;
+		this.live.drain((data) => gl.deleteBuffer(data.buffer));
 		this.buffers = new WeakMap();
 	}
 	_createBuffer(attribute, bufferType) {
@@ -88,7 +97,7 @@ class WebGLAttributes {
 	remove(attribute) {
 		if (attribute.isInterleavedBufferAttribute) attribute = attribute.data;
 		const data = this.buffers.get(attribute);
-		if (data) { this.gl.deleteBuffer(data.buffer); this.buffers.delete(attribute); }
+		if (data) { this.gl.deleteBuffer(data.buffer); this.buffers.delete(attribute); this.live.delete(data); }
 	}
 	/** Ensures the GPU buffer exists and is current. Returns the record. */
 	update(attribute, bufferType) {
@@ -97,6 +106,7 @@ class WebGLAttributes {
 		if (data === undefined) {
 			data = this._createBuffer(attribute, bufferType);
 			this.buffers.set(attribute, data);
+			this.live.add(data);
 		} else if (data.version < attribute.version) {
 			if (data.size !== attribute.array.byteLength) {
 				if (attribute.isInstancedBufferAttribute !== true && data.itemSize === attribute.itemSize && data.stride === attribute.stride &&
