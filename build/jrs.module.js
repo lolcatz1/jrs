@@ -4082,6 +4082,197 @@ function computeNormalMatrix(s, o) {
   s[m + 8] = i8;
 }
 
+// src/core/FlatGraph.js
+var K_RENDERABLE = 1;
+var K_SPRITE = 2;
+var K_LIGHT = 4;
+var K_LOD = 8;
+var K_CUSTOM = 16;
+var K_INSUB = 32;
+var K_POST = 64;
+var K_NOCOUNT = 128;
+var MAX_PATCHES = 16;
+var _stack = [];
+var FlatGraph = class _FlatGraph {
+  constructor(root) {
+    this.root = root;
+    this.n = 0;
+    this.capacity = 0;
+    this.objects = [];
+    this.parent = null;
+    this.end = null;
+    this.childCount = null;
+    this.kind = null;
+    this.wv = null;
+    this.dirty = null;
+    this.vis = null;
+    this.valid = false;
+    this.changed = false;
+    this.patches = 0;
+    this.rebuilds = 0;
+    this.patched = 0;
+  }
+  _ensure(capacity) {
+    if (capacity <= this.capacity) return;
+    let c = this.capacity === 0 ? 256 : this.capacity;
+    while (c < capacity) c *= 2;
+    const grow = (a, T) => {
+      const b = new T(c);
+      if (a !== null) b.set(a.subarray(0, this.n));
+      return b;
+    };
+    this.parent = grow(this.parent, Int32Array);
+    this.end = grow(this.end, Int32Array);
+    this.childCount = grow(this.childCount, Int32Array);
+    this.kind = grow(this.kind, Uint8Array);
+    this.wv = grow(this.wv, Int32Array);
+    this.dirty = grow(this.dirty, Uint8Array);
+    this.vis = grow(this.vis, Uint8Array);
+    this.capacity = c;
+  }
+  /** Kind bits of `object` whose parent entry has kind `parentKind` (-1 for the root). */
+  static kindOf(object, parentKind) {
+    let k = 0;
+    if (object.isMesh === true || object.isLine === true || object.isPoints === true) k |= K_RENDERABLE;
+    else if (object.isSprite === true) k |= K_SPRITE;
+    else if (object.isLight === true) k |= K_LIGHT;
+    else if (object.isLOD === true) k |= K_LOD;
+    if (parentKind > 0 && (parentKind & (K_CUSTOM | K_INSUB)) !== 0) k |= K_INSUB;
+    else if (object.updateMatrixWorld !== object._flatUMW) k |= K_CUSTOM;
+    else if (object._flatPostUpdate !== null) k |= K_POST;
+    if (object._countsWorld === false) k |= K_NOCOUNT;
+    return k;
+  }
+  /** Pre-order fill of entries [at, at + m) with `object`'s subtree; `parentIndex` is the entry of its parent (-1: none). */
+  _fill(at, object, parentIndex, parentKind) {
+    const objects = this.objects, parent = this.parent, childCount = this.childCount, kind = this.kind;
+    let i = at;
+    _stack.length = 0;
+    _stack.push(object, parentIndex);
+    while (_stack.length > 0) {
+      const p = _stack.pop(), o = _stack.pop();
+      objects[i] = o;
+      parent[i] = p;
+      const pk = p < 0 ? parentKind : kind[p];
+      kind[i] = _FlatGraph.kindOf(o, pk);
+      o._flat = this;
+      o._flatIndex = i;
+      const children = o.children;
+      childCount[i] = children.length;
+      for (let c = children.length - 1; c >= 0; c--) _stack.push(children[c], i);
+      i++;
+    }
+    const end = this.end;
+    for (let j = i - 1; j >= at; j--) end[j] = j + 1;
+    for (let j = i - 1; j > at; j--) {
+      const p = parent[j];
+      if (end[j] > end[p]) end[p] = end[j];
+    }
+    return i - at;
+  }
+  rebuild() {
+    let count = 0;
+    this.root.traverse(() => {
+      count++;
+    });
+    this._ensure(count);
+    this.objects.length = count;
+    this.n = this._fill(0, this.root, -1, -1);
+    this.valid = true;
+    this.patches = 0;
+    this.rebuilds++;
+  }
+  /** True when `object` is the entry at its recorded index (stale indices on removed objects fail this). */
+  indexOf(object) {
+    const i = object._flatIndex;
+    return object._flat === this && i >= 0 && i < this.n && this.objects[i] === object ? i : -1;
+  }
+  /** `parent.add(child)` happened (child already in `parent.children`, at the end). */
+  onAdd(parentObject, child) {
+    if (this.valid === false) return;
+    const pi = this.indexOf(parentObject);
+    if (pi < 0 || this.patches >= MAX_PATCHES) {
+      this.valid = false;
+      return;
+    }
+    let m = 0;
+    child.traverse(() => {
+      m++;
+    });
+    const at = this.end[pi], n = this.n;
+    this._ensure(n + m);
+    const objects = this.objects, parent = this.parent, end = this.end, childCount = this.childCount, kind = this.kind;
+    objects.length = n + m;
+    for (let j = n - 1; j >= at; j--) {
+      const o = objects[j];
+      objects[j + m] = o;
+      o._flatIndex = j + m;
+    }
+    parent.copyWithin(at + m, at, n);
+    end.copyWithin(at + m, at, n);
+    childCount.copyWithin(at + m, at, n);
+    kind.copyWithin(at + m, at, n);
+    for (let j = at + m; j < n + m; j++) {
+      if (parent[j] >= at) parent[j] += m;
+      end[j] += m;
+    }
+    for (let a = pi; a >= 0; a = parent[a]) end[a] += m;
+    this.n = n + m;
+    this._fill(at, child, pi, kind[pi]);
+    childCount[pi] = parentObject.children.length;
+    this.patches++;
+    this.patched++;
+  }
+  /** `parent.remove(child)` happened (child already out of `parent.children`). */
+  onRemove(parentObject, child) {
+    if (this.valid === false) return;
+    const ci = this.indexOf(child);
+    if (ci < 0 || this.parent[ci] !== this.indexOf(parentObject) || this.patches >= MAX_PATCHES) {
+      this.valid = false;
+      return;
+    }
+    const objects = this.objects, parent = this.parent, end = this.end, childCount = this.childCount, kind = this.kind;
+    const to = end[ci], m = to - ci, n = this.n, pi = parent[ci];
+    for (let a = pi; a >= 0; a = parent[a]) end[a] -= m;
+    for (let j = to; j < n; j++) {
+      const o = objects[j];
+      objects[j - m] = o;
+      o._flatIndex = j - m;
+    }
+    objects.length = n - m;
+    parent.copyWithin(ci, to, n);
+    end.copyWithin(ci, to, n);
+    childCount.copyWithin(ci, to, n);
+    kind.copyWithin(ci, to, n);
+    for (let j = ci; j < n - m; j++) {
+      if (parent[j] >= to) parent[j] -= m;
+      end[j] -= m;
+    }
+    this.n = n - m;
+    if (pi >= 0) childCount[pi] = parentObject.children.length;
+    this.patches++;
+    this.patched++;
+  }
+  /** Structural check (the renderer's pass does the same per entry as it goes): every entry still has the child count it was built with. */
+  validate() {
+    const objects = this.objects, childCount = this.childCount;
+    for (let i = 0, n = this.n; i < n; i++) if (objects[i].children.length !== childCount[i]) return false;
+    return true;
+  }
+};
+function notifyAdd(node, child) {
+  for (let r = node; r !== null; r = r.parent) {
+    const g = r._flatGraph;
+    if (g !== null) g.onAdd(node, child);
+  }
+}
+function notifyRemove(node, child) {
+  for (let r = node; r !== null; r = r.parent) {
+    const g = r._flatGraph;
+    if (g !== null) g.onRemove(node, child);
+  }
+}
+
 // src/core/Object3D.js
 var _object3DId = 0;
 var _v14 = /* @__PURE__ */ new Vector3();
@@ -4158,6 +4349,9 @@ var Object3D = class _Object3D extends EventDispatcher {
     this._frustumCulled = true;
     this._renderOrder = 0;
     this._countsWorld = true;
+    this._flat = null;
+    this._flatIndex = -1;
+    this._flatGraph = null;
     this.castShadow = false;
     this.animations = [];
     this.customDepthMaterial = void 0;
@@ -4278,6 +4472,7 @@ var Object3D = class _Object3D extends EventDispatcher {
       object.parent = this;
       this.children.push(object);
       epochs.structure++;
+      notifyAdd(this, object);
       object.matrixWorldNeedsUpdate = true;
       object.dispatchEvent(_addedEvent);
       _childaddedEvent.child = object;
@@ -4298,6 +4493,7 @@ var Object3D = class _Object3D extends EventDispatcher {
       object.parent = null;
       this.children.splice(index, 1);
       epochs.structure++;
+      notifyRemove(this, object);
       object.dispatchEvent(_removedEvent);
       _childremovedEvent.child = object;
       this.dispatchEvent(_childremovedEvent);
@@ -4325,6 +4521,7 @@ var Object3D = class _Object3D extends EventDispatcher {
     object.parent = this;
     this.children.push(object);
     epochs.structure++;
+    notifyAdd(this, object);
     object.updateWorldMatrix(false, true);
     object.dispatchEvent(_addedEvent);
     _childaddedEvent.child = object;
@@ -4455,13 +4652,11 @@ var Object3D = class _Object3D extends EventDispatcher {
     if (this.matrixWorldNeedsUpdate || force || parent !== null && parent._worldVersion !== this._parentWorldVersion) {
       if (this.matrixWorldAutoUpdate === true) {
         if (parent === null) this._matrixWorld.copy(this._matrix);
-        else {
-          this._matrixWorld.multiplyMatrices(parent._matrixWorld, this._matrix);
-          this._parentWorldVersion = parent._worldVersion;
-        }
+        else this._matrixWorld.multiplyMatrices(parent._matrixWorld, this._matrix);
         this._worldVersion++;
         if (this._countsWorld) epochs.world++;
       }
+      if (parent !== null) this._parentWorldVersion = parent._worldVersion;
       this.matrixWorldNeedsUpdate = false;
       force = true;
     }
@@ -4549,6 +4744,8 @@ for (const hook of ["onBeforeRender", "onAfterRender"]) {
     }
   });
 }
+Object3D.prototype._flatUMW = Object3D.prototype.updateMatrixWorld;
+Object3D.prototype._flatPostUpdate = null;
 Object3D.DEFAULT_UP = /* @__PURE__ */ new Vector3(0, 1, 0);
 Object3D.DEFAULT_MATRIX_AUTO_UPDATE = true;
 Object3D.DEFAULT_MATRIX_WORLD_AUTO_UPDATE = true;
@@ -14092,9 +14289,8 @@ uniform samplerCubeShadow pointShadowMap[ NUM_POINT_SHADOWS ];
 #endif
 out vec4 fragColor;
 
-#if NUM_DIR_SHADOWS > 0 || NUM_SPOT_SHADOWS > 0
-// three.js r186 PCF shadows (shadowmap_pars_fragment): hardware-compared taps on a Vogel disk rotated per
-// pixel by interleaved gradient noise. params = ( bias, normalBias, radius / mapSize.x, intensity ).
+#if NUM_DIR_SHADOWS > 0 || NUM_SPOT_SHADOWS > 0 || NUM_POINT_SHADOWS > 0
+// three.js r186 shadowmap_pars_fragment helpers, shared by the 2D and the point (cube) shadow samplers
 float interleavedGradientNoise( vec2 position ) {
 	return fract( 52.9829189 * fract( dot( position, vec2( 0.06711056, 0.00583715 ) ) ) );
 }
@@ -14104,6 +14300,10 @@ vec2 vogelDiskSample( int sampleIndex, int samplesCount, float phi ) {
 	float theta = float( sampleIndex ) * goldenAngle + phi;
 	return vec2( cos( theta ), sin( theta ) ) * r;
 }
+#endif
+#if NUM_DIR_SHADOWS > 0 || NUM_SPOT_SHADOWS > 0
+// three.js r186 PCF shadows (shadowmap_pars_fragment): hardware-compared taps on a Vogel disk rotated per
+// pixel by interleaved gradient noise. params = ( bias, normalBias, radius / mapSize.x, intensity ).
 float sampleShadow( sampler2DShadow shadowMap, vec4 shadowCoord, vec4 params ) {
 	float shadow = 1.0;
 	shadowCoord.xyz /= shadowCoord.w;
@@ -14129,18 +14329,6 @@ float sampleShadow( sampler2DShadow shadowMap, vec4 shadowCoord, vec4 params ) {
 #define PI2 6.283185307179586
 // three.js r186 shadowmap_pars_fragment: Vogel disk + interleaved gradient noise taps around the light-to-fragment direction
 #ifndef POINT_SHADOW_BASIC
-#if !( NUM_DIR_SHADOWS > 0 || NUM_SPOT_SHADOWS > 0 )
-// (already defined above when directional or spot shadows are present)
-float interleavedGradientNoise( vec2 position ) {
-	return fract( 52.9829189 * fract( dot( position, vec2( 0.06711056, 0.00583715 ) ) ) );
-}
-vec2 vogelDiskSample( int sampleIndex, int samplesCount, float phi ) {
-	const float goldenAngle = 2.399963229728653;
-	float r = sqrt( ( float( sampleIndex ) + 0.5 ) / float( samplesCount ) );
-	float theta = float( sampleIndex ) * goldenAngle + phi;
-	return vec2( cos( theta ), sin( theta ) ) * r;
-}
-#endif
 float getPointShadow( samplerCubeShadow shadowMap, vec4 params, vec4 info, vec3 lightToPosition ) {
 	float shadow = 1.0;
 	float shadowBias = params.x, shadowRadius = params.z, shadowIntensity = params.w;
@@ -15303,6 +15491,7 @@ var RenderListCache = class {
     this.pv = new Float32Array(16);
     this.itemZ = null;
     this.resort = false;
+    this.flatChanged = false;
     this.resetDeps();
     this.cmdOpaque = new CommandCache();
     this.cmdTransparent = new CommandCache();
@@ -18370,6 +18559,10 @@ var _projScreenMatrix2 = /* @__PURE__ */ new Matrix4();
 var _vector32 = /* @__PURE__ */ new Vector3();
 var _color2 = /* @__PURE__ */ new Color();
 var _frustum2 = /* @__PURE__ */ new Frustum();
+function isDescendantOf(object, ancestor) {
+  for (let o = object.parent; o !== null; o = o.parent) if (o === ancestor) return true;
+  return false;
+}
 var _emptyScene = { fog: null, environment: null, background: null, overrideMaterial: null, isScene: true, matrixWorldAutoUpdate: false, children: [], visible: true };
 var _frameCounter = 0;
 var V_INSTANCING = 1;
@@ -18410,7 +18603,7 @@ var WebGLRenderer = class {
     } = parameters;
     this.isWebGLRenderer = true;
     this.domElement = canvas;
-    this.debug = { checkShaderErrors: true, onShaderError: null, traceUniforms: false, uniformTrace: [], verifyListReuse: false, listReuse: { rebuilt: 0, same: 0, cameraOnly: 0, commandsReplayed: 0, mismatches: 0 } };
+    this.debug = { checkShaderErrors: true, onShaderError: null, traceUniforms: false, uniformTrace: [], verifyListReuse: false, listReuse: { rebuilt: 0, same: 0, cameraOnly: 0, commandsReplayed: 0, mismatches: 0 }, flatUpdate: { merged: 0, split: 0, projectOnly: 0, rebuilds: 0 } };
     this._traceUniforms = null;
     this.autoClear = true;
     this.autoClearColor = true;
@@ -18567,6 +18760,11 @@ var WebGLRenderer = class {
     this._cmdMdStart = new Int32Array(this._cmdCapacity);
     this._cmdN = 0;
     this.reuseRenderLists = true;
+    this.flatSceneUpdate = true;
+    this._flatGraph = null;
+    this._flatMerged = false;
+    this._deferSkeletons = false;
+    this._skinnedPending = [];
     this._zTmp = new Float64Array(1);
     this._rec = null;
     this._buildSeq = 0;
@@ -18841,8 +19039,16 @@ var WebGLRenderer = class {
     }
     if (this._isContextLost === true) return;
     const gl = this._gl;
-    if (scene.matrixWorldAutoUpdate === true) scene.updateMatrixWorld();
-    if (camera.parent === null && camera.matrixWorldAutoUpdate === true) camera.updateMatrixWorld();
+    const savedFlat = this._flatGraph, savedMerged = this._flatMerged;
+    const flat = this.flatSceneUpdate === true && scene.isObject3D === true ? this._flatGraphFor(scene) : null;
+    if (flat !== null) {
+      if (camera.parent === null) {
+        if (camera.matrixWorldAutoUpdate === true) camera.updateMatrixWorld();
+      } else if (scene.matrixWorldAutoUpdate === true && isDescendantOf(camera, scene)) camera.updateWorldMatrix(true, false);
+    } else {
+      if (scene.matrixWorldAutoUpdate === true) scene.updateMatrixWorld();
+      if (camera.parent === null && camera.matrixWorldAutoUpdate === true) camera.updateMatrixWorld();
+    }
     this._frameId = ++_frameCounter;
     this._renderCallDepth++;
     this._currentCamera = camera;
@@ -18865,7 +19071,28 @@ var WebGLRenderer = class {
     _frustum2.setFromProjectionMatrix(_projScreenMatrix2, camera.coordinateSystem, camera.reversedDepth);
     const list = this.renderLists.get(scene, this._renderCallDepth - 1, camera);
     const cache = list.cache;
+    if (flat !== null) {
+      const update = scene.matrixWorldAutoUpdate === true;
+      const merged = update && (cache.hasSig === false || cache.flatChanged === true || this.reuseRenderLists === false || cache.structure !== epochs.structure || cache.world !== epochs.world);
+      if (update && merged === false) {
+        if (this._flatPass(flat, scene, camera, null, true, false, false) === false) {
+          const changed = flat.changed;
+          flat.rebuild();
+          this.debug.flatUpdate.rebuilds++;
+          this._flatPass(flat, scene, camera, null, true, false, false);
+          flat.changed = flat.changed || changed;
+        }
+        cache.flatChanged = flat.changed;
+      }
+      this._flatGraph = flat;
+      this._flatMerged = merged;
+      this.debug.flatUpdate[merged ? "merged" : update ? "split" : "projectOnly"]++;
+    } else {
+      this._flatGraph = null;
+      this._flatMerged = false;
+    }
     const level = this._prepareList(list, cache, scene, camera);
+    if (level >= 0 && this.debug.verifyListReuse === true && cache.resort === false) this._verifyReuse(list, scene, camera, level);
     if (this.info.autoReset === true && this._renderCallDepth === 1) {
       this.info.reset();
       this._traceDraws = 0;
@@ -18886,8 +19113,8 @@ var WebGLRenderer = class {
       if (cache.resort === true) {
         cache.resort = false;
         list.resortTransparent(this.sortObjects, this._rankOfRenderOrder, cache.itemZ);
+        if (this.debug.verifyListReuse === true) this._verifyReuse(list, scene, camera, level);
       }
-      if (this.debug.verifyListReuse === true) this._verifyReuse(list, scene, camera, level);
     }
     const background = scene.background;
     if (background !== null && background.isColor) {
@@ -18925,8 +19152,24 @@ var WebGLRenderer = class {
       if (t.length > 16) t.shift();
       this._traceUniforms = null;
     }
+    this._flatGraph = savedFlat;
+    this._flatMerged = savedMerged;
     this._renderCallDepth--;
     if (this._renderCallDepth === 0) this.info.render.frame++;
+  }
+  /** The scene's flat graph, built on first use and rebuilt when a patch was not possible or `children` was edited directly. */
+  _flatGraphFor(scene) {
+    let g = scene._flatGraph;
+    if (g === null) {
+      g = new FlatGraph(scene);
+      scene._flatGraph = g;
+    }
+    if (g.valid === false) {
+      g.rebuild();
+      this.debug.flatUpdate.rebuilds++;
+    }
+    g.patches = 0;
+    return g;
   }
   // ------------------------------------------------------------------ render-list reuse
   /**
@@ -18939,7 +19182,7 @@ var WebGLRenderer = class {
     this._cameraLayerMask = camera.layers.mask;
     let level = -1;
     const view = camera.matrixWorldInverse.elements, pv = _projScreenMatrix2.elements;
-    if (this.reuseRenderLists === true && cache.ready === true) level = this._reuseLevel(list, cache, scene, camera, view, pv);
+    if (this.reuseRenderLists === true && cache.ready === true && this._flatMerged === false) level = this._reuseLevel(list, cache, scene, camera, view, pv);
     if (level >= 0) {
       this.lights.begin();
       const lights = cache.lights;
@@ -19045,6 +19288,41 @@ var WebGLRenderer = class {
   /** Traverse the scene into `list`; when the frame before was identical, also record what the list depends on. */
   _buildList(list, cache, scene, camera, view, pv) {
     const override = scene.overrideMaterial === void 0 ? null : scene.overrideMaterial;
+    const flat = this._flatGraph;
+    if (this._flatMerged === true) {
+      cache.ready = false;
+      cache.resort = false;
+      cache.cmdOpaque.invalidate();
+      cache.cmdTransparent.invalidate();
+      this._rec = null;
+      this._cameraLayerMask = camera.layers.mask;
+      let changed = false;
+      for (; ; ) {
+        list.init();
+        this.lights.begin();
+        this._renderOrderReset();
+        if (this._flatPass(flat, scene, camera, list, true, true, this.sortObjects) === true) break;
+        changed = changed || flat.changed;
+        flat.rebuild();
+        this.debug.flatUpdate.rebuilds++;
+      }
+      flat.changed = flat.changed || changed;
+      cache.hasSig = true;
+      cache.structure = epochs.structure;
+      cache.world = epochs.world;
+      cache.sortObjects = this.sortObjects;
+      cache.override = override;
+      cache.setCamera(camera, view, pv);
+      cache.flatChanged = flat.changed;
+      this.lights.end(this.shadowMap.enabled);
+      if (this.lights.version !== this._lastLightsVersion) {
+        this._lastLightsVersion = this.lights.version;
+        this._lightsEpoch++;
+        this._envVersion = this._lightsEpoch * 65536 + this._envKeyId;
+      }
+      this._resolvePrograms(list, scene);
+      return;
+    }
     const structure = epochs.structure, world = epochs.world;
     const record = this.reuseRenderLists === true && cache.hasSig && cache.structure === structure && cache.world === world && cache.sortObjects === this.sortObjects && cache.override === override;
     cache.ready = false;
@@ -19057,13 +19335,21 @@ var WebGLRenderer = class {
     cache.sortObjects = this.sortObjects;
     cache.override = override;
     cache.setCamera(camera, view, pv);
-    if (record) cache.resetDeps();
-    this._rec = record ? cache : null;
     this._cameraLayerMask = camera.layers.mask;
-    list.init();
-    this.lights.begin();
-    this._renderOrderReset();
-    this._projectObject(scene, camera, 0, this.sortObjects, list);
+    for (; ; ) {
+      if (record) cache.resetDeps();
+      this._rec = record ? cache : null;
+      list.init();
+      this.lights.begin();
+      this._renderOrderReset();
+      if (flat === null) {
+        this._projectObject(scene, camera, 0, this.sortObjects, list);
+        break;
+      }
+      if (this._flatPass(flat, scene, camera, list, false, true, this.sortObjects) === true) break;
+      flat.rebuild();
+      this.debug.flatUpdate.rebuilds++;
+    }
     this._rec = null;
     this.lights.end(this.shadowMap.enabled, this.shadowMap.type !== VSMShadowMap);
     if (this.lights.version !== this._lastLightsVersion) {
@@ -19125,7 +19411,23 @@ var WebGLRenderer = class {
     this._programCounter = savedStamps[2];
     if (!ok) {
       this.debug.listReuse.mismatches++;
-      console.error("jrs: reused render list differs from a fresh build (level " + level + ")");
+      let detail = `counts ${scratch.count}/${list.count} opaque ${scratch.opaqueCount}/${list.opaqueCount} transparent ${scratch.transparentCount}/${list.transparentCount}`;
+      for (let i = 0; i < Math.min(scratch.count, list.count); i++) {
+        const a = scratch.items[i], b = list.items[i];
+        if (a.object !== b.object || a.material !== b.material || a.geometry !== b.geometry || a.program !== b.program || a.group !== b.group) {
+          detail += ` | item ${i}: fresh ${a.object.name || a.object.type}#${a.object.id} mat ${a.material.id} prog ${a.program && a.program.id} vs reused ${b.object.name || b.object.type}#${b.object.id} mat ${b.material.id} prog ${b.program && b.program.id}`;
+          break;
+        }
+      }
+      for (let i = 0; i < Math.min(scratch.opaqueCount, list.opaqueCount); i++) if (scratch.opaqueSorted[i] !== list.opaqueSorted[i]) {
+        detail += ` | opaque order differs at ${i}: ${scratch.opaqueSorted[i]} vs ${list.opaqueSorted[i]}`;
+        break;
+      }
+      for (let i = 0; i < Math.min(scratch.transparentCount, list.transparentCount); i++) if (scratch.transparentSorted[i] !== list.transparentSorted[i]) {
+        detail += ` | transparent order differs at ${i}: ${scratch.transparentSorted[i]} vs ${list.transparentSorted[i]}`;
+        break;
+      }
+      console.error("jrs: reused render list differs from a fresh build (level " + level + "): " + detail);
     }
   }
   _renderOrderReset() {
@@ -19359,6 +19661,238 @@ var WebGLRenderer = class {
     const children = object.children;
     for (let i = 0, l = children.length; i < l; i++) this._projectObject(children[i], camera, groupOrder, sortObjects, list);
   }
+  /**
+   * One loop over the scene's flat graph (parent before child). With `doUpdate` it does what `scene.updateMatrixWorld()`
+   * does (recompose changed local matrices, remultiply world matrices whose local matrix, parent or `matrixWorldNeedsUpdate`
+   * changed, honouring `matrixAutoUpdate` / `matrixWorldAutoUpdate`, calling subclass overrides of `updateMatrixWorld`
+   * recursively for their subtree); with `project` it does what `_projectObject(scene)` does (visibility, layers, cull,
+   * lights, LOD, sprites, items) into `list`, in the same order as the recursive walk.
+   */
+  _flatPass(g, scene, camera, list, doUpdate, project, sortObjects) {
+    const objects = g.objects, parentIdx = g.parent, kind = g.kind, childCount = g.childCount, wv = g.wv, dirty = g.dirty, vis = g.vis, n = g.n;
+    const rec = this._rec, camMask = this._cameraLayerMask;
+    const ve = project ? camera.matrixWorldInverse.elements : null;
+    const zScratch = project ? list.zScratch : null;
+    const frustum = _frustum2, fplanes = frustum.flat, fv = frustum.version;
+    const worldBefore = epochs.world;
+    let bumps = 0, ok = true;
+    this._deferSkeletons = doUpdate && project;
+    for (let i = 0; i < n; i++) {
+      const o = objects[i];
+      if (o.children.length !== childCount[i]) {
+        ok = false;
+        g.valid = false;
+        break;
+      }
+      const k = kind[i], p = parentIdx[i];
+      let recomputed = false;
+      if (doUpdate && (k & K_INSUB) === 0) {
+        if ((k & K_CUSTOM) !== 0) {
+          o.updateMatrixWorld(p >= 0 && dirty[p] === 1);
+          dirty[i] = 0;
+        } else if (p < 0 && o.parent !== null) {
+          const before = o._worldVersion;
+          o.updateWorldMatrix(false, false);
+          dirty[i] = before !== o._worldVersion ? 1 : 0;
+        } else {
+          let need = o.matrixWorldNeedsUpdate === true;
+          if (o.matrixAutoUpdate === true) {
+            const pos = o.position, q = o.quaternion, sc = o.scale, d = o._snapData, so = o._snapOffset;
+            const px2 = pos.x, py2 = pos.y, pz2 = pos.z, x = q._x, y = q._y, z = q._z, w = q._w, sx = sc.x, sy = sc.y, sz = sc.z;
+            if (!(px2 === d[so] && py2 === d[so + 1] && pz2 === d[so + 2] && x === d[so + 3] && y === d[so + 4] && z === d[so + 5] && w === d[so + 6] && sx === d[so + 7] && sy === d[so + 8] && sz === d[so + 9])) {
+              d[so] = px2;
+              d[so + 1] = py2;
+              d[so + 2] = pz2;
+              d[so + 3] = x;
+              d[so + 4] = y;
+              d[so + 5] = z;
+              d[so + 6] = w;
+              d[so + 7] = sx;
+              d[so + 8] = sy;
+              d[so + 9] = sz;
+              const te = o._slabData, t = o._slabOffset;
+              const x2 = x + x, y2 = y + y, z2 = z + z;
+              const xx = x * x2, xy = x * y2, xz = x * z2;
+              const yy = y * y2, yz = y * z2, zz = z * z2;
+              const wx = w * x2, wy = w * y2, wz = w * z2;
+              te[t] = (1 - (yy + zz)) * sx;
+              te[t + 1] = (xy + wz) * sx;
+              te[t + 2] = (xz - wy) * sx;
+              te[t + 3] = 0;
+              te[t + 4] = (xy - wz) * sy;
+              te[t + 5] = (1 - (xx + zz)) * sy;
+              te[t + 6] = (yz + wx) * sy;
+              te[t + 7] = 0;
+              te[t + 8] = (xz + wy) * sz;
+              te[t + 9] = (yz - wx) * sz;
+              te[t + 10] = (1 - (xx + yy)) * sz;
+              te[t + 11] = 0;
+              te[t + 12] = px2;
+              te[t + 13] = py2;
+              te[t + 14] = pz2;
+              te[t + 15] = 1;
+              need = true;
+            }
+          }
+          let pw = -1;
+          if (p >= 0) {
+            pw = wv[p];
+            if (dirty[p] === 1 || pw !== o._parentWorldVersion) need = true;
+          }
+          if (need) {
+            if (o.matrixWorldAutoUpdate === true) {
+              const s = o._slabData, lo = o._slabOffset, wo = lo + 16;
+              if (p < 0) {
+                for (let j = 0; j < 16; j++) s[wo + j] = s[lo + j];
+              } else {
+                const pobj = objects[p], ae = pobj._slabData, ao = pobj._slabOffset + 16;
+                const a11 = ae[ao], a12 = ae[ao + 4], a13 = ae[ao + 8], a14 = ae[ao + 12];
+                const a21 = ae[ao + 1], a22 = ae[ao + 5], a23 = ae[ao + 9], a24 = ae[ao + 13];
+                const a31 = ae[ao + 2], a32 = ae[ao + 6], a33 = ae[ao + 10], a34 = ae[ao + 14];
+                const a41 = ae[ao + 3], a42 = ae[ao + 7], a43 = ae[ao + 11], a44 = ae[ao + 15];
+                const b11 = s[lo], b12 = s[lo + 4], b13 = s[lo + 8], b14 = s[lo + 12];
+                const b21 = s[lo + 1], b22 = s[lo + 5], b23 = s[lo + 9], b24 = s[lo + 13];
+                const b31 = s[lo + 2], b32 = s[lo + 6], b33 = s[lo + 10], b34 = s[lo + 14];
+                const b41 = s[lo + 3], b42 = s[lo + 7], b43 = s[lo + 11], b44 = s[lo + 15];
+                s[wo] = a11 * b11 + a12 * b21 + a13 * b31 + a14 * b41;
+                s[wo + 4] = a11 * b12 + a12 * b22 + a13 * b32 + a14 * b42;
+                s[wo + 8] = a11 * b13 + a12 * b23 + a13 * b33 + a14 * b43;
+                s[wo + 12] = a11 * b14 + a12 * b24 + a13 * b34 + a14 * b44;
+                s[wo + 1] = a21 * b11 + a22 * b21 + a23 * b31 + a24 * b41;
+                s[wo + 5] = a21 * b12 + a22 * b22 + a23 * b32 + a24 * b42;
+                s[wo + 9] = a21 * b13 + a22 * b23 + a23 * b33 + a24 * b43;
+                s[wo + 13] = a21 * b14 + a22 * b24 + a23 * b34 + a24 * b44;
+                s[wo + 2] = a31 * b11 + a32 * b21 + a33 * b31 + a34 * b41;
+                s[wo + 6] = a31 * b12 + a32 * b22 + a33 * b32 + a34 * b42;
+                s[wo + 10] = a31 * b13 + a32 * b23 + a33 * b33 + a34 * b43;
+                s[wo + 14] = a31 * b14 + a32 * b24 + a33 * b34 + a34 * b44;
+                s[wo + 3] = a41 * b11 + a42 * b21 + a43 * b31 + a44 * b41;
+                s[wo + 7] = a41 * b12 + a42 * b22 + a43 * b32 + a44 * b42;
+                s[wo + 11] = a41 * b13 + a42 * b23 + a43 * b33 + a44 * b43;
+                s[wo + 15] = a41 * b14 + a42 * b24 + a43 * b34 + a44 * b44;
+              }
+              o._worldVersion++;
+              if ((k & K_NOCOUNT) === 0) bumps++;
+              recomputed = true;
+            }
+            if (p >= 0) o._parentWorldVersion = pw;
+            o.matrixWorldNeedsUpdate = false;
+            dirty[i] = 1;
+          } else {
+            dirty[i] = 0;
+          }
+          if ((k & K_POST) !== 0) o._flatPostUpdate();
+        }
+      }
+      wv[i] = o._worldVersion;
+      if (project === false) continue;
+      let v = o._visible === false ? 0 : 1;
+      if (p >= 0) v &= vis[p];
+      vis[i] = v;
+      if (v === 0 || (o.layers.mask & camMask) === 0) continue;
+      if ((k & K_RENDERABLE) !== 0) {
+        const geometry = o.geometry;
+        const material = o.material;
+        const s = o._slabData, lo = o._slabOffset;
+        let inside;
+        if (o._frustumCulled === false) inside = true;
+        else if (recomputed === true) {
+          let bs = o.boundingSphere;
+          if (bs === void 0) {
+            bs = geometry.boundingSphere;
+            if (bs === null) {
+              geometry.computeBoundingSphere();
+              bs = geometry.boundingSphere;
+            }
+          } else if (bs === null) {
+            o.computeBoundingSphere();
+            bs = o.boundingSphere;
+          }
+          const c = bs.center, cx = c.x, cy = c.y, cz = c.z, r = bs.radius;
+          const e = lo + 16;
+          const e0 = s[e], e1 = s[e + 1], e2 = s[e + 2], e4 = s[e + 4], e5 = s[e + 5], e6 = s[e + 6], e8 = s[e + 8], e9 = s[e + 9], e10 = s[e + 10];
+          s[lo + 41] = e0 * cx + e4 * cy + e8 * cz + s[e + 12];
+          s[lo + 42] = e1 * cx + e5 * cy + e9 * cz + s[e + 13];
+          s[lo + 43] = e2 * cx + e6 * cy + e10 * cz + s[e + 14];
+          const sx = e0 * e0 + e1 * e1 + e2 * e2, sy = e4 * e4 + e5 * e5 + e6 * e6, sz = e8 * e8 + e9 * e9 + e10 * e10;
+          s[lo + 44] = r * Math.sqrt(sx > sy ? sx > sz ? sx : sz : sy > sz ? sy : sz);
+          const d = o._snapData, q = o._snapOffset + 10;
+          d[q] = r;
+          d[q + 1] = cx;
+          d[q + 2] = cy;
+          d[q + 3] = cz;
+          o._cullVersion = o._worldVersion;
+          o._cullSphere = bs;
+          o._cullFV1 = -1;
+          const x = s[lo + 41], y = s[lo + 42], z = s[lo + 43], negRadius = -s[lo + 44];
+          inside = !(fplanes[0] * x + fplanes[1] * y + fplanes[2] * z + fplanes[3] < negRadius || fplanes[4] * x + fplanes[5] * y + fplanes[6] * z + fplanes[7] < negRadius || fplanes[8] * x + fplanes[9] * y + fplanes[10] * z + fplanes[11] < negRadius || fplanes[12] * x + fplanes[13] * y + fplanes[14] * z + fplanes[15] < negRadius || fplanes[16] * x + fplanes[17] * y + fplanes[18] * z + fplanes[19] < negRadius || fplanes[20] * x + fplanes[21] * y + fplanes[22] * z + fplanes[23] < negRadius);
+          o._cullFV0 = fv;
+          o._cullVis0 = inside;
+        } else inside = this._cullTest(o, geometry, frustum, false);
+        const first = list.count;
+        if (rec !== null) {
+          rec.regGeometry(geometry);
+          if (o.isInstancedMesh) rec.regInstanced(o);
+          if (Array.isArray(material)) rec.reusable = false;
+        }
+        if (inside) {
+          if (sortObjects) this._itemDepth(o, ve, zScratch);
+          else zScratch[0] = 0;
+          if (o._normalVersion !== o._worldVersion) {
+            computeNormalMatrix(s, lo);
+            o._normalVersion = o._worldVersion;
+          }
+          if (Array.isArray(material)) {
+            const groups = geometry.groups;
+            for (let j = 0, l = groups.length; j < l; j++) {
+              const group = groups[j];
+              const groupMaterial = material[group.materialIndex];
+              if (groupMaterial && groupMaterial.visible) this._pushItem(list, o, geometry, groupMaterial, group, false);
+            }
+          } else {
+            if (rec !== null) rec.regMaterial(material);
+            if (material.visible) this._pushItem(list, o, geometry, material, null, false);
+          }
+        }
+        if (rec !== null) rec.addCandidate(o, inside, list.count > first ? first : -1);
+      } else if ((k & K_LIGHT) !== 0) {
+        if (rec !== null) rec.lights.push(o);
+        this.lights.push(o);
+      } else if ((k & K_LOD) !== 0) {
+        if (rec !== null) rec.reusable = false;
+        if (o.autoUpdate === true) o.update(camera);
+      } else if ((k & K_SPRITE) !== 0) {
+        const inside = !o.frustumCulled || frustum.intersectsSprite(o);
+        const first = list.count;
+        if (inside) {
+          const material = o.material;
+          if (rec !== null) rec.regMaterial(material);
+          if (material.visible) {
+            this._itemDepth(o, ve, zScratch);
+            this._pushItem(list, o, o.geometry, material, null, false);
+          }
+        }
+        if (rec !== null) rec.addCandidate(o, inside, list.count > first ? first : -1);
+      }
+    }
+    if (doUpdate) {
+      if (bumps > 0) epochs.world += bumps;
+      g.changed = epochs.world !== worldBefore;
+    }
+    if (this._deferSkeletons === true) {
+      this._deferSkeletons = false;
+      const pending = this._skinnedPending, frame = this._frameId;
+      for (let i = 0; i < pending.length; i++) {
+        const sk = pending[i];
+        if (sk.frame !== frame) {
+          sk.update();
+          sk.frame = frame;
+        }
+      }
+      pending.length = 0;
+    }
+    return ok;
+  }
   _pushItem(list, object, geometry, material, group, shadowPass) {
     if (shadowPass === false) {
       const override = this._currentScene !== null ? this._currentScene.overrideMaterial : null;
@@ -19368,8 +19902,11 @@ var WebGLRenderer = class {
     if (object.isSkinnedMesh === true) {
       const skeleton = object.skeleton;
       if (skeleton !== void 0 && skeleton.frame !== this._frameId) {
-        skeleton.update();
-        skeleton.frame = this._frameId;
+        if (this._deferSkeletons === true) this._skinnedPending.push(skeleton);
+        else {
+          skeleton.update();
+          skeleton.frame = this._frameId;
+        }
       }
     }
     this._noteRenderOrder(object.renderOrder);
@@ -22716,6 +23253,8 @@ var SkinnedMesh = class extends Mesh {
     return target.applyMatrix4(this.bindMatrixInverse);
   }
 };
+SkinnedMesh.prototype._flatUMW = SkinnedMesh.prototype.updateMatrixWorld;
+SkinnedMesh.prototype._flatPostUpdate = SkinnedMesh.prototype._updateBindMatrixInverse;
 
 // src/objects/Bone.js
 var Bone = class extends Object3D {
@@ -26427,6 +26966,8 @@ var Camera = class extends Object3D {
     return new this.constructor().copy(this);
   }
 };
+Camera.prototype._flatUMW = Camera.prototype.updateMatrixWorld;
+Camera.prototype._flatPostUpdate = Camera.prototype._updateInverse;
 
 // src/cameras/PerspectiveCamera.js
 var _v32 = /* @__PURE__ */ new Vector3();
