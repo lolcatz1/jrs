@@ -19,12 +19,21 @@ const { server, port } = await startServer();
 const browser = await launchBrowser();
 
 async function freshPage() {
-	const page = await browser.newPage();
-	page.on('pageerror', (e) => console.log('[pageerror]', e.message));
-	page.on('console', (m) => { if (m.type() === 'error') console.log('[browser]', m.text()); });
-	await page.goto(`http://127.0.0.1:${port}/bench/index.html`);
-	await page.waitForFunction(() => window.ready === true, null, { timeout: 60000 });
-	return page;
+	// headless Chromium occasionally needs more than the default 30 s to load the module graph: retry instead of aborting a long run
+	for (let attempt = 1; ; attempt++) {
+		const page = await browser.newPage();
+		page.on('pageerror', (e) => console.log('[pageerror]', e.message));
+		page.on('console', (m) => { if (m.type() === 'error') console.log('[browser]', m.text()); });
+		try {
+			await page.goto(`http://127.0.0.1:${port}/bench/index.html`, { timeout: 90000 });
+			await page.waitForFunction(() => window.ready === true, null, { timeout: 60000 });
+			return page;
+		} catch (e) {
+			await page.close().catch(() => {});
+			if (attempt >= 3) throw e;
+			console.log(`[retry] page load failed (${e.name}), attempt ${attempt}`);
+		}
+	}
 }
 
 const results = [];
