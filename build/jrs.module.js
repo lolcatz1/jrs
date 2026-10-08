@@ -5207,6 +5207,7 @@ var WebGLState = class {
     this.currentViewport = new Vector4(-1, -1, -1, -1);
     this.currentScissor = new Vector4(-1, -1, -1, -1);
     this.currentScissorTest = null;
+    this.currentMaterialWord = -1;
     this.currentTextureSlot = null;
     this.currentBoundTextures = [];
     this.currentFramebuffer = null;
@@ -5400,6 +5401,13 @@ var WebGLState = class {
   }
   setMaterial(material, frontFaceCW, side = material.side) {
     const gl = this.gl;
+    let word = -1;
+    const blending = material.blending, depthFunc = material.depthFunc;
+    if (blending !== CustomBlending && material.polygonOffset !== true && material.stencilWrite !== true && depthFunc >= 0 && depthFunc < 8 && blending >= 0 && blending < 6) {
+      const effBlending = blending === NormalBlending && material.transparent === false ? NoBlending : blending;
+      word = side & 3 | (frontFaceCW ? 4 : 0) | effBlending << 3 | (material.premultipliedAlpha ? 64 : 0) | depthFunc << 7 | (material.depthTest ? 1024 : 0) | (material.depthWrite ? 2048 : 0) | (material.colorWrite ? 4096 : 0) | (material.alphaToCoverage === true ? 8192 : 0);
+      if (word === this.currentMaterialWord) return;
+    }
     side === DoubleSide ? this.disable(gl.CULL_FACE) : this.enable(gl.CULL_FACE);
     let flipSided = side === BackSide;
     if (frontFaceCW) flipSided = !flipSided;
@@ -5418,6 +5426,7 @@ var WebGLState = class {
       this.setStencilFunc(material.stencilFunc, material.stencilRef, material.stencilFuncMask);
       this.setStencilOp(material.stencilFail, material.stencilZFail, material.stencilZPass);
     }
+    this.currentMaterialWord = word;
   }
   setStencilTest(stencilTest) {
     if (this.currentStencilTest === stencilTest) return;
@@ -5426,6 +5435,7 @@ var WebGLState = class {
     this.currentStencilTest = stencilTest;
   }
   setStencilMask(mask) {
+    this.currentMaterialWord = -1;
     if (this.currentStencilMask !== mask) {
       this.gl.stencilMask(mask);
       this.currentStencilMask = mask;
@@ -5448,6 +5458,7 @@ var WebGLState = class {
     }
   }
   setFlipSided(flipSided) {
+    this.currentMaterialWord = -1;
     if (this.currentFlipSided !== flipSided) {
       const gl = this.gl;
       if (flipSided) gl.frontFace(gl.CW);
@@ -5489,12 +5500,14 @@ var WebGLState = class {
     }
   }
   setDepthTest(depthTest) {
+    this.currentMaterialWord = -1;
     if (this.currentDepthTest === depthTest) return;
     if (depthTest) this.enable(this.gl.DEPTH_TEST);
     else this.disable(this.gl.DEPTH_TEST);
     this.currentDepthTest = depthTest;
   }
   setDepthMask(depthMask) {
+    this.currentMaterialWord = -1;
     if (this.currentDepthMask !== depthMask) {
       this.gl.depthMask(depthMask);
       this.currentDepthMask = depthMask;
@@ -5534,6 +5547,7 @@ var WebGLState = class {
     this.currentDepthFunc = depthFunc;
   }
   setColorMask(colorMask) {
+    this.currentMaterialWord = -1;
     if (this.currentColorMask !== colorMask) {
       this.gl.colorMask(colorMask, colorMask, colorMask, colorMask);
       this.currentColorMask = colorMask;
@@ -5637,6 +5651,7 @@ var WebGLState = class {
     gl.lineWidth(1);
     gl.bindVertexArray(null);
     this.enabledCapabilities = {};
+    this.currentMaterialWord = -1;
     this.currentTextureSlot = null;
     this.currentBoundTextures = [];
     this.currentProgram = null;
@@ -13329,7 +13344,9 @@ mat3 fetchObjectNormalMatrix() {
 	return mat3( texelFetch( objectMatrices, objectTexel + ivec2( 4, 0 ), 0 ).xyz, texelFetch( objectMatrices, objectTexel + ivec2( 5, 0 ), 0 ).xyz, texelFetch( objectMatrices, objectTexel + ivec2( 6, 0 ), 0 ).xyz );
 }
 #endif
+#ifndef SHADOW_LEAN
 out vec3 vWorldPosition;
+#endif
 #ifdef USE_NORMAL
 out vec3 vNormal;
 #endif
@@ -13379,7 +13396,9 @@ void main() {
 		vec4 worldPosition = model * vec4( position, 1.0 );
 		vec4 mvPosition = viewMatrix * worldPosition;
 	#endif
+	#ifndef SHADOW_LEAN
 	vWorldPosition = worldPosition.xyz;
+	#endif
 	#ifdef USE_NORMAL
 		#if defined( USE_OBJECT_TEXTURE )
 		vNormal = normalize( fetchObjectNormalMatrix() * normal );
@@ -13907,6 +13926,7 @@ function buildBuiltinShader(p) {
       d("IS_SPRITE");
       break;
   }
+  if (p.leanShadow) d("SHADOW_LEAN");
   if (p.map) d("USE_MAP");
   if (p.alphaMap) d("USE_ALPHAMAP");
   if (p.emissiveMap) d("USE_EMISSIVEMAP");
@@ -13938,6 +13958,9 @@ function buildBuiltinShader(p) {
   const prefix = "#version 300 es\n" + defines.join("\n") + "\n";
   const vsExtra = (p.multiDraw ? "#extension GL_ANGLE_multi_draw : require\n" : "") + (p.materialType === MATERIAL_SPRITE ? spriteUniform : "");
   const vs = prefix + vsExtra + vertexShader;
+  if (p.leanShadow) {
+    return { vertexShader: vs, fragmentShader: "#version 300 es\nprecision mediump float;\nlayout(location = 0) out vec4 fragColor;\nvoid main() { fragColor = vec4( 0.0 ); }\n" };
+  }
   let fs = fragmentShader;
   const helpers = shadowFactorFunctions(p.numDirShadows | 0, p.numSpotShadows | 0);
   if (helpers !== "") fs = fs.replace("#ifdef USE_NORMALMAP\nvec3 perturbNormal2Arb", helpers + "#ifdef USE_NORMALMAP\nvec3 perturbNormal2Arb");
@@ -14316,10 +14339,11 @@ var WebGLPrograms = class {
     const isLit = materialType === MATERIAL_LAMBERT || materialType === MATERIAL_PHONG || materialType === MATERIAL_STANDARD;
     const hasUv = attributes.uv !== void 0;
     const hasUv1 = attributes.uv1 !== void 0;
-    const vertexColors = material.vertexColors === true && attributes.color !== void 0;
+    const leanShadow = variant.shadowPass === true && !(material.alphaTest > 0);
+    const vertexColors = !leanShadow && material.vertexColors === true && attributes.color !== void 0;
     const fog = scene.fog !== null && material.fog === true && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH;
-    const map = !!material.map;
-    const alphaMap = !!material.alphaMap;
+    const map = !leanShadow && !!material.map;
+    const alphaMap = !leanShadow && !!material.alphaMap;
     const emissiveMap = isLit && !!material.emissiveMap;
     const normalMap = isLit && !!material.normalMap;
     const roughnessMap = materialType === MATERIAL_STANDARD && !!material.roughnessMap;
@@ -14353,7 +14377,8 @@ var WebGLPrograms = class {
       objectTexture: variant.objectTexture === true || variant.multiDraw === true,
       multiDraw: variant.multiDraw === true,
       flatShading: isLit && material.flatShading === true,
-      doubleSided: material.side === DoubleSide,
+      doubleSided: !leanShadow && material.side === DoubleSide,
+      leanShadow,
       fog,
       fogExp2: fog && scene.fog.isFogExp2 === true,
       alphaTest: material.alphaTest > 0,
@@ -14396,6 +14421,7 @@ var WebGLPrograms = class {
     key = key * 8 + numSpotShadows;
     key = key * 2 + (p.multiDraw ? 1 : 0);
     key = key * 2 + (p.objectTexture ? 1 : 0);
+    key = key * 2 + (leanShadow ? 1 : 0);
     p.key = key;
     return p;
   }
@@ -15878,6 +15904,9 @@ var WebGLRenderer = class {
     }, getFoveation: () => void 0, setFoveation: () => {
     }, hasDepthSensing: () => false, getDepthSensingMesh: () => null };
     this._frameData = new Float32Array(FRAME_BLOCK_SIZE / 4);
+    this._frameUploaded = new Float32Array(FRAME_BLOCK_SIZE / 4);
+    this._lightsUploaded = new Float32Array(LIGHTS_BLOCK_SIZE / 4);
+    this._blocksValid = false;
     this._frameBuffer = gl.createBuffer();
     gl.bindBuffer(gl.UNIFORM_BUFFER, this._frameBuffer);
     gl.bufferData(gl.UNIFORM_BUFFER, FRAME_BLOCK_SIZE, gl.DYNAMIC_DRAW);
@@ -16076,6 +16105,7 @@ var WebGLRenderer = class {
   }
   _onContextRestore() {
     this._isContextLost = false;
+    this._blocksValid = false;
     this.state.reset();
     this.programs.dispose();
     this._materialProperties = /* @__PURE__ */ new WeakMap();
@@ -16209,10 +16239,14 @@ var WebGLRenderer = class {
     }
     this.shadowMap.render(this.lights, scene, camera);
     this.lights.fill();
-    gl.bindBuffer(gl.UNIFORM_BUFFER, this._lightsBuffer);
-    gl.bufferSubData(gl.UNIFORM_BUFFER, 0, this.lights.data);
-    this.state.currentUniformBuffer = this._lightsBuffer;
+    if (!this._blocksValid || !sameFloats(this.lights.data, this._lightsUploaded)) {
+      this._lightsUploaded.set(this.lights.data);
+      gl.bindBuffer(gl.UNIFORM_BUFFER, this._lightsBuffer);
+      gl.bufferSubData(gl.UNIFORM_BUFFER, 0, this.lights.data);
+      this.state.currentUniformBuffer = this._lightsBuffer;
+    }
     this._uploadFrameBlock(camera, scene);
+    this._blocksValid = true;
     this.shadowMap.bindShadowMaps(this.lights);
     list.finish(this.sortObjects, this._rankOfRenderOrder);
     const background = scene.background;
@@ -16319,6 +16353,8 @@ var WebGLRenderer = class {
     d[61] = v.y;
     d[62] = v.z;
     d[63] = v.w;
+    if (this._blocksValid && sameFloats(d, this._frameUploaded)) return;
+    this._frameUploaded.set(d);
     gl.bindBuffer(gl.UNIFORM_BUFFER, this._frameBuffer);
     gl.bufferSubData(gl.UNIFORM_BUFFER, 0, d);
     this.state.currentUniformBuffer = this._frameBuffer;
@@ -17095,6 +17131,34 @@ function shadowSideOf(material) {
 }
 var MAP_KEYS = ["map", "alphaMap", "normalMap", "emissiveMap", "roughnessMap", "metalnessMap", "aoMap", "specularMap"];
 var IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+var U_FLOAT = 5126;
+var U_INT = 5124;
+var U_BOOL = 35670;
+var U_UNSIGNED_INT = 5125;
+var U_FLOAT_VEC2 = 35664;
+var U_FLOAT_VEC3 = 35665;
+var U_FLOAT_VEC4 = 35666;
+var U_INT_VEC2 = 35667;
+var U_INT_VEC3 = 35668;
+var U_INT_VEC4 = 35669;
+var U_BOOL_VEC2 = 35671;
+var U_BOOL_VEC3 = 35672;
+var U_BOOL_VEC4 = 35673;
+var U_FLOAT_MAT2 = 35674;
+var U_FLOAT_MAT3 = 35675;
+var U_FLOAT_MAT4 = 35676;
+var U_SAMPLER_2D = 35678;
+var U_SAMPLER_3D = 35679;
+var U_SAMPLER_CUBE = 35680;
+var U_SAMPLER_2D_SHADOW = 35682;
+var U_SAMPLER_2D_ARRAY = 36289;
+var U_SAMPLER_CUBE_SHADOW = 36293;
+var U_INT_SAMPLER_2D = 36298;
+var U_INT_SAMPLER_3D = 36299;
+var U_INT_SAMPLER_2D_ARRAY = 36303;
+var U_UNSIGNED_INT_SAMPLER_2D = 36306;
+var U_UNSIGNED_INT_SAMPLER_3D = 36307;
+var U_UNSIGNED_INT_SAMPLER_2D_ARRAY = 36311;
 function isLeafValue(v) {
   return v.isVector2 || v.isVector3 || v.isVector4 || v.isColor || v.isMatrix3 || v.isMatrix4 || v.isQuaternion || v.isTexture || ArrayBuffer.isView(v);
 }
@@ -17120,10 +17184,14 @@ function bindTextureUniform(renderer, u, value, unit) {
     renderer.textures.bindEmpty(u, unit);
     return;
   }
-  if (u.type === gl.SAMPLER_3D) renderer.textures.setTexture3D(value, unit);
-  else if (u.type === gl.SAMPLER_2D_ARRAY) renderer.textures.setTexture2DArray(value, unit);
-  else if (u.type === gl.SAMPLER_CUBE || u.type === gl.SAMPLER_CUBE_SHADOW) renderer.textures.setTextureCube(value, unit);
+  if (u.type === U_SAMPLER_3D) renderer.textures.setTexture3D(value, unit);
+  else if (u.type === U_SAMPLER_2D_ARRAY) renderer.textures.setTexture2DArray(value, unit);
+  else if (u.type === U_SAMPLER_CUBE || u.type === U_SAMPLER_CUBE_SHADOW) renderer.textures.setTextureCube(value, unit);
   else renderer.textures.setTexture2D(value, unit);
+}
+function sameFloats(a, b) {
+  for (let i = 0, n = a.length; i < n; i++) if (a[i] !== b[i]) return false;
+  return true;
 }
 function cacheVec(u, a, b, c, d) {
   let k = u.cache;
@@ -17185,7 +17253,7 @@ function setUniformValueImpl(gl, renderer, u, value) {
   const loc = u.location;
   if (value === null || value === void 0) return;
   switch (u.type) {
-    case gl.FLOAT:
+    case U_FLOAT:
       if (u.size > 1 || Array.isArray(value) || ArrayBuffer.isView(value)) {
         if (!cacheArray(u, value, value.length)) {
           traceCounter++;
@@ -17199,8 +17267,8 @@ function setUniformValueImpl(gl, renderer, u, value) {
         }
       }
       break;
-    case gl.INT:
-    case gl.BOOL:
+    case U_INT:
+    case U_BOOL:
       if (u.size > 1 || Array.isArray(value) || ArrayBuffer.isView(value)) {
         if (!cacheArray(u, value, value.length)) {
           traceCounter++;
@@ -17217,7 +17285,7 @@ function setUniformValueImpl(gl, renderer, u, value) {
         }
       }
       break;
-    case gl.UNSIGNED_INT:
+    case U_UNSIGNED_INT:
       if (u.size > 1) {
         traceCounter++;
         gl.uniform1uiv(loc, value);
@@ -17229,7 +17297,7 @@ function setUniformValueImpl(gl, renderer, u, value) {
         }
       }
       break;
-    case gl.FLOAT_VEC2:
+    case U_FLOAT_VEC2:
       if (value.isVector2) {
         if (!cacheVec(u, value.x, value.y, 0, 0)) {
           traceCounter++;
@@ -17243,7 +17311,7 @@ function setUniformValueImpl(gl, renderer, u, value) {
         }
       }
       break;
-    case gl.FLOAT_VEC3:
+    case U_FLOAT_VEC3:
       if (value.isVector3) {
         if (!cacheVec(u, value.x, value.y, value.z, 0)) {
           traceCounter++;
@@ -17262,7 +17330,7 @@ function setUniformValueImpl(gl, renderer, u, value) {
         }
       }
       break;
-    case gl.FLOAT_VEC4:
+    case U_FLOAT_VEC4:
       if (value.isVector4 || value.isQuaternion) {
         if (!cacheVec(u, value.x, value.y, value.z, value.w)) {
           traceCounter++;
@@ -17276,8 +17344,8 @@ function setUniformValueImpl(gl, renderer, u, value) {
         }
       }
       break;
-    case gl.INT_VEC2:
-    case gl.BOOL_VEC2:
+    case U_INT_VEC2:
+    case U_BOOL_VEC2:
       if (value.isVector2) {
         traceCounter++;
         gl.uniform2i(loc, value.x, value.y);
@@ -17286,8 +17354,8 @@ function setUniformValueImpl(gl, renderer, u, value) {
         gl.uniform2iv(loc, value);
       }
       break;
-    case gl.INT_VEC3:
-    case gl.BOOL_VEC3:
+    case U_INT_VEC3:
+    case U_BOOL_VEC3:
       if (value.isVector3) {
         traceCounter++;
         gl.uniform3i(loc, value.x, value.y, value.z);
@@ -17296,8 +17364,8 @@ function setUniformValueImpl(gl, renderer, u, value) {
         gl.uniform3iv(loc, value);
       }
       break;
-    case gl.INT_VEC4:
-    case gl.BOOL_VEC4:
+    case U_INT_VEC4:
+    case U_BOOL_VEC4:
       if (value.isVector4) {
         traceCounter++;
         gl.uniform4i(loc, value.x, value.y, value.z, value.w);
@@ -17306,7 +17374,7 @@ function setUniformValueImpl(gl, renderer, u, value) {
         gl.uniform4iv(loc, value);
       }
       break;
-    case gl.FLOAT_MAT2: {
+    case U_FLOAT_MAT2: {
       const a = value.elements || flattenArray(value, 4);
       if (!cacheArray(u, a, a.length)) {
         traceCounter++;
@@ -17314,7 +17382,7 @@ function setUniformValueImpl(gl, renderer, u, value) {
       }
       break;
     }
-    case gl.FLOAT_MAT3: {
+    case U_FLOAT_MAT3: {
       const a = value.elements || flattenArray(value, 9);
       if (!cacheArray(u, a, a.length)) {
         traceCounter++;
@@ -17322,7 +17390,7 @@ function setUniformValueImpl(gl, renderer, u, value) {
       }
       break;
     }
-    case gl.FLOAT_MAT4: {
+    case U_FLOAT_MAT4: {
       const a = value.elements || flattenArray(value, 16);
       if (!cacheArray(u, a, a.length)) {
         traceCounter++;
@@ -17330,18 +17398,18 @@ function setUniformValueImpl(gl, renderer, u, value) {
       }
       break;
     }
-    case gl.SAMPLER_2D:
-    case gl.SAMPLER_2D_SHADOW:
-    case gl.SAMPLER_3D:
-    case gl.SAMPLER_2D_ARRAY:
-    case gl.SAMPLER_CUBE:
-    case gl.SAMPLER_CUBE_SHADOW:
-    case gl.INT_SAMPLER_2D:
-    case gl.UNSIGNED_INT_SAMPLER_2D:
-    case gl.INT_SAMPLER_3D:
-    case gl.UNSIGNED_INT_SAMPLER_3D:
-    case gl.INT_SAMPLER_2D_ARRAY:
-    case gl.UNSIGNED_INT_SAMPLER_2D_ARRAY:
+    case U_SAMPLER_2D:
+    case U_SAMPLER_2D_SHADOW:
+    case U_SAMPLER_3D:
+    case U_SAMPLER_2D_ARRAY:
+    case U_SAMPLER_CUBE:
+    case U_SAMPLER_CUBE_SHADOW:
+    case U_INT_SAMPLER_2D:
+    case U_UNSIGNED_INT_SAMPLER_2D:
+    case U_INT_SAMPLER_3D:
+    case U_UNSIGNED_INT_SAMPLER_3D:
+    case U_INT_SAMPLER_2D_ARRAY:
+    case U_UNSIGNED_INT_SAMPLER_2D_ARRAY:
       u.boundStamp = renderer._samplerStamp;
       if (Array.isArray(value)) {
         for (let i = 0; i < u.size; i++) {
