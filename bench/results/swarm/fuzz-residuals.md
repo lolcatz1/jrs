@@ -7,7 +7,13 @@ real renderer differences on the way, implemented the double-precision modelView
 report asked for, and swept seeds 1-600.
 
 Branch: `swarm/fuzz-residuals` = integration tip `6858f51` + `origin/swarm/parity-fuzzer` (merged here,
-four conflict hunks resolved; see the merge commit) + the commits below.
+four conflict hunks resolved; see the merge commit) + the commits below, then the integration tip merged
+twice more (round 4 `7cb3b47`, round 5 `03b5251`: flat scene update, ShaderMaterial batching, environment
+maps, texture formats). Round 5 and this branch both grew the material record: the merged record is 28
+vec4 (the env-map fields, then the 16 vec4 of per-map transforms); round 5 had also made the same
+render-target tone-mapping and OPAQUE fixes as fixes 1-2 here, so those hunks took the integration's
+text. One merge slip (a lost `#endif` between the per-map varyings and `vHighPrecisionZW`) broke every
+program and was caught by conformance / the fuzzer before the push; see the merge-fix commit.
 
 ## Root causes fixed (one commit each, seeds in the message)
 
@@ -180,8 +186,8 @@ also hide the next real one-draw bug of that size.
 
 ## Validation
 
-On the final commit (merge of integration round 4 + fixes 1-5), this container (headless Chromium /
-SwiftShader):
+On the commit before the round-5 merge (integration round 4 + fixes 1-5), this container (headless
+Chromium / SwiftShader):
 
 * `npm test`: 139 / 139.
 * `node bench/conformance.mjs`: 35 / 35 (`node bench/conformance.mjs` of the integration tip: 35 / 35).
@@ -234,6 +240,13 @@ SwiftShader):
     per-map-transform check (many-materials, 5000 materials, three interleaved rounds: without 0.512 /
     0.480 / 0.512 ms best, with 0.484 / 0.496 / 0.504 ms).
 
+After the round-5 merge (final pushed state): `npm test` 168 / 168, `node bench/conformance.mjs` 44 / 44, smoke and addons pass, seeds 23, 27, 28, 93, 142,
+145, 160, 192 pass, `node bench/fuzz.mjs --seeds=100 --continue` 96 pass / 4 failing (63 85: edge pixels; 12 78:
+edge-class seeds that also fail on the integration tip `03b5251` itself, with more pixels there, 39 / 20 vs
+25 / 14 here), `node bench/run.mjs --compare --frames=60`: all 18 scenes (now including pbr-envmap) at or
+below the round-5 baseline's mean / max diff (skinned-crowd 2 -> 1); medians within this container's
+noise band against the baseline file (three.js's own medians move 10-30% between the two runs).
+
 `bench/results/latest.json` is left as the integration tip's file (the numbers from this container
 would only record the slower machine); `build/` is not committed.
 
@@ -261,6 +274,13 @@ would only record the slower machine); `build/` is not committed.
   app sets `matrix` by hand with `matrixAutoUpdate = true` and expects `lookAt` to use the matrix's
   translation, it gets the position instead (three.js uses the world matrix, which for such an object
   three computes from the position anyway, so this follows three.js).
+* The material record is now 28 vec4 (448 bytes; 512 with a 256-byte UBO alignment) instead of the 8 vec4
+  this night started with (round 5 added 4 for environment maps, fix 5 added 16). The material-array
+  batching window (`MAX_UNIFORM_BLOCK_SIZE / stride`) shrinks accordingly: with 65536 / 512 it is 128
+  records (was 256, capped), with the 16384 minimum it is 32. A material-array batch spanning more
+  distinct materials than the window splits into more draws; `many-materials` (5000 materials) still
+  renders in 0.7 ms here. If that window matters more than exact per-map transforms, the transforms
+  could move to a 2D float texture fetched in the vertex shader (no record growth).
 * The merge with the integration tip resolved three hunks (`V_SIDE` comment, `_itemDepth` comment and
   bounding-sphere branch, `WebGLPrograms` imports / tone-mapping line); the integration's version was
   taken for the renderer hunks, this branch's for the tone-mapping fix.
