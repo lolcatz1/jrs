@@ -284,7 +284,7 @@ class WebGLRenderer {
 		this.setAnimationLoop(null);
 	}
 	_onContextLost(event) { event.preventDefault(); this._isContextLost = true; }
-	_onContextRestore() { this._isContextLost = false; this.state.reset(); this.programs.dispose(); this._materialProperties = new WeakMap(); }
+	_onContextRestore() { this._isContextLost = false; this.state.reset(); this.programs.dispose(); this._materialProperties = new WeakMap(); this.shadowMap._epoch++; }
 	setAnimationLoop(callback) {
 		this._animationLoop = callback;
 		if (this._requestId !== null) { cancelAnimationFrame(this._requestId); this._requestId = null; }
@@ -481,7 +481,7 @@ class WebGLRenderer {
 	// ------------------------------------------------------------------ projection / culling
 
 	/** World-space bounding sphere test against `frustum`, with the sphere cached in slab memory per world version. */
-	_cullTest(object, geometry, frustum) {
+	_cullTest(object, geometry, frustum, shadowPass) {
 		let bs;
 		if (object.isInstancedMesh) {
 			if (object.boundingSphere === null) object.computeBoundingSphere();
@@ -503,8 +503,20 @@ class WebGLRenderer {
 			s[o + 44] = bs.radius * Math.sqrt(sx > sy ? (sx > sz ? sx : sz) : (sy > sz ? sy : sz));
 			object._cullVersion = object._worldVersion; object._cullSphere = bs; object._cullRadius = bs.radius;
 			object._cullCx = c.x; object._cullCy = c.y; object._cullCz = c.z;
+			object._cullFV0 = -1; object._cullFV1 = -1;
 		}
-		return frustum.intersectsSphereFlat(s[o + 41], s[o + 42], s[o + 43], s[o + 44]);
+		// a static object under a static frustum keeps its previous result (frustum.version changes with any plane float)
+		const fv = frustum.version;
+		if (shadowPass === true) {
+			if (object._cullFV1 === fv) return object._cullVis1;
+			const vis = frustum.intersectsSphereFlat(s[o + 41], s[o + 42], s[o + 43], s[o + 44]);
+			object._cullFV1 = fv; object._cullVis1 = vis;
+			return vis;
+		}
+		if (object._cullFV0 === fv) return object._cullVis0;
+		const vis = frustum.intersectsSphereFlat(s[o + 41], s[o + 42], s[o + 43], s[o + 44]);
+		object._cullFV0 = fv; object._cullVis0 = vis;
+		return vis;
 	}
 
 	_projectObject(object, camera, groupOrder, sortObjects, list) {
@@ -529,7 +541,7 @@ class WebGLRenderer {
 			} else if (object.isMesh || object.isLine || object.isPoints) {
 				const geometry = object.geometry;
 				const material = object.material;
-				if (!object.frustumCulled || this._cullTest(object, geometry, _frustum)) {
+				if (!object.frustumCulled || this._cullTest(object, geometry, _frustum, false)) {
 					let z = 0;
 					if (sortObjects) {
 						// cached world center is in the slab after _cullTest; if culling is off, use the object position

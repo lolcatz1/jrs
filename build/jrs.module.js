@@ -2208,10 +2208,12 @@ var Plane = class {
 // src/math/Frustum.js
 var _sphere = /* @__PURE__ */ new Sphere();
 var _vector3 = /* @__PURE__ */ new Vector3();
+var _versionCounter = 0;
 var Frustum = class {
   constructor(p0 = new Plane(), p1 = new Plane(), p2 = new Plane(), p3 = new Plane(), p4 = new Plane(), p5 = new Plane()) {
     this.planes = [p0, p1, p2, p3, p4, p5];
     this.flat = new Float32Array(24);
+    this.version = 0;
   }
   set(p0, p1, p2, p3, p4, p5) {
     const planes = this.planes;
@@ -2257,13 +2259,18 @@ var Frustum = class {
   }
   _syncFlat() {
     const f = this.flat, planes = this.planes;
+    let changed = false;
     for (let i = 0; i < 6; i++) {
-      const p = planes[i], o = i * 4;
-      f[o] = p.normal.x;
-      f[o + 1] = p.normal.y;
-      f[o + 2] = p.normal.z;
-      f[o + 3] = p.constant;
+      const p = planes[i], o = i * 4, n = p.normal;
+      if (f[o] !== n.x || f[o + 1] !== n.y || f[o + 2] !== n.z || f[o + 3] !== p.constant) {
+        f[o] = n.x;
+        f[o + 1] = n.y;
+        f[o + 2] = n.z;
+        f[o + 3] = p.constant;
+        changed = true;
+      }
     }
+    if (changed) this.version = ++_versionCounter;
   }
   intersectsObject(object) {
     if (object.boundingSphere !== void 0) {
@@ -4101,6 +4108,10 @@ var Object3D = class _Object3D extends EventDispatcher {
     this._cullCx = 0;
     this._cullCy = 0;
     this._cullCz = 0;
+    this._cullFV0 = -1;
+    this._cullVis0 = false;
+    this._cullFV1 = -1;
+    this._cullVis1 = false;
     this.matrixAutoUpdate = _Object3D.DEFAULT_MATRIX_AUTO_UPDATE;
     this.matrixWorldAutoUpdate = _Object3D.DEFAULT_MATRIX_WORLD_AUTO_UPDATE;
     this.matrixWorldNeedsUpdate = false;
@@ -4706,6 +4717,8 @@ var BufferGeometry = class _BufferGeometry extends EventDispatcher {
     this._layoutVersion = 0;
     this._frameStamp = -1;
     this._frameRid = 0;
+    this._shadowSigStamp = -1;
+    this._shadowSig = 0;
     this._attrBits = 0;
     this._attrBitsVersion = -1;
   }
@@ -15635,6 +15648,18 @@ var DepthTexture = class extends Texture {
 // src/renderers/webgl/WebGLShadowMap.js
 var _frustum = /* @__PURE__ */ new Frustum();
 var _viewport = /* @__PURE__ */ new Vector4();
+var _f64 = /* @__PURE__ */ new Float64Array(1);
+var _i32 = /* @__PURE__ */ new Int32Array(_f64.buffer);
+var _defaultOnBeforeRender = Object3D.prototype.onBeforeRender;
+var _defaultOnAfterRender = Object3D.prototype.onAfterRender;
+var SIG_PER_CASTER = 7;
+function mixInt(h, x) {
+  return Math.imul(h ^ x, 16777619);
+}
+function mixNum(h, x) {
+  _f64[0] = x;
+  return mixInt(mixInt(h, _i32[0]), _i32[1]);
+}
 var WebGLShadowMap = class {
   constructor(renderer) {
     this.renderer = renderer;
@@ -15643,6 +15668,17 @@ var WebGLShadowMap = class {
     this.needsUpdate = false;
     this.type = PCFShadowMap;
     this.lists = /* @__PURE__ */ new WeakMap();
+    this.records = /* @__PURE__ */ new WeakMap();
+    this._sig = new Float64Array(4096);
+    this._sigN = 0;
+    this._sigCacheable = true;
+    this._sigBail = false;
+    this._sigPrev = null;
+    this._epoch = 0;
+    this._renderOrders = /* @__PURE__ */ new Map();
+    this._renderOrderList = [];
+    this.skipped = 0;
+    this.rendered = 0;
   }
   render(lights, scene, camera) {
     const renderer = this.renderer;
@@ -15652,17 +15688,21 @@ var WebGLShadowMap = class {
     for (let i = 0; i < lights.numDirShadows; i++) shadowLights.push(lights.dir[i]);
     for (let i = 0; i < lights.numSpotShadows; i++) shadowLights.push(lights.spot[i]);
     if (shadowLights.length === 0) return;
-    const previousTarget = renderer.getRenderTarget();
     const state = renderer.state;
-    state.setDepthTest(true);
-    state.setDepthMask(true);
-    state.setScissorTest(false);
+    let previousTarget = null;
+    let stateReady = false;
+    let savedOrders = null, savedOrderList = null, savedLastNoted = NaN;
     for (let i = 0; i < shadowLights.length; i++) {
       const light = shadowLights[i];
       const shadow = light.shadow;
       if (shadow === void 0) continue;
       if (shadow.autoUpdate === false && shadow.needsUpdate === false) continue;
       const mapSize = shadow.mapSize;
+      let record = this.records.get(light);
+      if (record === void 0) {
+        record = { sig: new Float64Array(0), n: 0, valid: false, map: null, epoch: -1, misses: 0, cool: 0 };
+        this.records.set(light, record);
+      }
       if (shadow.map === null) {
         const depthTexture = new DepthTexture(mapSize.x, mapSize.y, UnsignedIntType, void 0, void 0, void 0, LinearFilter, LinearFilter, void 0, DepthFormat);
         depthTexture.compareFunction = LessEqualStencilFunc;
@@ -15675,6 +15715,25 @@ var WebGLShadowMap = class {
         shadow.map.depthTexture.image.height = mapSize.y;
       }
       shadow.updateMatrices(light);
+      const forced = shadow.needsUpdate === true || this.needsUpdate === true;
+      const unchanged = this._computeSignature(light, shadow, scene, record);
+      if (unchanged && !forced) {
+        this.skipped++;
+        continue;
+      }
+      this.rendered++;
+      if (stateReady === false) {
+        stateReady = true;
+        previousTarget = renderer.getRenderTarget();
+        state.setDepthTest(true);
+        state.setDepthMask(true);
+        state.setScissorTest(false);
+        savedOrders = renderer._renderOrders;
+        savedOrderList = renderer._renderOrderList;
+        savedLastNoted = renderer._lastNotedRenderOrder;
+        renderer._renderOrders = this._renderOrders;
+        renderer._renderOrderList = this._renderOrderList;
+      }
       _frustum.copy(shadow.getFrustum());
       renderer.setRenderTarget(shadow.map);
       renderer.clear(false, true, false);
@@ -15696,14 +15755,186 @@ var WebGLShadowMap = class {
       shadow.needsUpdate = false;
     }
     this.needsUpdate = false;
-    renderer.setRenderTarget(previousTarget);
+    if (stateReady) {
+      renderer._renderOrders = savedOrders;
+      renderer._renderOrderList = savedOrderList;
+      renderer._lastNotedRenderOrder = savedLastNoted;
+      renderer.setRenderTarget(previousTarget);
+    }
+  }
+  /**
+   * Walks the casters (no culling, no list building) and records everything the depth map depends on: the shadow
+   * camera matrices, every caster's id and world version, and per-material / per-geometry digests. Returns true when
+   * it is identical to the signature the map was last rendered from (the render can be skipped); otherwise the new
+   * signature is stored as the reference for the render about to happen.
+   * Anything the signature cannot describe (alpha-tested or custom-shader casters, render hooks, lines, points,
+   * multi-material meshes) makes the light uncacheable: it renders every frame as before and is only re-probed rarely.
+   * A light whose signature keeps changing (animated casters) backs off: most frames skip the signature entirely, so
+   * the walk costs nothing there; a scene that becomes static is detected a few frames late and then skips.
+   */
+  _computeSignature(light, shadow, scene, record) {
+    if (record.cool > 0) {
+      record.cool--;
+      record.valid = false;
+      return false;
+    }
+    const renderer = this.renderer;
+    const camera = shadow.camera;
+    const pe = camera.projectionMatrix.elements, ve = camera.matrixWorldInverse.elements;
+    const prev = record.sig;
+    const comparing = record.valid && record.map === shadow.map && record.epoch === this._epoch;
+    let sig = this._sig;
+    for (let k = 0; k < 16; k++) {
+      sig[k] = pe[k];
+      sig[16 + k] = ve[k];
+    }
+    sig[32] = shadow.mapSize.x;
+    sig[33] = shadow.mapSize.y;
+    sig[34] = camera.layers.mask;
+    sig[35] = renderer._envVersion;
+    sig[36] = this.type;
+    this._sigN = 37;
+    this._sigCacheable = true;
+    this._sigBail = false;
+    this._sigPrev = comparing ? prev : null;
+    if (comparing) {
+      for (let k = 0; k < 37; k++) if (prev[k] !== sig[k]) {
+        this._sigBail = true;
+        break;
+      }
+    }
+    if (!this._sigBail) this._sigWalk(scene, camera, renderer._frameId);
+    const n = this._sigN;
+    sig = this._sig;
+    this._sigPrev = null;
+    if (!this._sigCacheable) {
+      record.valid = false;
+      record.cool = 30;
+      return false;
+    }
+    if (comparing) {
+      if (!this._sigBail && record.n === n) {
+        record.misses = 0;
+        return true;
+      }
+      record.valid = false;
+      if (++record.misses >= 2) record.cool = 3;
+      return false;
+    }
+    record.sig = sig;
+    this._sig = prev.length >= 4096 ? prev : new Float64Array(4096);
+    record.n = n;
+    record.valid = true;
+    record.map = shadow.map;
+    record.epoch = this._epoch;
+    return false;
+  }
+  _sigWalk(object, shadowCamera, frame) {
+    if (object.visible === false) return;
+    if (object.castShadow && object.layers.test(shadowCamera.layers) && (object.isMesh || object.isLine || object.isPoints)) {
+      const geometry = object.geometry, material = object.material;
+      if (object.isMesh !== true || Array.isArray(material) || object.onBeforeRender !== _defaultOnBeforeRender || object.onAfterRender !== _defaultOnAfterRender) {
+        this._sigCacheable = false;
+        this._sigBail = true;
+        return;
+      }
+      if (this._sigN + SIG_PER_CASTER > this._sig.length) {
+        const g = new Float64Array(this._sig.length * 2);
+        g.set(this._sig);
+        this._sig = g;
+      }
+      if (material._shadowSigStamp !== frame) {
+        material._shadowSigStamp = frame;
+        material._shadowSig = this._materialDigest(material);
+      }
+      if (geometry._shadowSigStamp !== frame) {
+        geometry._shadowSigStamp = frame;
+        geometry._shadowSig = this._geometryDigest(geometry);
+      }
+      if (material._shadowSig === 0 || geometry._shadowSig === 0) {
+        this._sigCacheable = false;
+        this._sigBail = true;
+        return;
+      }
+      const sig = this._sig;
+      const start = this._sigN;
+      let n = start;
+      sig[n++] = object.id;
+      sig[n++] = object._worldVersion;
+      sig[n++] = material._shadowSig;
+      sig[n++] = geometry._shadowSig;
+      if (object.isInstancedMesh) {
+        const bs = object.boundingSphere;
+        sig[n++] = (object.frustumCulled ? 1 : 0) + 2 * object.count;
+        sig[n++] = object.instanceMatrix.version + 4294967296 * object.instanceMatrix.count;
+        sig[n++] = bs === null ? -1 : bs.radius;
+      } else {
+        sig[n++] = object.frustumCulled ? 1 : 0;
+        sig[n++] = 0;
+        sig[n++] = 0;
+      }
+      this._sigN = n;
+      const prev = this._sigPrev;
+      if (prev !== null) {
+        for (let k = start; k < n; k++) if (prev[k] !== sig[k]) {
+          this._sigBail = true;
+          return;
+        }
+      }
+    }
+    const children = object.children;
+    for (let i = 0, l = children.length; i < l; i++) {
+      this._sigWalk(children[i], shadowCamera, frame);
+      if (this._sigBail) return;
+    }
+  }
+  /** 32-bit digest of everything about a material the shadow pass reads; 0 = cannot be cached. */
+  _materialDigest(m) {
+    if (m.isShaderMaterial === true || m.alphaTest > 0) return 0;
+    let h = 2166136261 | 0;
+    h = mixInt(h, m.id);
+    h = mixInt(h, m.version);
+    h = mixInt(h, (m.visible ? 1 : 0) | (m.wireframe ? 2 : 0) | (m.transparent ? 4 : 0) | (m.depthWrite ? 8 : 0) | (m.depthTest ? 16 : 0) | (m.colorWrite ? 32 : 0) | (m.polygonOffset ? 64 : 0));
+    h = mixInt(h, m.side);
+    h = mixInt(h, m.shadowSide === null || m.shadowSide === void 0 ? -1 : m.shadowSide);
+    h = mixInt(h, m.blending);
+    h = mixNum(h, m.polygonOffsetFactor);
+    h = mixNum(h, m.polygonOffsetUnits);
+    return h === 0 ? 1 : h;
+  }
+  /** 32-bit digest of everything about a geometry the shadow pass reads; 0 = cannot be cached. */
+  _geometryDigest(g) {
+    let h = 2166136261 | 0;
+    const position = g.attributes.position, index = g.index;
+    h = mixInt(h, g.id);
+    h = mixInt(h, g._layoutVersion);
+    if (position !== void 0) {
+      const v = position.isInterleavedBufferAttribute ? position.data.version : position.version;
+      h = mixInt(h, v);
+      h = mixInt(h, position.count);
+    }
+    if (index !== null) {
+      h = mixInt(h, index.version);
+      h = mixInt(h, index.count);
+    }
+    h = mixNum(h, g.drawRange.start);
+    h = mixNum(h, g.drawRange.count);
+    if (g.isInstancedBufferGeometry) h = mixNum(h, g.instanceCount);
+    const bs = g.boundingSphere;
+    if (bs !== null) {
+      h = mixNum(h, bs.radius);
+      h = mixNum(h, bs.center.x);
+      h = mixNum(h, bs.center.y);
+      h = mixNum(h, bs.center.z);
+    }
+    return h === 0 ? 1 : h;
   }
   _collect(object, shadowCamera, list) {
     if (object.visible === false) return;
     const renderer = this.renderer;
     const visible = object.layers.test(shadowCamera.layers);
     if (visible && (object.isMesh || object.isLine || object.isPoints)) {
-      if (object.castShadow && (object.frustumCulled === false || renderer._cullTest(object, object.geometry, _frustum))) {
+      if (object.castShadow && (object.frustumCulled === false || renderer._cullTest(object, object.geometry, _frustum, true))) {
         const geometry = object.geometry;
         const material = object.material;
         if (Array.isArray(material)) {
@@ -16079,6 +16310,7 @@ var WebGLRenderer = class {
     this.state.reset();
     this.programs.dispose();
     this._materialProperties = /* @__PURE__ */ new WeakMap();
+    this.shadowMap._epoch++;
   }
   setAnimationLoop(callback) {
     this._animationLoop = callback;
@@ -16325,7 +16557,7 @@ var WebGLRenderer = class {
   }
   // ------------------------------------------------------------------ projection / culling
   /** World-space bounding sphere test against `frustum`, with the sphere cached in slab memory per world version. */
-  _cullTest(object, geometry, frustum) {
+  _cullTest(object, geometry, frustum, shadowPass) {
     let bs;
     if (object.isInstancedMesh) {
       if (object.boundingSphere === null) object.computeBoundingSphere();
@@ -16351,8 +16583,22 @@ var WebGLRenderer = class {
       object._cullCx = c.x;
       object._cullCy = c.y;
       object._cullCz = c.z;
+      object._cullFV0 = -1;
+      object._cullFV1 = -1;
     }
-    return frustum.intersectsSphereFlat(s[o + 41], s[o + 42], s[o + 43], s[o + 44]);
+    const fv = frustum.version;
+    if (shadowPass === true) {
+      if (object._cullFV1 === fv) return object._cullVis1;
+      const vis2 = frustum.intersectsSphereFlat(s[o + 41], s[o + 42], s[o + 43], s[o + 44]);
+      object._cullFV1 = fv;
+      object._cullVis1 = vis2;
+      return vis2;
+    }
+    if (object._cullFV0 === fv) return object._cullVis0;
+    const vis = frustum.intersectsSphereFlat(s[o + 41], s[o + 42], s[o + 43], s[o + 44]);
+    object._cullFV0 = fv;
+    object._cullVis0 = vis;
+    return vis;
   }
   _projectObject(object, camera, groupOrder, sortObjects, list) {
     if (object.visible === false) return;
@@ -16376,7 +16622,7 @@ var WebGLRenderer = class {
       } else if (object.isMesh || object.isLine || object.isPoints) {
         const geometry = object.geometry;
         const material = object.material;
-        if (!object.frustumCulled || this._cullTest(object, geometry, _frustum2)) {
+        if (!object.frustumCulled || this._cullTest(object, geometry, _frustum2, false)) {
           let z = 0;
           if (sortObjects) {
             const s = object._slabData, o = object._slabOffset, ve = camera.matrixWorldInverse.elements;
@@ -18166,6 +18412,8 @@ var Material = class extends EventDispatcher {
     this._programDirty = true;
     this._frameStamp = -1;
     this._frameRid = 0;
+    this._shadowSigStamp = -1;
+    this._shadowSig = 0;
   }
   get alphaTest() {
     return this._alphaTest;
