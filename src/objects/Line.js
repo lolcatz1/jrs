@@ -73,23 +73,23 @@ class Line extends Object3D {
 			const end = Math.min(index.count, (drawRange.start + drawRange.count));
 			for (let i = start, l = end - 1; i < l; i += step) {
 				const a = index.getX(i), b = index.getX(i + 1);
-				const intersect = checkIntersection(this, raycaster, _ray, localThresholdSq, a, b, positionAttribute);
+				const intersect = checkIntersection(this, raycaster, _ray, localThresholdSq, a, b, i);
 				if (intersect) intersects.push(intersect);
 			}
 			if (this.isLineLoop) {
 				const a = index.getX(end - 1), b = index.getX(start);
-				const intersect = checkIntersection(this, raycaster, _ray, localThresholdSq, a, b, positionAttribute);
+				const intersect = checkIntersection(this, raycaster, _ray, localThresholdSq, a, b, end - 1);
 				if (intersect) intersects.push(intersect);
 			}
 		} else {
 			const start = Math.max(0, drawRange.start);
 			const end = Math.min(positionAttribute.count, (drawRange.start + drawRange.count));
 			for (let i = start, l = end - 1; i < l; i += step) {
-				const intersect = checkIntersection(this, raycaster, _ray, localThresholdSq, i, i + 1, positionAttribute);
+				const intersect = checkIntersection(this, raycaster, _ray, localThresholdSq, i, i + 1, i);
 				if (intersect) intersects.push(intersect);
 			}
 			if (this.isLineLoop) {
-				const intersect = checkIntersection(this, raycaster, _ray, localThresholdSq, end - 1, start, positionAttribute);
+				const intersect = checkIntersection(this, raycaster, _ray, localThresholdSq, end - 1, start, end - 1);
 				if (intersect) intersects.push(intersect);
 			}
 		}
@@ -113,7 +113,8 @@ class Line extends Object3D {
 	}
 }
 
-function checkIntersection(object, raycaster, ray, thresholdSq, a, b, positionAttribute) {
+function checkIntersection(object, raycaster, ray, thresholdSq, a, b, i) {
+	const positionAttribute = object.geometry.attributes.position;
 	const positionA = _vStart.fromBufferAttribute(positionAttribute, a);
 	const positionB = _vEnd.fromBufferAttribute(positionAttribute, b);
 	const distSq = ray.distanceSqToSegment(positionA, positionB, _intersectPointOnRay, _intersectPointOnSegment);
@@ -124,7 +125,7 @@ function checkIntersection(object, raycaster, ray, thresholdSq, a, b, positionAt
 	return {
 		distance: distance,
 		point: _intersectPointOnSegment.clone().applyMatrix4(object.matrixWorld),
-		index: a, face: null, faceIndex: null, barycoord: null, object: object
+		index: i, face: null, faceIndex: null, barycoord: null, object: object
 	};
 }
 

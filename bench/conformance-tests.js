@@ -600,8 +600,8 @@ export function conformanceTests() {
 				renderer.render(scene, camera);
 				const c = readPixel(renderer, 128, 128);
 				// colour = (0.125, 1.5 -> 1, 0), fog factor smoothstep(1, 20, 5) = 0.114 toward the scene fog colour,
-				// which stays linear (0.0144 blue) because the shader does not include <colorspace_fragment>, as in three.js
-				return { pass: near(c, [27, 226, 1], 4), detail: `centre ${fmt(c)} expected [27,226,1] (scene fog colour applied, struct/array uniforms summed)` };
+				// which three.js uploads converted to the output colour space (0x000040 -> blue 64/255), verified against three r186
+				return { pass: near(c, [28, 226, 7], 4), detail: `centre ${fmt(c)} expected [28,226,7] (scene fog colour applied, struct/array uniforms summed)` };
 			}
 		},
 		{
@@ -935,7 +935,7 @@ export function conformanceTests() {
 				renderer.render(s1.scene, s1.camera);
 				const px1 = readAll(renderer);
 				const d1 = compareWithReference(ref, (L) => build(L, 1), px1);
-				const rec = renderer.megaBuffers ? renderer.megaBuffers.records.get(s1.g1) : null; // the sphere must have been drawn from a page that carries the custom attributes
+				const recs = renderer.megaBuffers ? renderer.megaBuffers.records.get(s1.g1) : null; const rec = recs ? recs[0] : null; // slot 0: meshes // the sphere must have been drawn from a page that carries the custom attributes
 				const paged = rec === null || (rec.page !== null && rec.layout.customNames.has('aTint') && rec.layout.customNames.has('aMix'));
 				return { pass: paged && refOk(d0) && refOk(d1) && diffImages(px0, px1).badFraction > 0.001, detail: `${paged ? 'paged' : 'NOT paged'}; static: ${refDetail(d0)}; after attribute update + wireframe: ${refDetail(d1)}` };
 			}

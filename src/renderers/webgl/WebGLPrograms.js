@@ -2,7 +2,7 @@ import {
 	MATERIAL_BASIC, MATERIAL_LAMBERT, MATERIAL_PHONG, MATERIAL_STANDARD, MATERIAL_NORMAL, MATERIAL_DEPTH, MATERIAL_LINE, MATERIAL_POINTS,
 	MATERIAL_SPRITE, MATERIAL_SHADER, MATERIAL_SHADOW_DEPTH, TEXTURE_UNITS, pointShadowUnit, buildBuiltinShader, buildCustomShader
 } from '../shaders/ShaderLib.js';
-import { DoubleSide, BackSide, NoToneMapping, SRGBColorSpace, BasicShadowMap, CubeUVReflectionMapping, CubeRefractionMapping, NormalBlending } from '../../constants.js';
+import { DoubleSide, BackSide, NoToneMapping, SRGBColorSpace, BasicShadowMap, NormalBlending, CubeUVReflectionMapping, CubeRefractionMapping } from '../../constants.js';
 import { OBJ_ELIGIBLE, OBJ_USES_MODEL } from '../shaders/ShaderMaterialBatching.js';
 
 export const BLOCK_FRAME = 0;
@@ -10,7 +10,7 @@ export const BLOCK_LIGHTS = 1;
 export const BLOCK_MATERIAL = 2;
 
 let _programId = 0;
-const FIXED_ATTRIBUTES = { position: 0, normal: 1, uv: 2, color: 3, uv1: 4, instanceColor: 5, skinIndex: 6, skinWeight: 7, instanceMatrix: 8 };
+const FIXED_ATTRIBUTES = { position: 0, normal: 1, uv: 2, color: 3, uv1: 4, instanceColor: 5, skinIndex: 6, skinWeight: 7, instanceMatrix: 8, lineDistance: 6 };
 
 /**
  * Custom (ShaderMaterial) attribute names get one location per name, shared by every program and every
@@ -74,6 +74,7 @@ class WebGLProgram {
 		gl.bindAttribLocation(program, 5, 'instanceColor');
 		gl.bindAttribLocation(program, 6, 'skinIndex');
 		gl.bindAttribLocation(program, 7, 'skinWeight');
+		gl.bindAttribLocation(program, 6, 'lineDistance'); // shares the skinning slot: a program never reads both
 		gl.bindAttribLocation(program, 8, 'instanceMatrix');
 		if (parameters.materialType === MATERIAL_SHADER) bindCustomAttributeLocations(gl, program, vertexSource, gl.getParameter(gl.MAX_VERTEX_ATTRIBS)); // built-in shaders have no custom attributes
 		gl.linkProgram(program);
@@ -110,6 +111,7 @@ class WebGLProgram {
 		this.bindMatrixUniform = this.uniforms.bindMatrix || null;
 		this.bindMatrixInverseUniform = this.uniforms.bindMatrixInverse || null;
 		this.boneTextureUniform = this.uniforms.boneTexture || null;
+		this.boneBaseUniform = this.uniforms.boneBase || null;
 		this.morphBaseInfluenceUniform = this.uniforms.morphTargetBaseInfluence || null;
 		this.morphInfluencesUniform = this.uniforms.morphTargetInfluences || null;
 		this.morphTextureUniform = this.uniforms.morphTargetsTexture || null;
@@ -263,6 +265,7 @@ class WebGLPrograms {
 		this.cache = new Map();
 		this._baseKeyIds = new Map();
 		this.programs = [];
+		this._params = {};
 	}
 
 	/** Compute the integer key + parameters for a built-in material. */
@@ -297,7 +300,7 @@ class WebGLPrograms {
 		const envMapCubeUV = hasEnvMap && envMap.mapping === CubeUVReflectionMapping;
 		// specularMap modulates Phong's specular term and the env-map reflection of Basic / Lambert
 		const specularMap = (materialType === MATERIAL_PHONG || (hasEnvMap && (materialType === MATERIAL_BASIC || materialType === MATERIAL_LAMBERT))) && !!material.specularMap;
-		const useUv = hasUv && (map || alphaMap || emissiveMap || normalMap || roughnessMap || metalnessMap || aoMap || specularMap) && materialType !== MATERIAL_POINTS;
+		const useUv = hasUv && (map || alphaMap || emissiveMap || normalMap || roughnessMap || metalnessMap || aoMap || specularMap) ;
 		const useUv1 = hasUv1 && aoMap;
 		const receiveShadow = variant.receiveShadow && isLit && renderer.shadowMap.enabled;
 		const numDirShadows = receiveShadow ? lights.numDirShadows : 0;
@@ -319,49 +322,65 @@ class WebGLPrograms {
 		if (morphAttributes.normal !== undefined) morphTextureStride = 2;
 		if (morphAttributes.color !== undefined) morphTextureStride = 3;
 
-		const p = {
-			materialType,
-			map, alphaMap, emissiveMap, normalMap, roughnessMap, metalnessMap, aoMap, specularMap,
-			useUv, useUv1,
-			vertexColors,
-			vertexAlphas: vertexColors && attributes.color.itemSize === 4,
-			instancing: variant.instancing,
-			instancingColor: variant.instancing && variant.instancingColor,
-			objectTexture: variant.objectTexture === true || variant.multiDraw === true,
-			multiDraw: variant.multiDraw === true,
-			materialArray: variant.materialArray === true && (variant.objectTexture === true || variant.multiDraw === true),
-			materialArraySize: renderer._materialWindow, materialPad: renderer._materialPad,
-			flatShading: isLit && material.flatShading === true,
-			doubleSided: !leanShadow && variant.side === DoubleSide,
-			flipSided: !leanShadow && variant.side === BackSide,
-			leanShadow,
-			envMap: hasEnvMap,
-			envMapCubeUV,
-			envMapRefraction: hasEnvMap && envMap.mapping === CubeRefractionMapping,
-			envMapCubeUVHeight: envMapCubeUV ? envMap.image.height : 0,
-			combine: hasEnvMap && material.combine !== undefined ? material.combine : 0,
-			envWorldPos: hasEnvMap && (materialType === MATERIAL_LAMBERT || materialType === MATERIAL_PHONG || normalMap),
-			fog, fogExp2: fog && scene.fog.isFogExp2 === true,
-			alphaTest: shadowPass ? shadowAlpha : (material.alphaTest > 0 && materialType !== MATERIAL_NORMAL), // three's normal shader has no alphatest chunk
-			alphaTestHalf: shadowAlpha && material.alphaToCoverage === true, // three approximates alphaToCoverage casters with alphaTest 0.5
-			sizeAttenuation: (materialType === MATERIAL_POINTS || materialType === MATERIAL_SPRITE) && material.sizeAttenuation === true,
-			premultipliedAlpha: material.premultipliedAlpha === true,
-			// three.js (opaque_fragment): an opaque material writes alpha 1 whatever its map / vertex alpha says, so a
-			// later DST_ALPHA blend sees 1; depth materials write `opacity` instead and never take the define
-			opaque: material.transparent === false && material.blending === NormalBlending && material.alphaToCoverage === false && materialType !== MATERIAL_DEPTH && materialType !== MATERIAL_SHADOW_DEPTH,
-			dithering: material.dithering === true,
-			depthPacking: materialType === MATERIAL_DEPTH && material.depthPacking !== undefined ? material.depthPacking : 3200,
-			vertexUv1s: hasUv1,
-			toneMapped: toneMapping !== NoToneMapping,
-			toneMapping,
-			sRGBOutput,
-			numDirShadows, numSpotShadows, numPointShadows, pointShadowBasic,
-			skinning,
-			morphTargets: morphAttributes.position !== undefined,
-			morphNormals: morphAttributes.normal !== undefined,
-			morphColors: morphAttributes.color !== undefined,
-			morphTargetsCount, morphTextureStride,
-		};
+		// batched sprites / points / lines read colour, opacity, rotation, point size, dash sizes ... per object from the matrix texture
+		const instanceMaterial = (variant.objectTexture === true || variant.multiDraw === true) && (materialType === MATERIAL_SPRITE || materialType === MATERIAL_POINTS || materialType === MATERIAL_LINE);
+		// reused between calls so resolving a program for a material that was not seen before allocates nothing; acquireProgram copies it when it creates a program
+		const p = this._params;
+		p.materialType = materialType;
+		p.map = map;
+		p.alphaMap = alphaMap;
+		p.emissiveMap = emissiveMap;
+		p.normalMap = normalMap;
+		p.roughnessMap = roughnessMap;
+		p.metalnessMap = metalnessMap;
+		p.aoMap = aoMap;
+		p.specularMap = specularMap;
+		p.useUv = useUv;
+		p.useUv1 = useUv1;
+		p.vertexColors = vertexColors;
+		p.vertexAlphas = vertexColors && attributes.color.itemSize === 4;
+		p.instancing = variant.instancing;
+		p.instancingColor = variant.instancing && variant.instancingColor;
+		p.objectTexture = variant.objectTexture === true || variant.multiDraw === true;
+		p.multiDraw = variant.multiDraw === true;
+		p.materialArray = variant.materialArray === true && (variant.objectTexture === true || variant.multiDraw === true);
+		p.materialArraySize = renderer._materialWindow;
+		p.materialPad = renderer._materialPad;
+		p.flatShading = isLit && material.flatShading === true;
+		p.doubleSided = !leanShadow && variant.side === DoubleSide;
+		p.flipSided = !leanShadow && variant.side === BackSide;
+		p.leanShadow = leanShadow;
+		p.envMap = hasEnvMap;
+		p.envMapCubeUV = envMapCubeUV;
+		p.envMapRefraction = hasEnvMap && envMap.mapping === CubeRefractionMapping;
+		p.envMapCubeUVHeight = envMapCubeUV ? envMap.image.height : 0;
+		p.combine = hasEnvMap && material.combine !== undefined ? material.combine : 0;
+		p.envWorldPos = hasEnvMap && (materialType === MATERIAL_LAMBERT || materialType === MATERIAL_PHONG || normalMap);
+		p.fog = fog;
+		p.fogExp2 = fog && scene.fog.isFogExp2 === true;
+		p.alphaTest = shadowPass ? shadowAlpha : (material.alphaTest > 0 && materialType !== MATERIAL_NORMAL); // three's normal shader has no alphatest chunk
+		p.alphaTestHalf = shadowAlpha && material.alphaToCoverage === true; // three approximates alphaToCoverage casters with alphaTest 0.5
+		p.sizeAttenuation = !instanceMaterial && (materialType === MATERIAL_POINTS || materialType === MATERIAL_SPRITE) && material.sizeAttenuation === true;
+		p.premultipliedAlpha = material.premultipliedAlpha === true;
+		p.dithering = material.dithering === true;
+		p.vertexUv1s = hasUv1;
+		p.toneMapped = toneMapping !== NoToneMapping;
+		p.toneMapping = toneMapping;
+		p.sRGBOutput = sRGBOutput;
+		p.numDirShadows = numDirShadows;
+		p.numSpotShadows = numSpotShadows;
+		p.numPointShadows = numPointShadows;
+		p.pointShadowBasic = pointShadowBasic;
+		p.skinning = skinning;
+		p.morphTargets = morphAttributes.position !== undefined;
+		p.morphNormals = morphAttributes.normal !== undefined;
+		p.morphColors = morphAttributes.color !== undefined;
+		p.morphTargetsCount = morphTargetsCount;
+		p.morphTextureStride = morphTextureStride;
+		p.instanceMaterial = instanceMaterial;
+		p.dashed = materialType === MATERIAL_LINE && material.isLineDashedMaterial === true;
+		p.opaque = material.transparent === false && material.blending === NormalBlending && material.alphaToCoverage === false;
+		p.depthPacking = materialType === MATERIAL_DEPTH && material.depthPacking !== undefined ? material.depthPacking : 3200;
 		let key = materialType;
 		key = key * 2 + (map ? 1 : 0); key = key * 2 + (alphaMap ? 1 : 0); key = key * 2 + (emissiveMap ? 1 : 0); key = key * 2 + (normalMap ? 1 : 0);
 		key = key * 2 + (roughnessMap ? 1 : 0); key = key * 2 + (metalnessMap ? 1 : 0); key = key * 2 + (aoMap ? 1 : 0); key = key * 2 + (specularMap ? 1 : 0);
@@ -379,6 +398,7 @@ class WebGLPrograms {
 		key = key * 2 + (p.materialArray ? 1 : 0); key = key * 2 + (p.alphaTestHalf ? 1 : 0);
 		key = key * 2 + (skinning ? 1 : 0); key = key * 2 + (p.morphTargets ? 1 : 0); key = key * 2 + (p.morphNormals ? 1 : 0); key = key * 2 + (p.morphColors ? 1 : 0);
 		key = key * 4 + morphTextureStride; key = key * 256 + morphTargetsCount;
+		key = key * 2 + (instanceMaterial ? 1 : 0); key = key * 2 + (p.dashed ? 1 : 0); key = key * 2 + (p.opaque ? 1 : 0);
 		key = key * 2 + (hasEnvMap ? 1 : 0); key = key * 2 + (envMapCubeUV ? 1 : 0); key = key * 2 + (p.envMapRefraction ? 1 : 0);
 		key = key * 4 + (p.combine & 3); key = key * 16 + (envMapCubeUV ? (Math.log2(p.envMapCubeUVHeight) | 0) & 15 : 0);
 		key = key * 2 + (p.opaque ? 1 : 0); key = key * 4 + (p.depthPacking - 3200);
@@ -396,6 +416,7 @@ class WebGLPrograms {
 		}
 		let program = this.cache.get(key);
 		if (program === undefined) {
+			parameters = Object.assign({}, parameters); // `parameters` is the shared scratch object of getParameters
 			const src = parameters.materialType === MATERIAL_SHADER ? buildCustomShader(material, parameters) : buildBuiltinShader(parameters);
 			program = new WebGLProgram(this.gl, parameters, src.vertexShader, src.fragmentShader);
 			if (src.objTexMode !== undefined) program.objTexMode = src.objTexMode;

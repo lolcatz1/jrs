@@ -14,6 +14,15 @@ import {
  * have a fixed capacity and the active counts are read from the block.
  */
 
+// Built-in programs read bones from the renderer's shared bone atlas: three's chunk plus a per-draw `boneBase`
+// (first bone slot of the skeleton). ShaderMaterial programs keep the unmodified chunk and one texture per skeleton.
+const SKINNING_PARS_ATLAS = (() => {
+	const a = 'uniform highp sampler2D boneTexture;', b = 'int j = int( i ) * 4;';
+	const src = ShaderChunk.skinning_pars_vertex;
+	if (!src.includes(a) || !src.includes(b)) throw new Error('ShaderLib: skinning_pars_vertex chunk changed');
+	return src.replace(a, a + '\n\tuniform int boneBase;').replace(b, 'int j = ( int( i ) + boneBase ) * 4;');
+})();
+
 export const MAX_DIR_LIGHTS = 4;
 export const MAX_POINT_LIGHTS = 8;
 export const MAX_SPOT_LIGHTS = 4;
@@ -207,6 +216,15 @@ in vec2 uv1;
 	in vec3 color;
 	#endif
 #endif
+#ifdef IS_DASHED
+in float lineDistance;
+out float vLineDistance;
+#endif
+#ifdef INSTANCE_MATERIAL
+// batched sprites / points / lines: colour + opacity and a per-kind parameter block travel with the object's matrix
+flat out vec4 vInstA;
+flat out vec4 vInstB;
+#endif
 #ifdef USE_INSTANCING
 in mat4 instanceMatrix;
 	#ifdef USE_INSTANCING_COLOR
@@ -217,7 +235,7 @@ in mat4 instanceMatrix;
 in vec4 skinIndex;
 in vec4 skinWeight;
 #endif
-${ShaderChunk.skinning_pars_vertex}
+${SKINNING_PARS_ATLAS}
 ${ShaderChunk.morphtarget_pars_vertex}
 #ifdef USE_OBJECT_TEXTURE
 // Batched draws: each object's world matrix and normal matrix come from a per-frame matrix
@@ -313,6 +331,20 @@ void main() {
 		vMaterialIndex = matIdx;
 		#endif
 	#endif
+	#ifdef INSTANCE_MATERIAL
+	// A: rgb + opacity. B: sprite (rotation, size attenuation 0/1, -, alphaTest), points (size, height / 2 if attenuated else 0, -, alphaTest), dashed lines (scale, dashSize, totalSize, alphaTest)
+	vec4 instA = texelFetch( objectMatrices, objectTexel + ivec2( 4, 0 ), 0 );
+	vec4 instB = texelFetch( objectMatrices, objectTexel + ivec2( 5, 0 ), 0 );
+	vInstA = instA;
+	vInstB = instB;
+	#endif
+	#ifdef IS_DASHED
+		#ifdef INSTANCE_MATERIAL
+		vLineDistance = instB.x * lineDistance;
+		#else
+		vLineDistance = matParams.x * lineDistance;
+		#endif
+	#endif
 	vec3 transformed = vec3( position );
 	#ifdef USE_NORMAL
 	vec3 objectNormal = vec3( normal );
@@ -334,11 +366,21 @@ void main() {
 		vec4 mvPosition = modelViewMatrix * vec4( 0.0, 0.0, 0.0, 1.0 );
 		#endif
 		vec2 scale = vec2( length( model[ 0 ].xyz ), length( model[ 1 ].xyz ) );
-		#ifndef SIZE_ATTENUATION
-		if ( cameraPosition.w < 0.5 ) scale *= - mvPosition.z;
+		#ifdef INSTANCE_MATERIAL
+		if ( instB.y < 0.5 && projectionMatrix[ 2 ][ 3 ] == - 1.0 ) scale *= - mvPosition.z;
+		float spriteRotation = instB.x;
+		#else
+			#ifndef SIZE_ATTENUATION
+			if ( projectionMatrix[ 2 ][ 3 ] == - 1.0 ) scale *= - mvPosition.z;
+			#endif
+		float spriteRotation = matParams2.w;
 		#endif
-		vec2 aligned = ( position.xy - ( uSpriteCenter - vec2( 0.5 ) ) ) * scale;
-		float c = cos( matParams2.w ), s = sin( matParams2.w );
+		vec2 spriteCenter = uSpriteCenter;
+		#ifdef USE_OBJECT_TEXTURE
+		spriteCenter = texelFetch( objectMatrices, objectTexel + ivec2( 6, 0 ), 0 ).xy;
+		#endif
+		vec2 aligned = ( position.xy - ( spriteCenter - vec2( 0.5 ) ) ) * scale;
+		float c = cos( spriteRotation ), s = sin( spriteRotation );
 		vec2 rotated = vec2( c * aligned.x - s * aligned.y, s * aligned.x + c * aligned.y );
 		mvPosition.xy += rotated;
 		// camera right/up axes in world space are rows 0 and 1 of the view matrix
@@ -348,12 +390,18 @@ void main() {
 	#else
 		vec4 worldPosition = model * vec4( transformed, 1.0 );
 		#if defined( USE_OBJECT_TEXTURE )
-		vec4 mvPosition = viewMatrix * worldPosition;
+			#if defined( IS_LINE ) || defined( IS_POINTS )
+			// batched lines / points: one modelView matrix applied to the vertex (fewer roundings than view * (model * position))
+			vec4 mvPosition = ( viewMatrix * model ) * vec4( transformed, 1.0 );
+			#else
+			vec4 mvPosition = viewMatrix * worldPosition;
+			#endif
 		#elif defined( USE_INSTANCING )
 		// three.js's order: projectionMatrix * ( modelViewMatrix * ( instanceMatrix * position ) ), modelViewMatrix
 		// rounded once from a double-precision product; same float32 operations -> same clip position
 		vec4 mvPosition = modelViewMatrix * ( instanceMatrix * vec4( transformed, 1.0 ) );
 		#else
+		// per-object draws (meshes, lines, points): the CPU double-precision modelViewMatrix
 		vec4 mvPosition = modelViewMatrix * vec4( transformed, 1.0 );
 		#endif
 	#endif
@@ -455,9 +503,14 @@ void main() {
 	vFogDepth = - mvPosition.z;
 	#endif
 	#ifdef IS_POINTS
-	gl_PointSize = matParams2.z;
-		#ifdef SIZE_ATTENUATION
-		if ( cameraPosition.w < 0.5 ) gl_PointSize *= ( viewport.w * 0.5 ) / ( - mvPosition.z );
+		#ifdef INSTANCE_MATERIAL
+		gl_PointSize = instB.x;
+		if ( instB.y > 0.0 && projectionMatrix[ 2 ][ 3 ] == - 1.0 ) gl_PointSize *= ( instB.y / - mvPosition.z );
+		#else
+		gl_PointSize = matParams2.z;
+			#ifdef SIZE_ATTENUATION
+			if ( projectionMatrix[ 2 ][ 3 ] == - 1.0 ) gl_PointSize *= ( matParams2.w / - mvPosition.z );
+			#endif
 		#endif
 	#endif
 	#if NUM_DIR_SHADOWS > 0
@@ -546,6 +599,13 @@ in vec4 vColor;
 #endif
 #ifdef USE_FOG
 in float vFogDepth;
+#endif
+#ifdef IS_DASHED
+in float vLineDistance;
+#endif
+#ifdef INSTANCE_MATERIAL
+flat in vec4 vInstA;
+flat in vec4 vInstB;
 #endif
 #ifdef USE_MAP
 uniform sampler2D map;
@@ -876,9 +936,19 @@ vec4 sRGBTransferOETF( in vec4 value ) {
 }
 
 void main() {
+	#ifdef IS_DASHED
+		#ifdef INSTANCE_MATERIAL
+		if ( mod( vLineDistance, vInstB.z ) > vInstB.y ) discard;
+		#else
+		if ( mod( vLineDistance, matParams.z ) > matParams.y ) discard;
+		#endif
+	#endif
 	#ifdef IS_POINTS
-	// three.js map_particle_fragment: the point sprite's y axis points down, the uv transform applies to the flipped coordinate
-	vec2 pointUv = ( mat3( uvTransform0.xyz, uvTransform1.xyz, uvTransform2.xyz ) * vec3( gl_PointCoord.x, 1.0 - gl_PointCoord.y, 1.0 ) ).xy;
+		#ifdef USE_UV
+		vec2 pointUv = vUv;
+		#else
+		vec2 pointUv = ( mat3( uvTransform0.xyz, uvTransform1.xyz, uvTransform2.xyz ) * vec3( gl_PointCoord.x, 1.0 - gl_PointCoord.y, 1.0 ) ).xy;
+		#endif
 	#endif
 	#if defined( IS_SHADOW_PASS )
 	// three.js's shadow depth material: alpha 1 (its own opacity), then map / alphaMap / alphaTest; no vertex colours
@@ -886,7 +956,11 @@ void main() {
 	#elif defined( IS_DEPTH )
 	vec4 diffuseColor = vec4( 1.0, 1.0, 1.0, diffuse.a ); // MeshDepthMaterial: the opacity, no vertex colours
 	#else
-	vec4 diffuseColor = vec4( diffuse.rgb, diffuse.a );
+		#ifdef INSTANCE_MATERIAL
+		vec4 diffuseColor = vInstA;
+		#else
+		vec4 diffuseColor = vec4( diffuse.rgb, diffuse.a );
+		#endif
 		#if defined( USE_COLOR ) || defined( USE_INSTANCING_COLOR )
 		diffuseColor *= vColor;
 		#endif
@@ -909,6 +983,8 @@ void main() {
 	#ifdef USE_ALPHATEST
 		#ifdef ALPHATEST_HALF
 		if ( diffuseColor.a < 0.5 ) discard;
+		#elif defined( INSTANCE_MATERIAL )
+		if ( diffuseColor.a < vInstB.w ) discard;
 		#else
 		if ( diffuseColor.a < emissive.a ) discard;
 		#endif
@@ -1251,6 +1327,7 @@ export function buildBuiltinShader(p) {
 		case MATERIAL_DEPTH: d('IS_DEPTH'); break;
 		case MATERIAL_SHADOW_DEPTH: d('IS_DEPTH'); d('IS_SHADOW_PASS'); break;
 		case MATERIAL_POINTS: d('IS_POINTS'); break;
+		case MATERIAL_LINE: d('IS_LINE'); break;
 		case MATERIAL_SPRITE: d('IS_SPRITE'); break;
 	}
 	if (p.leanShadow) d('SHADOW_LEAN');
@@ -1288,6 +1365,9 @@ export function buildBuiltinShader(p) {
 	if (p.alphaTest) d('USE_ALPHATEST');
 	if (p.alphaTestHalf) d('ALPHATEST_HALF');
 	if (p.sizeAttenuation) d('SIZE_ATTENUATION');
+	if (p.dashed) d('IS_DASHED');
+	if (p.instanceMaterial) d('INSTANCE_MATERIAL');
+	if (p.opaque) d('OPAQUE');
 	if (p.premultipliedAlpha) d('PREMULTIPLIED_ALPHA');
 	if (p.opaque) d('OPAQUE');
 	if (p.dithering) d('DITHERING');
