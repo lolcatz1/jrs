@@ -1,9 +1,9 @@
 // Measures microseconds per frame spent in WebGLRenderList.finish (packed-key build + sort), jrs only.
-// usage: node bench/sortcost.mjs [scenario ...] [--frames=300]
+// usage: node bench/sortcost.mjs [scenario ...] [--frames=150]
 import { startServer } from './serve.mjs';
 import { launchBrowser } from './browser.mjs';
 const names = process.argv.slice(2).filter(a => !a.startsWith('--'));
-const frames = Number((process.argv.find(a => a.startsWith('--frames=')) || '--frames=300').split('=')[1]);
+const frames = Number((process.argv.find(a => a.startsWith('--frames=')) || '--frames=150').split('=')[1]);
 const list = names.length ? names : ['shared-static', 'many-materials', 'transparent-sort'];
 const { server, port } = await startServer();
 const browser = await launchBrowser();

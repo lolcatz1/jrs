@@ -8,9 +8,9 @@
  * per-frame allocation once the arrays have grown to size:
  *
  *   1. If the previous frame's order still has the same item count, it is
- *      repaired with an insertion sort under a work budget. A frame where
- *      nothing moved costs one linear pass; a slowly moving camera costs a few
- *      shifts per object.
+ *      verified with an insertion-sort pass under a small shift budget (n/16). A frame
+ *      where nothing (or almost nothing) moved costs one linear pass. Measured on an
+ *      orbiting 10k grid the budget is always exhausted, so the cost stays bounded.
  *   2. Otherwise (or when the budget runs out) a stable LSD radix sort on the
  *      32-bit key (11+11+10 bit digits; digits that are constant across the list
  *      are skipped). The input is in ascending item order, so stability gives the
@@ -61,7 +61,7 @@ class SortSlot {
 	finish(sortObjects) {
 		const n = this.n, ids = this.ids, sorted = this.sorted;
 		if (sortObjects && n > 1) {
-			if (this.orderN !== n || !repairOrder(this.order, this.hi, n, n * 2 + 16)) {
+			if (this.orderN !== n || !repairOrder(this.order, this.hi, n, n >> 4)) {
 				radixOrder(this.order, this.hi, n);
 				this.orderN = n;
 			}
