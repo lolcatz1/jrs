@@ -1525,6 +1525,7 @@ class WebGLRenderer {
 			bt.boundStamp = this._samplerStamp;
 			if (material.isShaderMaterial !== true && program.boneBaseUniform !== null) {
 				// built-in programs: one shared atlas, the skeleton's slot range selected by `boneBase`
+				if (skeleton._atlas !== this._boneAtlas) this._boneAtlas.sync(skeleton); // another renderer took the skeleton over since this list was built
 				const bb = program.boneBaseUniform, base = skeleton._atlasBase;
 				if (bb.cache !== base) { bb.cache = base; gl.uniform1i(bb.location, base); if (this._traceUniforms !== null) this._trace(bb); }
 				this.textures.setTexture2D(this._boneAtlas.flush(), bt.unit);
