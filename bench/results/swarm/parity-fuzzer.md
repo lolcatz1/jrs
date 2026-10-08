@@ -102,8 +102,7 @@ default feature set, `--continue`.
 | Run | Seeds | Result |
 |---|---|---|
 | Baseline, before any fix | 1-5 | 5/5 failing (means up to 88 levels, GL errors, a jrs exception) |
-| Final code, full feature set | 1-100 | 86 pass, 14 residual (every one mean ≤ 0.10, ≤ 206 pixels over 33; table below) |
-| Final code, full feature set | 101-200 | SEEDS_101_200 |
+| Final code, full feature set | 1-200 | 182 pass, 18 residual (every one mean ≤ 0.16, ≤ 230 pixels over 33; table below) |
 | Self-check (`--selfcheck`, each library vs itself) | 1-10 | identical frames for both libraries (deterministic) |
 
 Feature-isolated batches with the final code (30 seeds each, `--only=basic,<feature>` plus
@@ -113,14 +112,15 @@ vertex colours, groups/drawRange/custom geometry, hierarchy, camera moves, backg
 override materials, instancing, Standard+lights, Phong+lights, Phong+transparency+side, Standard+shadows
 all pass (worst mean 0.07, on shadow scenes). Over the night roughly 3,500 seed renders were run.
 
-Residual failures in seeds 1-100 (final code), all small and all interactions of several objects (every
-object alone renders identically; `--loo`/pair isolation in the scratch tooling pinned them):
+Residual failures in seeds 1-200 (final code), all small; `bench/fuzz-isolate.mjs` shows every object
+alone renders identically in each of them, so they are interactions of several objects:
 
 | Seed | mean | px>33 | What |
 |---|---|---|---|
+| 145 | 0.154 | 55 | chunk-based ShaderMaterials (BackSide, RGBA vertex colours) are ~12% darker in jrs from the first non-override frame on, in a scene whose frame 0 used a Lambert `overrideMaterial`; the matrices handed to the shader are identical, every feature subset passes alone; open |
 | 93 | 0.098 | 206 | one transparent DoubleSide custom-blend MeshPhongMaterial shared by a 6-group box and an InstancedMesh with instance colours: a 150-pixel sliver where they overlap composites lighter in jrs, independent of draw order and of single/two-pass; open |
-| 23, 27, 28, 41, 47 | ≤ 0.061 | ≤ 137 | scenes with a render target used as a map (three sRGB): pixels that are exactly black in three.js come out as (0,0,15) in jrs on surfaces textured with it; open |
-| 61, 99, 63, 85, 78, 35, 65, 8 | ≤ 0.027 | ≤ 60 | clusters of a few dozen pixels at object edges in scenes with many stencil / custom-blend / shader objects; likely the float32 edge effect on thin overlapping geometry, not yet proven |
+| 23, 27, 28, 142, 160, 192 | ≤ 0.10 | ≤ 230 | scenes with a render target used as a map: small clusters on surfaces textured with it (e.g. (0,0,0) in three.js vs (0,0,15) in jrs); a direct test of linear and sRGB render-target round trips is now pixel-identical, so what remains is specific to these scenes; open |
+| 8, 35, 61, 63, 65, 78, 85, 99, 112, 170 | ≤ 0.04 | ≤ 60 | a few dozen pixels at object edges in scenes with many stencil / custom-blend / shader objects; likely the float32 edge effect on thin overlapping geometry, not proven |
 
 ## Mismatches found and what was done
 
@@ -192,6 +192,12 @@ each with the reasoning.
     from the casters' orders only, so in the main pass every non-caster renderOrder ranked last and
     order-dependent materials (depthWrite off, blending, stencil) composited differently whenever
     shadows were on.
+16. **ShaderMaterial ignored instance colours** (`ShaderLib`). three.js defines `USE_COLOR` in the
+    fragment prefix when the object is an InstancedMesh with instance colours; jrs only did so for
+    `vertexColors`, so chunk-based shaders (`color_fragment`-style code) dropped the per-instance tint.
+17. **sRGB render targets encoded twice** (`WebGLPrograms`; the edit meant for fix 9 had been lost):
+    content drawn into an sRGB render target was 2x encoded (e.g. (203,89,149) expected, (231,160,201)
+    drawn); now identical to three.js for linear and sRGB targets.
 
 ### Open (found, not fixed tonight)
 
@@ -200,9 +206,12 @@ each with the reasoning.
   identical; the pair differs whichever draw order is forced and with `forceSinglePass`. Something in
   the per-material state (uniform block or texture/VAO binding) differs between the instanced and the
   non-instanced program of the same material; not located.
-* **sRGB render target sampled slightly non-black** (seeds 23, 27, 28, 41, 47): where three.js shows
-  exactly 0, jrs shows a linear value of about 0.004 (15/255 after encoding) on surfaces that sample
-  the render target. Likely the clear or the sRGB encode/decode round trip of the target; mean ≤ 0.06.
+* **Render-target-textured surfaces in a few scenes** (seeds 23, 27, 28, 142, 160, 192): small clusters
+  where three.js shows exactly 0 and jrs about 0.004 linear (15/255 encoded), or similar; the plain
+  linear/sRGB round trip is identical in a direct test, so it depends on something else in those
+  scenes (fog, tone mapping, camera view offset are common to several of them); mean ≤ 0.10.
+* **Seed 145** (see the table): ShaderMaterials ~12% darker after a frame rendered with an
+  `overrideMaterial`; not located.
 
 ### Known, excluded from the default feature set (flag to re-enable)
 
