@@ -15,6 +15,10 @@
  * matrices straight out of the page with the WebGL2 srcOffset overloads, so
  * no per-draw copy or allocation happens.
  *
+ * Each page also carries a Float64Array of SNAP_SIZE doubles per record holding the
+ * transform snapshot used by Object3D.updateMatrix() change detection, so a static
+ * object's check reads one contiguous run instead of ten separate boxed fields.
+ *
  * Records are recycled through a FinalizationRegistry when their Object3D is
  * garbage collected, so slots are never leaked by apps that churn objects.
  */
@@ -24,12 +28,15 @@ export const LOCAL_OFFSET = 0;
 export const WORLD_OFFSET = 16;
 export const NORMAL_OFFSET = 32;
 export const SPHERE_OFFSET = 41;
+export const SNAP_SIZE = 16;
 
 const PAGE_RECORDS = 1024;
 
 class Page {
 	constructor() {
 		this.data = new Float32Array(RECORD_SIZE * PAGE_RECORDS);
+		// change-detection snapshot of position / quaternion / scale (10 doubles per record, stride SNAP_SIZE)
+		this.snap = new Float64Array(SNAP_SIZE * PAGE_RECORDS);
 		this.used = 0;
 	}
 }
@@ -61,6 +68,7 @@ class TransformSlab {
 			page.used++;
 		}
 		const d = slot.page.data, o = slot.offset;
+		slot.snapOffset = (o / RECORD_SIZE) * SNAP_SIZE;
 		// identity local + world, zero the rest
 		for (let i = 0; i < RECORD_SIZE; i++) d[o + i] = 0;
 		d[o] = 1; d[o + 5] = 1; d[o + 10] = 1; d[o + 15] = 1;
