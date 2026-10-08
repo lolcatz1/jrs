@@ -39,7 +39,7 @@ class FlatGraph {
 		this.end = null;         // Int32Array: index one past the last descendant (subtree range [i, end[i]))
 		this.childCount = null;  // Int32Array: children.length when the entry was built / patched
 		this.kind = null;        // Uint8Array: K_* bits
-		this.wv = null;          // Float64Array: _worldVersion after this frame's update (parent-before-child)
+		this.wv = null;          // Int32Array: _worldVersion after this frame's update (parent-before-child)
 		this.dirty = null;       // Uint8Array: world matrix was (re)computed or forced this frame -> descendants recompute
 		this.vis = null;         // Uint8Array: effective visibility (own `visible` and every ancestor's)
 		this.valid = false;
@@ -58,7 +58,7 @@ class FlatGraph {
 		this.end = grow(this.end, Int32Array);
 		this.childCount = grow(this.childCount, Int32Array);
 		this.kind = grow(this.kind, Uint8Array);
-		this.wv = grow(this.wv, Float64Array);
+		this.wv = grow(this.wv, Int32Array);
 		this.dirty = grow(this.dirty, Uint8Array);
 		this.vis = grow(this.vis, Uint8Array);
 		this.capacity = c;
@@ -156,7 +156,7 @@ class FlatGraph {
 		this.patches++; this.patched++;
 	}
 
-	/** Cheap structural check: every entry still has the child count it was built with. */
+	/** Structural check (the renderer's pass does the same per entry as it goes): every entry still has the child count it was built with. */
 	validate() {
 		const objects = this.objects, childCount = this.childCount;
 		for (let i = 0, n = this.n; i < n; i++) if (objects[i].children.length !== childCount[i]) return false;

@@ -440,7 +440,14 @@ class WebGLRenderer {
 			const update = scene.matrixWorldAutoUpdate === true;
 			const merged = update && (cache.hasSig === false || cache.flatChanged === true || this.reuseRenderLists === false ||
 				cache.structure !== epochs.structure || cache.world !== epochs.world);
-			if (update && merged === false) { this._flatPass(flat, scene, camera, null, true, false, false); cache.flatChanged = flat.changed; }
+			if (update && merged === false) {
+				if (this._flatPass(flat, scene, camera, null, true, false, false) === false) {
+					// a children.length differed from the graph (direct edit): rebuild and finish the update
+					const changed = flat.changed; flat.rebuild(); this.debug.flatUpdate.rebuilds++;
+					this._flatPass(flat, scene, camera, null, true, false, false); flat.changed = flat.changed || changed;
+				}
+				cache.flatChanged = flat.changed;
+			}
 			this._flatGraph = flat; this._flatMerged = merged;
 			this.debug.flatUpdate[merged ? 'merged' : update ? 'split' : 'projectOnly']++;
 		} else { this._flatGraph = null; this._flatMerged = false; }
@@ -512,7 +519,7 @@ class WebGLRenderer {
 	_flatGraphFor(scene) {
 		let g = scene._flatGraph;
 		if (g === null) { g = new FlatGraph(scene); scene._flatGraph = g; }
-		if (g.valid === false || g.validate() === false) { g.rebuild(); this.debug.flatUpdate.rebuilds++; }
+		if (g.valid === false) { g.rebuild(); this.debug.flatUpdate.rebuilds++; }
 		g.patches = 0;
 		return g;
 	}
@@ -623,10 +630,15 @@ class WebGLRenderer {
 			cache.cmdOpaque.invalidate(); cache.cmdTransparent.invalidate();
 			this._rec = null;
 			this._cameraLayerMask = camera.layers.mask;
-			list.init();
-			this.lights.begin();
-			this._renderOrderReset();
-			this._flatPass(flat, scene, camera, list, true, true, this.sortObjects);
+			let changed = false;
+			for (;;) {
+				list.init();
+				this.lights.begin();
+				this._renderOrderReset();
+				if (this._flatPass(flat, scene, camera, list, true, true, this.sortObjects) === true) break;
+				changed = changed || flat.changed; flat.rebuild(); this.debug.flatUpdate.rebuilds++; // direct children edit: the rebuilt graph always passes
+			}
+			flat.changed = flat.changed || changed;
 			cache.hasSig = true; cache.structure = epochs.structure; cache.world = epochs.world; cache.sortObjects = this.sortObjects; cache.override = override;
 			cache.setCamera(camera, view, pv);
 			cache.flatChanged = flat.changed;
@@ -642,14 +654,17 @@ class WebGLRenderer {
 		cache.cmdOpaque.invalidate(); cache.cmdTransparent.invalidate();
 		cache.hasSig = true; cache.structure = structure; cache.world = world; cache.sortObjects = this.sortObjects; cache.override = override;
 		cache.setCamera(camera, view, pv);
-		if (record) cache.resetDeps();
-		this._rec = record ? cache : null;
 		this._cameraLayerMask = camera.layers.mask;
-		list.init();
-		this.lights.begin();
-		this._renderOrderReset();
-		if (flat !== null) this._flatPass(flat, scene, camera, list, false, true, this.sortObjects);
-		else this._projectObject(scene, camera, 0, this.sortObjects, list);
+		for (;;) {
+			if (record) cache.resetDeps();
+			this._rec = record ? cache : null;
+			list.init();
+			this.lights.begin();
+			this._renderOrderReset();
+			if (flat === null) { this._projectObject(scene, camera, 0, this.sortObjects, list); break; }
+			if (this._flatPass(flat, scene, camera, list, false, true, this.sortObjects) === true) break;
+			flat.rebuild(); this.debug.flatUpdate.rebuilds++; // direct children edit: the rebuilt graph always passes
+		}
 		this._rec = null;
 		this.lights.end(this.shadowMap.enabled);
 		if (this.lights.version !== this._lastLightsVersion) { this._lastLightsVersion = this.lights.version; this._lightsEpoch++; this._envVersion = this._lightsEpoch * 65536 + this._envKeyId; }
@@ -874,16 +889,19 @@ class WebGLRenderer {
 	 * lights, LOD, sprites, items) into `list`, in the same order as the recursive walk.
 	 */
 	_flatPass(g, scene, camera, list, doUpdate, project, sortObjects) {
-		const objects = g.objects, parentIdx = g.parent, kind = g.kind, wv = g.wv, dirty = g.dirty, vis = g.vis, n = g.n;
+		const objects = g.objects, parentIdx = g.parent, kind = g.kind, childCount = g.childCount, wv = g.wv, dirty = g.dirty, vis = g.vis, n = g.n;
 		const rec = this._rec, camMask = this._cameraLayerMask;
 		const ve = project ? camera.matrixWorldInverse.elements : null;
 		const zScratch = project ? list.zScratch : null;
+		const frustum = _frustum, fplanes = frustum.flat, fv = frustum.version;
 		const worldBefore = epochs.world;
-		let bumps = 0;
+		let bumps = 0, ok = true;
 		this._deferSkeletons = doUpdate && project;
 		for (let i = 0; i < n; i++) {
 			const o = objects[i];
+			if (o.children.length !== childCount[i]) { ok = false; g.valid = false; break; } // children edited directly: caller rebuilds and reruns
 			const k = kind[i], p = parentIdx[i];
+			let recomputed = false;
 			if (doUpdate && (k & K_INSUB) === 0) {
 				if ((k & K_CUSTOM) !== 0) {
 					// a class with its own updateMatrixWorld: let it update its subtree (entries below it are K_INSUB)
@@ -955,6 +973,7 @@ class WebGLRenderer {
 							}
 							o._worldVersion++;
 							if ((k & K_NOCOUNT) === 0) bumps++;
+							recomputed = true;
 						}
 						if (p >= 0) o._parentWorldVersion = pw; // noted for user-owned world matrices too (see Object3D.updateMatrixWorld)
 						o.matrixWorldNeedsUpdate = false;
@@ -976,7 +995,35 @@ class WebGLRenderer {
 			if ((k & K_RENDERABLE) !== 0) {
 				const geometry = o.geometry;
 				const material = o.material;
-				const inside = !o.frustumCulled || this._cullTest(o, geometry, _frustum, false);
+				const s = o._slabData, lo = o._slabOffset;
+				let inside;
+				if (o._frustumCulled === false) inside = true;
+				else if (recomputed === true) {
+					// the world matrix was just written: refresh the slab sphere and test it here, while the record is hot
+					// (same arithmetic as _cullTest, which keeps serving objects that did not move)
+					let bs = o.boundingSphere;
+					if (bs === undefined) { bs = geometry.boundingSphere; if (bs === null) { geometry.computeBoundingSphere(); bs = geometry.boundingSphere; } }
+					else if (bs === null) { o.computeBoundingSphere(); bs = o.boundingSphere; }
+					const c = bs.center, cx = c.x, cy = c.y, cz = c.z, r = bs.radius;
+					const e = lo + 16;
+					const e0 = s[e], e1 = s[e + 1], e2 = s[e + 2], e4 = s[e + 4], e5 = s[e + 5], e6 = s[e + 6], e8 = s[e + 8], e9 = s[e + 9], e10 = s[e + 10];
+					s[lo + 41] = e0 * cx + e4 * cy + e8 * cz + s[e + 12];
+					s[lo + 42] = e1 * cx + e5 * cy + e9 * cz + s[e + 13];
+					s[lo + 43] = e2 * cx + e6 * cy + e10 * cz + s[e + 14];
+					const sx = e0 * e0 + e1 * e1 + e2 * e2, sy = e4 * e4 + e5 * e5 + e6 * e6, sz = e8 * e8 + e9 * e9 + e10 * e10;
+					s[lo + 44] = r * Math.sqrt(sx > sy ? (sx > sz ? sx : sz) : (sy > sz ? sy : sz));
+					const d = o._snapData, q = o._snapOffset + 10;
+					d[q] = r; d[q + 1] = cx; d[q + 2] = cy; d[q + 3] = cz;
+					o._cullVersion = o._worldVersion; o._cullSphere = bs; o._cullFV1 = -1;
+					const x = s[lo + 41], y = s[lo + 42], z = s[lo + 43], negRadius = -s[lo + 44];
+					inside = !(fplanes[0] * x + fplanes[1] * y + fplanes[2] * z + fplanes[3] < negRadius ||
+						fplanes[4] * x + fplanes[5] * y + fplanes[6] * z + fplanes[7] < negRadius ||
+						fplanes[8] * x + fplanes[9] * y + fplanes[10] * z + fplanes[11] < negRadius ||
+						fplanes[12] * x + fplanes[13] * y + fplanes[14] * z + fplanes[15] < negRadius ||
+						fplanes[16] * x + fplanes[17] * y + fplanes[18] * z + fplanes[19] < negRadius ||
+						fplanes[20] * x + fplanes[21] * y + fplanes[22] * z + fplanes[23] < negRadius);
+					o._cullFV0 = fv; o._cullVis0 = inside;
+				} else inside = this._cullTest(o, geometry, frustum, false);
 				const first = list.count;
 				if (rec !== null) {
 					rec.regGeometry(geometry);
@@ -984,7 +1031,14 @@ class WebGLRenderer {
 					if (Array.isArray(material)) rec.reusable = false;
 				}
 				if (inside) {
-					if (sortObjects) this._itemDepth(o, ve, zScratch); else zScratch[0] = 0;
+					if (sortObjects) {
+						// _itemDepth: view-space depth of the cull-sphere centre (or the origin when not culled)
+						let cx, cy, cz;
+						if (o._frustumCulled === false) { cx = s[lo + 28]; cy = s[lo + 29]; cz = s[lo + 30]; } else { cx = s[lo + 41]; cy = s[lo + 42]; cz = s[lo + 43]; }
+						zScratch[0] = -(ve[2] * cx + ve[6] * cy + ve[10] * cz + ve[14]);
+					} else zScratch[0] = 0;
+					// the normal matrix every drawn item needs, computed while its world matrix is in cache
+					if (o._normalVersion !== o._worldVersion) { computeNormalMatrix(s, lo); o._normalVersion = o._worldVersion; }
 					if (Array.isArray(material)) {
 						const groups = geometry.groups;
 						for (let j = 0, l = groups.length; j < l; j++) {
@@ -1005,7 +1059,7 @@ class WebGLRenderer {
 				if (rec !== null) rec.reusable = false;
 				if (o.autoUpdate === true) o.update(camera);
 			} else if ((k & K_SPRITE) !== 0) {
-				const inside = !o.frustumCulled || _frustum.intersectsSprite(o);
+				const inside = !o.frustumCulled || frustum.intersectsSprite(o);
 				const first = list.count;
 				if (inside) {
 					const material = o.material;
@@ -1028,6 +1082,7 @@ class WebGLRenderer {
 			for (let i = 0; i < pending.length; i++) { const sk = pending[i]; if (sk.frame !== frame) { sk.update(); sk.frame = frame; } }
 			pending.length = 0;
 		}
+		return ok;
 	}
 
 	_pushItem(list, object, geometry, material, group, shadowPass) {
