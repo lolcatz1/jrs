@@ -949,3 +949,96 @@ allocations: 1143 bytes/frame; top:
   39        3.4%    setValueV3f [setValueV3f:5159]  <- setValue [StructuredUniform:5972]
   39        3.4%    setFromProjectionMatrix [Frustum:25874]  <- WebGLRenderer.render [WebGLRenderer:17674]
   38        3.3%    from [(native)]  <- window.__runFrames [(native)]
+
+==== shader-client / jrs  (n=1313, draws=1313, programs=13, build 237.2 ms)
+frame ms  plain median 4.2 (mean 22.606, p90 6.4, worst 2181.7) | repeat 3.5 | +gl.finish/frame 1.8 | draws stubbed 1.2 | wall/frame 22.617 | trailing finish 0 ms
+worst frames: #9 2181.7ms (heap +0KB), #30 9.7ms (heap +0KB), #33 8.7ms (heap +0KB), #31 8.3ms (heap +0KB), #11 8.1ms (heap +0KB) | GC frames 0/120 | heap growth 0 KB/frame
+expensive GL calls in 60/60 frames: #0 10ms {"bufferSubData":2}; #1 7.3ms {"bufferSubData":2}; #2 6.1ms {"bufferSubData":2}; #3 6.5ms {"bufferSubData":2}; #4 7ms {"bufferSubData":2}; #5 5.8ms {"bufferSubData":2}
+profiled frame median 2.8 ms; steady-state sampled 4.454 ms/frame over 77 frames (85452 samples), GL native 0.982 ms/frame; 4 stall frames totalling 12179.7 ms excluded
+  stall frame #2 12111.6 ms: uniformMatrix4fv [(native)] 12064.0ms | bindVertexArray [(native)] 16.0ms | drawElements [(native)] 7.0ms
+  stall frame #15 26.6 ms: uniformMatrix4fv [(native)] 6.8ms | bindTexture [(native)] 4.8ms | _uploadShaderMaterialUniforms [WebGLRenderer.js:1045] 3.4ms
+  stall frame #4 22.7 ms: uniformMatrix4fv [(native)] 14.5ms | drawElements [(native)] 3.8ms | _uploadShaderMaterialUniforms [WebGLRenderer.js:1045] 0.9ms
+  stall frame #16 18.8 ms: _renderItem [WebGLRenderer.js:958] 5.0ms | _uploadShaderMaterialUniforms [WebGLRenderer.js:1045] 2.0ms | bind [WebGLBindingStates.js:47] 1.6ms
+steady-state phases (ms/frame, %, of which native GL):
+  scene graph update           0.121    2.7%    gl 0
+  project + cull               0.239    5.4%    gl 0
+  sort                         0.183    4.1%    gl 0
+  program resolve              0.038    0.8%    gl 0
+  draw-list build              0.135    3%      gl 0
+  per-draw state               0.151    3.4%    gl 0.018
+  uniform upload               1.441    32.4%   gl 0.075
+  texture bind                 0.193    4.3%    gl 0.05
+  geometry bind                0.746    16.8%   gl 0.38
+  draw issue                   0.913    20.5%   gl 0.432
+  frame setup/other renderer   0.035    0.8%    gl 0.025
+  GC                           0.014    0.3%    gl 0
+  (program)/VM                 0.055    1.2%    gl 0
+  other JS                     0.19     4.3%    gl 0.002
+top self time:
+  0.686    15.4%   setUniformValueImpl [WebGLRenderer.js:1174]
+  0.612    13.7%   _uploadShaderMaterialUniforms [WebGLRenderer.js:1045]
+  0.38     8.5%    bindVertexArray [(native)]
+  0.346    7.8%    _renderItem [WebGLRenderer.js:958]
+  0.333    7.5%    bind [WebGLBindingStates.js:47]
+  0.219    4.9%    uniformMatrix4fv [(native)]
+  0.213    4.8%    drawElements [(native)]
+  0.183    4.1%    finish [WebGLRenderLists.js:73]
+  0.142    3.2%    now [(native)]
+  0.139    3.1%    _projectObject [WebGLRenderer.js:510]
+  0.135    3%      _drawList [WebGLRenderer.js:765]
+  0.134    3%      _draw [WebGLRenderer.js:1012]
+  0.101    2.3%    _setupMaterial [WebGLRenderer.js:928]
+  0.069    1.5%    updateMatrix [Object3D.js:267]
+  0.066    1.5%    bindTextureUniform [WebGLRenderer.js:1128]
+  0.064    1.4%    uniform1f [(native)]
+  0.052    1.2%    updateMatrixWorld [Object3D.js:295]
+  0.05     1.1%    push [WebGLRenderLists.js:48]
+  0.05     1.1%    bindTexture [(native)]
+  0.049    1.1%    (program) [(native)]
+  0.047    1.1%    setTexture2D [WebGLTextures.js:210]
+  0.042    0.9%    _cullTest [WebGLRenderer.js:484]
+  0.038    0.8%    _resolvePrograms [WebGLRenderer.js:574]
+  0.034    0.8%    bindVertexArray [WebGLState.js:84]
+  0.033    0.8%    cacheVec [WebGLRenderer.js:1139]
+top inclusive:
+  4.454    100%    (root) [(native)]
+  4.383    98.4%   (anonymous) [(native)]
+  4.383    98.4%   evaluate [(native)]
+  4.38     98.3%   window.__runFrames [(native)]
+  4.219    94.7%   doFrame [(native)]
+  4.193    94.1%   render [WebGLRenderer.js:354]
+  3.571    80.2%   _drawList [WebGLRenderer.js:765]
+  3.433    77.1%   _renderItem [WebGLRenderer.js:958]
+  1.776    39.9%   _setupMaterial [WebGLRenderer.js:928]
+  1.626    36.5%   _uploadShaderMaterialUniforms [WebGLRenderer.js:1045]
+  1.014    22.8%   setUniformValueImpl [WebGLRenderer.js:1174]
+  0.746    16.8%   bind [WebGLBindingStates.js:47]
+  0.414    9.3%    bindVertexArray [WebGLState.js:84]
+  0.38     8.5%    bindVertexArray [(native)]
+  0.347    7.8%    _draw [WebGLRenderer.js:1012]
+native GL by call:
+  0.38     8.5%    bindVertexArray
+  0.219    4.9%    uniformMatrix4fv
+  0.213    4.8%    drawElements
+  0.064    1.4%    uniform1f
+  0.05     1.1%    bindTexture
+  0.016    0.3%    bufferSubData
+  0.012    0.3%    useProgram
+  0.008    0.2%    bindBuffer
+  0.007    0.1%    clear
+  0.006    0.1%    uniform3f
+  0.004    0.1%    disable
+  0.002    0.1%    enable
+allocations: 17983 bytes/frame; top:
+  16067     89.3%   _projectObject [WebGLRenderer.js:510]  <- _projectObject [WebGLRenderer.js:510]
+  600       3.3%    _uploadFrameBlock [WebGLRenderer.js:457]  <- render [WebGLRenderer.js:354]
+  371       2.1%    setUniformValueImpl [WebGLRenderer.js:1174]  <- _uploadShaderMaterialUniforms [WebGLRenderer.js:1045]
+  131       0.7%    subarray [(native)]  <- finish [WebGLRenderLists.js:73]
+  122       0.7%    _updateEnv [WebGLRenderer.js:449]  <- render [WebGLRenderer.js:354]
+  87        0.5%    next [(native)]  <- from [(native)]
+  82        0.5%    _renderOrderReset [WebGLRenderer.js:435]  <- render [WebGLRenderer.js:354]
+  57        0.3%    from [(native)]  <- window.__runFrames [(native)]
+  56        0.3%    setFromProjectionMatrix [Frustum.js:31]  <- render [WebGLRenderer.js:354]
+  52        0.3%    (anonymous) [(native)]  <- innerSerialize [(native)]
+  52        0.3%    update [scenarios.js:305]  <- doFrame [(native)]
+  46        0.3%    innerSerialize [(native)]  <- serialize [(native)]
