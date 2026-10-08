@@ -84,12 +84,13 @@ class Object3D extends EventDispatcher {
 		sn[so] = NaN; sn[so + 1] = 0; sn[so + 2] = 0;
 		sn[so + 3] = 0; sn[so + 4] = 0; sn[so + 5] = 0; sn[so + 6] = 1;
 		sn[so + 7] = 1; sn[so + 8] = 1; sn[so + 9] = 1;
+		sn[so + 10] = 0; sn[so + 11] = 0; sn[so + 12] = 0; sn[so + 13] = 0;
 		this._worldVersion = 0;
 		this._parentWorldVersion = -1;
 		// renderer scratch (initialised here so every Object3D shares one hidden class)
 		this._normalVersion = -1;
 		this._flipVersion = -1; this._frontFaceCW = false;
-		this._cullVersion = -1; this._cullSphere = null; this._cullRadius = 0; this._cullCx = 0; this._cullCy = 0; this._cullCz = 0;
+		this._cullVersion = -1; this._cullSphere = null; // cull cache doubles (radius, centre) live in the snapshot record at +10..+13
 
 		this.matrixAutoUpdate = Object3D.DEFAULT_MATRIX_AUTO_UPDATE;
 		this.matrixWorldAutoUpdate = Object3D.DEFAULT_MATRIX_WORLD_AUTO_UPDATE;
