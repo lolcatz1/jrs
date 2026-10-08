@@ -3949,10 +3949,12 @@ var Layers = class {
 var RECORD_SIZE = 48;
 var LOCAL_OFFSET = 0;
 var WORLD_OFFSET = 16;
+var SNAPSHOT_SIZE = 10;
 var PAGE_RECORDS = 1024;
 var Page = class {
   constructor() {
     this.data = new Float32Array(RECORD_SIZE * PAGE_RECORDS);
+    this.snapshot = new Float64Array(SNAPSHOT_SIZE * PAGE_RECORDS);
     this.used = 0;
   }
 };
@@ -3979,7 +3981,7 @@ var TransformSlab = class {
         page = new Page();
         this.pages.push(page);
       }
-      slot = { page, offset: page.used * RECORD_SIZE };
+      slot = { page, offset: page.used * RECORD_SIZE, snapshotOffset: page.used * SNAPSHOT_SIZE };
       page.used++;
     }
     const d = slot.page.data, o = slot.offset;
@@ -3992,6 +3994,7 @@ var TransformSlab = class {
     d[o + 21] = 1;
     d[o + 26] = 1;
     d[o + 31] = 1;
+    slot.page.snapshot[slot.snapshotOffset] = NaN;
     this.live++;
     if (this.registry !== null) this.registry.register(owner, slot);
     return slot;
@@ -4068,6 +4071,8 @@ var Object3D = class _Object3D extends EventDispatcher {
     const slot = transformSlab.allocate(this);
     this._slabData = slot.page.data;
     this._slabOffset = slot.offset;
+    this._snapData = slot.page.snapshot;
+    this._snapOffset = slot.snapshotOffset;
     const matrix = new Matrix4(this._slabData.subarray(slot.offset + LOCAL_OFFSET, slot.offset + LOCAL_OFFSET + 16));
     const matrixWorld = new Matrix4(this._slabData.subarray(slot.offset + WORLD_OFFSET, slot.offset + WORLD_OFFSET + 16));
     Object.defineProperties(this, {
@@ -4080,16 +4085,6 @@ var Object3D = class _Object3D extends EventDispatcher {
     });
     this._matrix = matrix;
     this._matrixWorld = matrixWorld;
-    this._px = NaN;
-    this._py = 0;
-    this._pz = 0;
-    this._qx = 0;
-    this._qy = 0;
-    this._qz = 0;
-    this._qw = 1;
-    this._sx = 1;
-    this._sy = 1;
-    this._sz = 1;
     this._worldVersion = 0;
     this._parentWorldVersion = -1;
     this._normalVersion = -1;
@@ -4143,7 +4138,7 @@ var Object3D = class _Object3D extends EventDispatcher {
     if (this.matrixAutoUpdate) this.updateMatrix();
     this._matrix.premultiply(matrix);
     this._matrix.decompose(this.position, this.quaternion, this.scale);
-    this._px = NaN;
+    this._snapData[this._snapOffset] = NaN;
     this.matrixWorldNeedsUpdate = true;
   }
   applyQuaternion(q) {
@@ -4343,37 +4338,37 @@ var Object3D = class _Object3D extends EventDispatcher {
     }
   }
   _snapshot() {
-    const p = this.position, q = this.quaternion, s = this.scale;
-    this._px = p.x;
-    this._py = p.y;
-    this._pz = p.z;
-    this._qx = q._x;
-    this._qy = q._y;
-    this._qz = q._z;
-    this._qw = q._w;
-    this._sx = s.x;
-    this._sy = s.y;
-    this._sz = s.z;
+    const p = this.position, q = this.quaternion, s = this.scale, d = this._snapData, o = this._snapOffset;
+    d[o] = p.x;
+    d[o + 1] = p.y;
+    d[o + 2] = p.z;
+    d[o + 3] = q._x;
+    d[o + 4] = q._y;
+    d[o + 5] = q._z;
+    d[o + 6] = q._w;
+    d[o + 7] = s.x;
+    d[o + 8] = s.y;
+    d[o + 9] = s.z;
   }
   /**
    * Recompose the local matrix from position/quaternion/scale, but only if
    * one of them changed since the last call. Returns true when it did.
    */
   updateMatrix() {
-    const p = this.position, q = this.quaternion, s = this.scale;
-    if (p.x === this._px && p.y === this._py && p.z === this._pz && q._x === this._qx && q._y === this._qy && q._z === this._qz && q._w === this._qw && s.x === this._sx && s.y === this._sy && s.z === this._sz) {
+    const p = this.position, q = this.quaternion, s = this.scale, d = this._snapData, o = this._snapOffset;
+    if (p.x === d[o] && p.y === d[o + 1] && p.z === d[o + 2] && q._x === d[o + 3] && q._y === d[o + 4] && q._z === d[o + 5] && q._w === d[o + 6] && s.x === d[o + 7] && s.y === d[o + 8] && s.z === d[o + 9]) {
       return false;
     }
-    this._px = p.x;
-    this._py = p.y;
-    this._pz = p.z;
-    this._qx = q._x;
-    this._qy = q._y;
-    this._qz = q._z;
-    this._qw = q._w;
-    this._sx = s.x;
-    this._sy = s.y;
-    this._sz = s.z;
+    d[o] = p.x;
+    d[o + 1] = p.y;
+    d[o + 2] = p.z;
+    d[o + 3] = q._x;
+    d[o + 4] = q._y;
+    d[o + 5] = q._z;
+    d[o + 6] = q._w;
+    d[o + 7] = s.x;
+    d[o + 8] = s.y;
+    d[o + 9] = s.z;
     const te = this._matrix.elements;
     const x = q._x, y = q._y, z = q._z, w = q._w;
     const x2 = x + x, y2 = y + y, z2 = z + z;
@@ -14474,6 +14469,7 @@ var WebGLRenderList = class {
     this.transparentSorted = null;
     this.minDepth = Infinity;
     this.maxDepth = -Infinity;
+    this.zScratch = new Float64Array(1);
   }
   init() {
     this.count = 0;
@@ -14482,10 +14478,10 @@ var WebGLRenderList = class {
     this.minDepth = Infinity;
     this.maxDepth = -Infinity;
   }
-  _getItem(object, geometry, material, group, z, variant) {
+  _getItem(object, geometry, material, group, variant) {
     let item = this.items[this.count];
     if (item === void 0) {
-      item = { id: object.id, object, geometry, material, program: null, group, z, renderOrder: object.renderOrder, materialRid: 0, geometryRid: 0, variant, mdRecord: null };
+      item = { id: object.id, object, geometry, material, program: null, group, renderOrder: object.renderOrder, materialRid: 0, geometryRid: 0, variant, mdRecord: null };
       this.items[this.count] = item;
     } else {
       item.id = object.id;
@@ -14494,7 +14490,6 @@ var WebGLRenderList = class {
       item.material = material;
       item.program = null;
       item.group = group;
-      item.z = z;
       item.renderOrder = object.renderOrder;
       item.variant = variant;
     }
@@ -14504,9 +14499,9 @@ var WebGLRenderList = class {
   /**
    * Adds an item. `item.program` is resolved later by the renderer (once the frame's lights are known).
    */
-  push(object, geometry, material, group, z, materialRid, geometryRid, variant) {
+  push(object, geometry, material, group, materialRid, geometryRid, variant) {
     if (this.count >= INDEX_RANGE) return;
-    const item = this._getItem(object, geometry, material, group, z, variant);
+    const item = this._getItem(object, geometry, material, group, variant);
     item.materialRid = materialRid;
     item.geometryRid = geometryRid;
     const index = this.count - 1;
@@ -14519,6 +14514,7 @@ var WebGLRenderList = class {
         nd.set(this.transparentDepth);
         this.transparentDepth = nd;
       }
+      const z = this.zScratch[0];
       this.transparentKeys[this.transparentCount] = index;
       this.transparentDepth[this.transparentCount] = z;
       if (z < this.minDepth) this.minDepth = z;
@@ -14550,8 +14546,9 @@ var WebGLRenderList = class {
       const indexed = item.geometry.index !== null ? 1 : 0;
       ok[i] = ((((rank * 64 + program) * 1024 + mat) * 2 + indexed) * 512 + geo) * INDEX_RANGE + index;
     }
-    this.opaqueSorted = ok.subarray(0, on);
-    if (sortObjects && on > 1) this.opaqueSorted.sort();
+    let os = this.opaqueSorted;
+    if (os === null || os.length !== on || os.buffer !== ok.buffer) os = this.opaqueSorted = ok.subarray(0, on);
+    if (sortObjects && on > 1) os.sort();
     const tk = this.transparentKeys, tn = this.transparentCount, td = this.transparentDepth;
     const range = this.maxDepth - this.minDepth;
     const scale = range > 0 ? 67108863 / range : 0;
@@ -14562,8 +14559,9 @@ var WebGLRenderList = class {
       const depthKey = Math.round((this.maxDepth - td[i]) * scale);
       tk[i] = (rank * 67108864 + depthKey) * INDEX_RANGE + index;
     }
-    this.transparentSorted = tk.subarray(0, tn);
-    if (sortObjects && tn > 1) this.transparentSorted.sort();
+    let ts = this.transparentSorted;
+    if (ts === null || ts.length !== tn || ts.buffer !== tk.buffer) ts = this.transparentSorted = tk.subarray(0, tn);
+    if (sortObjects && tn > 1) ts.sort();
   }
   /** Item for a sorted key. */
   itemFromKey(key) {
@@ -15732,15 +15730,16 @@ var WebGLShadowMap = class {
       if (object.castShadow && (object.frustumCulled === false || renderer._cullTest(object, object.geometry, _frustum))) {
         const geometry = object.geometry;
         const material = object.material;
+        list.zScratch[0] = 0;
         if (Array.isArray(material)) {
           const groups = geometry.groups;
           for (let k = 0, kl = groups.length; k < kl; k++) {
             const group = groups[k];
             const groupMaterial = material[group.materialIndex];
-            if (groupMaterial && groupMaterial.visible) renderer._pushItem(list, object, geometry, groupMaterial, group, 0, true);
+            if (groupMaterial && groupMaterial.visible) renderer._pushItem(list, object, geometry, groupMaterial, group, true);
           }
         } else if (material.visible) {
-          renderer._pushItem(list, object, geometry, material, null, 0, true);
+          renderer._pushItem(list, object, geometry, material, null, true);
         }
       }
     }
@@ -15833,7 +15832,10 @@ var WebGLRenderer = class {
     this._renderCallDepth = 0;
     this._frameId = 0;
     this._envVersion = 0;
-    this._lastEnvKey = "";
+    this._lightsEpoch = 0;
+    this._envKeyId = -1;
+    this._envKeyIds = /* @__PURE__ */ new Map();
+    this._colorSpaceIds = /* @__PURE__ */ new Map([["srgb-linear", 0], ["srgb", 1]]);
     this._lastLightsVersion = -1;
     this._samplerStamp = 0;
     this._programCounter = 0;
@@ -15927,14 +15929,9 @@ var WebGLRenderer = class {
     this._materialProperties = /* @__PURE__ */ new WeakMap();
     this._wireframeGeometries = /* @__PURE__ */ new WeakMap();
     this._onMaterialDispose = this._onMaterialDispose.bind(this);
-    this._renderOrders = /* @__PURE__ */ new Map();
     this._renderOrderList = [];
     this._lastNotedRenderOrder = NaN;
-    this._rankOfRenderOrder = (ro) => {
-      if (this._renderOrderList.length <= 1) return 0;
-      const r = this._renderOrders.get(ro);
-      return r === void 0 ? 63 : r;
-    };
+    this._rankOfRenderOrder = (ro) => this._rankOf(ro);
     this._cmdCapacity = 1024;
     this._cmdItem = new Array(this._cmdCapacity);
     this._cmdOffset = new Int32Array(this._cmdCapacity);
@@ -16230,7 +16227,8 @@ var WebGLRenderer = class {
     this.lights.end(this.shadowMap.enabled);
     if (this.lights.version !== this._lastLightsVersion) {
       this._lastLightsVersion = this.lights.version;
-      this._envVersion++;
+      this._lightsEpoch++;
+      this._envVersion = this._lightsEpoch * 65536 + this._envKeyId;
     }
     this._resolvePrograms(list, scene);
     if (this.info.autoReset === true && this._renderCallDepth === 1) {
@@ -16288,30 +16286,54 @@ var WebGLRenderer = class {
     if (this._renderCallDepth === 0) this.info.render.frame++;
   }
   _renderOrderReset() {
-    this._renderOrders.clear();
     this._renderOrderList.length = 0;
     this._lastNotedRenderOrder = NaN;
+  }
+  /** Index of `ro` in the sorted distinct-renderOrder list, or the insertion point (binary search). */
+  _renderOrderIndex(ro) {
+    const l = this._renderOrderList;
+    let lo = 0, hi = l.length;
+    while (lo < hi) {
+      const mid = lo + hi >> 1;
+      if (l[mid] < ro) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
   }
   _noteRenderOrder(ro) {
     if (ro === this._lastNotedRenderOrder) return;
     this._lastNotedRenderOrder = ro;
-    if (!this._renderOrders.has(ro)) {
-      const l = this._renderOrderList;
-      l.push(ro);
-      l.sort((a, b) => a - b);
-      this._renderOrders.clear();
-      for (let i = 0; i < l.length; i++) this._renderOrders.set(l[i], Math.min(i, 63));
-    }
+    const l = this._renderOrderList, at = this._renderOrderIndex(ro);
+    if (at < l.length && l[at] === ro) return;
+    l.push(ro);
+    for (let i = l.length - 1; i > at; i--) l[i] = l[i - 1];
+    l[at] = ro;
+  }
+  _rankOf(ro) {
+    const l = this._renderOrderList;
+    if (l.length <= 1) return 0;
+    const at = this._renderOrderIndex(ro);
+    return at < l.length && l[at] === ro ? at < 63 ? at : 63 : 63;
   }
   /** Detects changes in frame-wide shader-affecting state and bumps the env version. */
   _updateEnv(scene) {
     const target = this._currentRenderTarget;
     const cs = target === null ? this._outputColorSpace : target.texture.colorSpace;
     const fog = scene.fog === null ? 0 : scene.fog.isFogExp2 ? 2 : 1;
-    const key = this.toneMapping + "|" + cs + "|" + (this.shadowMap.enabled ? 1 : 0) + "|" + fog;
-    if (key !== this._lastEnvKey) {
-      this._lastEnvKey = key;
-      this._envVersion++;
+    let csId = this._colorSpaceIds.get(cs);
+    if (csId === void 0) {
+      csId = this._colorSpaceIds.size;
+      this._colorSpaceIds.set(cs, csId);
+    }
+    const key = ((this.toneMapping * 64 + csId) * 2 + (this.shadowMap.enabled ? 1 : 0)) * 3 + fog;
+    let id = this._envKeyIds.get(key);
+    if (id === void 0) {
+      id = this._envKeyIds.size % 65536;
+      this._envKeyIds.set(key, id);
+    }
+    if (id !== this._envKeyId) {
+      this._envKeyId = id;
+      this._envVersion = this._lightsEpoch * 65536 + id;
     }
   }
   _uploadFrameBlock(camera, scene) {
@@ -16405,8 +16427,8 @@ var WebGLRenderer = class {
           const material = object.material;
           if (material.visible) {
             const we = object.matrixWorld.elements, ve = camera.matrixWorldInverse.elements;
-            const z = -(ve[2] * we[12] + ve[6] * we[13] + ve[10] * we[14] + ve[14]);
-            this._pushItem(list, object, object.geometry, material, null, z, false);
+            list.zScratch[0] = -(ve[2] * we[12] + ve[6] * we[13] + ve[10] * we[14] + ve[14]);
+            this._pushItem(list, object, object.geometry, material, null, false);
           }
         }
       } else if (object.isMesh || object.isLine || object.isPoints) {
@@ -16428,15 +16450,16 @@ var WebGLRenderer = class {
             }
             z = -(ve[2] * cx + ve[6] * cy + ve[10] * cz + ve[14]);
           }
+          list.zScratch[0] = z;
           if (Array.isArray(material)) {
             const groups = geometry.groups;
             for (let i = 0, l = groups.length; i < l; i++) {
               const group = groups[i];
               const groupMaterial = material[group.materialIndex];
-              if (groupMaterial && groupMaterial.visible) this._pushItem(list, object, geometry, groupMaterial, group, z, false);
+              if (groupMaterial && groupMaterial.visible) this._pushItem(list, object, geometry, groupMaterial, group, false);
             }
           } else if (material.visible) {
-            this._pushItem(list, object, geometry, material, null, z, false);
+            this._pushItem(list, object, geometry, material, null, false);
           }
         }
       }
@@ -16444,7 +16467,7 @@ var WebGLRenderer = class {
     const children = object.children;
     for (let i = 0, l = children.length; i < l; i++) this._projectObject(children[i], camera, groupOrder, sortObjects, list);
   }
-  _pushItem(list, object, geometry, material, group, z, shadowPass) {
+  _pushItem(list, object, geometry, material, group, shadowPass) {
     if (shadowPass === false) {
       const override = this._currentScene !== null ? this._currentScene.overrideMaterial : null;
       if (override !== null && override !== void 0 && material.allowOverride === true) material = override;
@@ -16460,7 +16483,7 @@ var WebGLRenderer = class {
       geometry._frameStamp = frame;
       geometry._frameRid = this._geometryCounter++;
     }
-    list.push(object, geometry, material, group, z, material._frameRid, geometry._frameRid, variant);
+    list.push(object, geometry, material, group, material._frameRid, geometry._frameRid, variant);
   }
   /** Resolve the program of every item in the list. Runs after the frame's lights are collected. */
   _resolvePrograms(list, scene) {
@@ -16516,7 +16539,10 @@ var WebGLRenderer = class {
     if (props !== void 0) {
       for (let i = 0; i < props.programs.length; i++) {
         const e = props.programs[i];
-        if (e) this.programs.releaseProgram(e.program);
+        if (e) {
+          this.programs.releaseProgram(e.program);
+          if (e.altProgram !== null) this.programs.releaseProgram(e.altProgram);
+        }
       }
       if (props.blockSlot >= 0) this._materialFreeSlots.push(props.blockSlot);
     }
@@ -16533,7 +16559,19 @@ var WebGLRenderer = class {
   }
   _getProgramSlow(props, material, object, scene, variant) {
     let entry = props.programs[variant];
-    if (entry !== void 0 && entry.materialVersion === material.version && entry.envVersion === this._envVersion) return entry.program;
+    if (entry !== void 0) {
+      if (entry.materialVersion === material.version && entry.envVersion === this._envVersion) return entry.program;
+      if (entry.altProgram !== null && entry.altMaterialVersion === material.version && entry.altEnvVersion === this._envVersion) {
+        const p = entry.program, mv = entry.materialVersion, ev = entry.envVersion;
+        entry.program = entry.altProgram;
+        entry.materialVersion = entry.altMaterialVersion;
+        entry.envVersion = entry.altEnvVersion;
+        entry.altProgram = p;
+        entry.altMaterialVersion = mv;
+        entry.altEnvVersion = ev;
+        return entry.program;
+      }
+    }
     const vflags = {
       instancing: (variant & V_INSTANCING) !== 0,
       instancingColor: (variant & V_INSTANCING_COLOR) !== 0,
@@ -16549,8 +16587,17 @@ var WebGLRenderer = class {
       return entry.program;
     }
     const program = this.programs.acquireProgram(parameters, material);
-    if (entry !== void 0) this.programs.releaseProgram(entry.program);
-    entry = { program, materialVersion: material.version, envVersion: this._envVersion };
+    if (entry !== void 0) {
+      if (entry.altProgram !== null) this.programs.releaseProgram(entry.altProgram);
+      entry.altProgram = entry.program;
+      entry.altMaterialVersion = entry.materialVersion;
+      entry.altEnvVersion = entry.envVersion;
+      entry.program = program;
+      entry.materialVersion = material.version;
+      entry.envVersion = this._envVersion;
+    } else {
+      entry = { program, materialVersion: material.version, envVersion: this._envVersion, altProgram: null, altMaterialVersion: -1, altEnvVersion: -1 };
+    }
     props.programs[variant] = entry;
     material._programDirty = false;
     return program;

@@ -56,19 +56,20 @@ over 60 frames after 10 warm-up frames, 320x240 (median frame time, so single ga
 
 | Scenario | Objects | three.js r186 (median) | jrs (median) | Speed-up | Worst frame (three → jrs) | Draw calls (three → jrs) | Pixel diff (mean / max, 0–255) |
 |---|---:|---:|---:|---:|---|---|---|
-| shared-static: one geometry + one material, static | 10,000 | 12.6 ms | 3.6 ms | **3.5x** | 90 → 5 ms | 10000 → 1 | 0.347 / 8 |
-| shared-animated: same, every object rotating | 10,000 | 15.9 ms | 6.1 ms | **2.6x** | 54 → 2120 ms | 10000 → 1 | 0.346 / 9 |
-| many-materials: 3 geometries x 200 Phong materials, point + hemisphere light | 5,000 | 8.6 ms | 4.3 ms | **2.0x** | 77 → 1128 ms | 5000 → 600 | 0 / 0 |
-| unique-geometries: a distinct geometry per mesh (multi-draw over the mega-buffer) | 2,000 | 3.4 ms | 1.9 ms | **1.8x** | 7 → 6 ms | 2000 → 1 | 0 / 0 |
-| hierarchy-animated: 200 chains of 40 nested objects, roots rotating | 8,000 | 14.0 ms | 4.3 ms | **3.3x** | 27 → 1173 ms | 8000 → 1 | 0 / 0 |
-| instanced-100k: one InstancedMesh, 100 000 instances | 100,000 | 0.1 ms | 0.0 ms | n/a (both < 0.1 ms) | 0 → 1 ms | 1 → 1 | 0 / 0 |
-| shader-client: 1,313 meshes, all ShaderMaterial, 12 shaders × 2 material instances sharing one 30-uniform object, 2D/3D/array/cube samplers, custom attributes, opaque + transparent (no auto-batching possible) | 1,313 | 5.1 ms | 2.8 ms | **1.8x** | 121 → 6 ms | 1313 → 1313 | 0 / 0 |
-| shader-client-static: same materials, fixed camera, nothing moving, 3 passes per frame (2 shadow render targets with `scene.overrideMaterial`, main pass with stencil shadow volumes), ~215 draws per pass | 211 | 34.3 ms | 22.5 ms | **1.5x** | 424 → 647 ms | 217 → 217 | 0 / 0 |
-| shadows: 2 000 casters/receivers, 1024² directional shadow map | 2,000 | 7.6 ms | 1.5 ms | **5.1x** | 165 → 2 ms | 4001 → 3 | 0.134 / 33 |
+| shared-static: one geometry + one material, static | 10,000 | 16.1 ms | 3.1 ms | **5.2x** | 114 → 4 ms | 10000 → 1 | 0.347 / 8 |
+| shared-animated: same, every object rotating | 10,000 | 11.8 ms | 5.4 ms | **2.2x** | 103 → 3288 ms | 10000 → 1 | 0.346 / 9 |
+| many-materials: 3 geometries x 200 Phong materials, point + hemisphere light | 5,000 | 8.2 ms | 3.8 ms | **2.2x** | 80 → 1091 ms | 5000 → 600 | 0 / 0 |
+| unique-geometries: a distinct geometry per mesh (multi-draw over the mega-buffer) | 2,000 | 3.1 ms | 1.2 ms | **2.6x** | 7 → 2 ms | 2000 → 1 | 0 / 0 |
+| hierarchy-animated: 200 chains of 40 nested objects, roots rotating | 8,000 | 12.4 ms | 4.2 ms | **3.0x** | 35 → 2632 ms | 8000 → 1 | 0 / 0 |
+| instanced-100k: one InstancedMesh, 100 000 instances | 100,000 | 0.0 ms | 0.0 ms | n/a (both < 0.1 ms) | 0 → 0 ms | 1 → 1 | 0 / 0 |
+| shader-client: 1,313 meshes, all ShaderMaterial, 12 shaders × 2 material instances sharing one 30-uniform object, 2D/3D/array/cube samplers, custom attributes, opaque + transparent (no auto-batching possible) | 1,313 | 4.0 ms | 3.2 ms | **1.2x** | 308 → 58 ms | 1313 → 1313 | 0 / 0 |
+| shader-client-static: same materials, fixed camera, nothing moving, 3 passes per frame (2 shadow render targets with `scene.overrideMaterial`, main pass with stencil shadow volumes), ~215 draws per pass | 211 | 34.7 ms | 23.5 ms | **1.5x** | 618 → 615 ms | 217 → 217 | 0 / 0 |
+| shadows: 2 000 casters/receivers, 1024² directional shadow map | 2,000 | 81.8 ms | 1.4 ms | **58.4x** | 240 → 5 ms | 4001 → 3 | 0.134 / 33 |
+| shadows-animated: same scene, every third caster moving each frame | 2,000 | 55.2 ms | 2.0 ms | **27.6x** | 192 → 11 ms | 4001 → 3 | 0.121 / 31 |
 
 The instanced scenario is a single draw call in both libraries; it measures only the fixed per-frame cost. Full data: `bench/results/latest.json`.
 
-Worst frames: in this software-GL environment both libraries hit occasional stalls (garbage collection, driver); in three of the large batched scenes jrs saw a single one-to-two-second stall during the 60 timed frames that three did not. It has not been reproduced on demand and the medians exclude it, but it is why the worst-frame column exists; the device check page reports per-frame times on real hardware.
+Worst frames: in this software-GL environment both libraries hit occasional stalls (garbage collection, driver, command-buffer back-pressure), and three.js's own shadows median swings between 7 and 75 ms from run to run here, so read the ratios, not the absolute numbers. The 12–17 s stalls jrs used to show in the batched scenes were traced to Chromium's transfer ring buffer on large `texSubImage2D` uploads of the matrix texture; the texture is now defined with `texImage2D` per upload, which takes the mapped-memory path, and that stall is gone (`bench/results/swarm/stall-hunter.md`). A rarer 1–3 s stall remains in 60-frame runs of the batched scenes; it also appears in three.js at smaller sizes and is still being investigated. The device check page reports per-frame times on real hardware.
 
 The two `shader-client` rows model a real three.js game client. Their gain comes from the per-draw
 path, not from batching: every uniform location caches its last uploaded value (as three.js does), so
