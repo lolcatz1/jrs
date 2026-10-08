@@ -40,7 +40,7 @@ application keeps working. WebGL2 is required (every current browser has it).
 | Recomposes and remultiplies **every** object's matrices every frame | Only objects whose position/rotation/scale (or ancestor) changed are touched; everything derived (normal matrix, bounding sphere, instance data) is cached by a per-object version counter |
 | 16-element `Array`s of doubles per matrix, converted on every upload | `Float32Array` records in shared slab pages; uploaded with zero-copy `srcOffset` calls |
 | Sorts an array of item objects with a JS comparator | Packs a 52-bit key per item into a `Float64Array` and uses the native comparator-free sort |
-| One draw call per mesh | Consecutive meshes sharing geometry and material become **one instanced draw call**; runs of *different* geometries sharing a material become **one multi-draw call** over shared mega-buffers with a `gl_DrawID`-indexed matrix texture; static scenes skip the uploads entirely |
+| One draw call per mesh | Consecutive meshes sharing geometry and material become **one instanced draw call**; runs of *different* geometries sharing a material become **one multi-draw call** over shared mega-buffers with a `gl_DrawID`-indexed matrix texture; batches also **span materials** that share a program, GL state and textures (each instance picks its material record from a uniform-block array); static scenes skip the uploads entirely |
 | Re-sends camera, light and material uniforms per draw/material | Camera, lights and all materials live in std140 uniform blocks: one upload per frame, one `bindBufferRange` per material switch |
 | Recompiles all shaders when the light count changes | Fixed-capacity light arrays, counts read from the block: no recompiles |
 | Raycasts test every triangle | Lazy bounding-volume hierarchy per geometry, built on first raycast |
@@ -58,7 +58,7 @@ over 60 frames after 10 warm-up frames, 320x240 (median frame time, so single ga
 |---|---:|---:|---:|---:|---|---|---|
 | shared-static: one geometry + one material, static | 10,000 | 16.1 ms | 3.1 ms | **5.2x** | 114 → 4 ms | 10000 → 1 | 0.347 / 8 |
 | shared-animated: same, every object rotating | 10,000 | 11.8 ms | 5.4 ms | **2.2x** | 103 → 3288 ms | 10000 → 1 | 0.346 / 9 |
-| many-materials: 3 geometries x 200 Phong materials, point + hemisphere light | 5,000 | 8.2 ms | 3.8 ms | **2.2x** | 80 → 1091 ms | 5000 → 600 | 0 / 0 |
+| many-materials: 3 geometries x 200 Phong materials, point + hemisphere light (batches span materials) | 5,000 | 8.1 ms | 2.8 ms | **2.9x** | 98 → 7 ms | 5000 → 3 | 0 / 0 |
 | unique-geometries: a distinct geometry per mesh (multi-draw over the mega-buffer) | 2,000 | 3.1 ms | 1.2 ms | **2.6x** | 7 → 2 ms | 2000 → 1 | 0 / 0 |
 | hierarchy-animated: 200 chains of 40 nested objects, roots rotating | 8,000 | 12.4 ms | 4.2 ms | **3.0x** | 35 → 2632 ms | 8000 → 1 | 0 / 0 |
 | instanced-100k: one InstancedMesh, 100 000 instances | 100,000 | 0.0 ms | 0.0 ms | n/a (both < 0.1 ms) | 0 → 0 ms | 1 → 1 | 0 / 0 |
@@ -87,7 +87,11 @@ Diagnosing uploads in your own app: set `renderer.debug.traceUniforms = true` an
 switches, draws, distinct programs, and `programSequence`, one entry per `useProgram` as
 `<program id><list o/t/s>[/r<renderOrder>]:<material type>`). `renderer.info.render.programSwitches`
 counts `useProgram` calls per frame. `renderer.autoBatchMinimum` (default 4) is the shortest run of
-identical geometry + material that becomes one instanced draw.
+identical geometry + material that becomes one instanced draw. `renderer.autoBatchMaterials`
+(default true) lets a batch span built-in materials that share a program, GL state and textures:
+each instance reads its own material record from a uniform-block array indexed by a slot stored
+with its matrices (see ARCHITECTURE.md §4c; needs dynamic indexing of uniform arrays, probed at
+start-up).
 
 `npm run bench -- --compare` additionally renders each scene with both libraries and reports
 the mean absolute pixel difference, writing both images to `bench/results/`. Lambert / Phong /

@@ -8,6 +8,8 @@
  * recreated.
  */
 
+import { attributeEpoch } from '../../core/attributeEpoch.js';
+
 const LOC_POSITION = 0, LOC_NORMAL = 1, LOC_UV = 2, LOC_COLOR = 3, LOC_UV1 = 4, LOC_INSTANCE_COLOR = 5, LOC_INSTANCE_MATRIX = 8;
 const ATTRIBUTE_LOCATIONS = { position: LOC_POSITION, normal: LOC_NORMAL, uv: LOC_UV, color: LOC_COLOR, uv1: LOC_UV1 };
 
@@ -48,7 +50,7 @@ class WebGLBindingStates {
 		const gl = this.gl, attributes = this.attributes;
 		let entry = this.cache.get(geometry);
 		if (entry === undefined) {
-			entry = { vaos: [null, null, null], layoutVersion: -1, instancedFor: null, hadInstanceColor: false, custom: null, attrList: null, versionSum: -1 };
+			entry = { vaos: [null, null, null], layoutVersion: -1, instancedFor: null, hadInstanceColor: false, custom: null, attrList: null, versionSum: -1, epoch: -1, epochMode: -1 };
 			this.cache.set(geometry, entry);
 			geometry.addEventListener('dispose', this._onGeometryDispose);
 			if (this.info !== null) this.info.memory.geometries++;
@@ -56,12 +58,18 @@ class WebGLBindingStates {
 		const useCustom = program !== null && program.hasCustomAttributes === true;
 		// Fast path: layout unchanged and no attribute version changed since the VAO was last validated.
 		if (entry.layoutVersion === geometry._layoutVersion && entry.attrList !== null && (mode !== 1 || entry.instancedFor === instancedObject)) {
-			const list = entry.attrList;
-			let sum = 0;
-			for (let i = 0, l = list.length; i < l; i++) sum += list[i].version;
-			if (geometry.index !== null) sum += geometry.index.version;
-			if (mode === 1) { sum += instancedObject.instanceMatrix.version; if (instancedObject.instanceColor !== null) sum += instancedObject.instanceColor.version + 1000003; }
-			if (sum === entry.versionSum) {
+			// No BufferAttribute.needsUpdate anywhere since the last validation: the version sum cannot have changed.
+			let valid = entry.epoch === attributeEpoch.value && entry.epochMode === mode; // the sum is mode-specific (mode 1 adds the instance attributes)
+			if (!valid) {
+				const list = entry.attrList;
+				let sum = 0;
+				for (let i = 0, l = list.length; i < l; i++) sum += list[i].version;
+				if (geometry.index !== null) sum += geometry.index.version;
+				if (mode === 1) { sum += instancedObject.instanceMatrix.version; if (instancedObject.instanceColor !== null) sum += instancedObject.instanceColor.version + 1000003; }
+				valid = sum === entry.versionSum;
+				if (valid) { entry.epoch = attributeEpoch.value; entry.epochMode = mode; }
+			}
+			if (valid) {
 				let record;
 				if (useCustom) { if (entry.custom !== null) { record = entry.custom.get(program.id * 4 + mode); if (record === undefined) record = null; } else record = null; }
 				else record = entry.vaos[mode];
@@ -131,7 +139,7 @@ class WebGLBindingStates {
 		for (let i = 0; i < list.length; i++) sum += list[i].version;
 		if (geometry.index !== null) sum += geometry.index.version;
 		if (mode === 1) { sum += instancedObject.instanceMatrix.version; if (instancedObject.instanceColor !== null) sum += instancedObject.instanceColor.version + 1000003; }
-		entry.attrList = list; entry.versionSum = sum;
+		entry.attrList = list; entry.versionSum = sum; entry.epoch = attributeEpoch.value; entry.epochMode = mode;
 		return record;
 	}
 
