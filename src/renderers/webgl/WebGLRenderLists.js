@@ -7,7 +7,7 @@
  * recovered from the key's low 20 bits. No closures, no comparator calls,
  * no per-frame allocation once the arrays have grown to size.
  *
- * Opaque key:      [renderOrder rank:6][program:6][material:10][geometry:10][index:20]
+ * Opaque key:      [renderOrder rank:6][program:6][material:10][indexed:1][geometry:9][index:20]
  * Transparent key: [renderOrder rank:6][depth back-to-front:26][index:20]
  */
 const INDEX_BITS = 20;
@@ -81,9 +81,10 @@ class WebGLRenderList {
 			const rank = singleRank ? 0 : rankOf(item.renderOrder);
 			const program = item.program._frameRid & 63;
 			const mat = item.materialRid & 1023;
-			const geo = item.geometryRid & 1023;
-			// ((((rank*64 + program)*1024 + mat)*1024 + geo) * 2^20 + index
-			ok[i] = ((((rank * 64 + program) * 1024 + mat) * 1024 + geo) * INDEX_RANGE) + index;
+			const geo = item.geometryRid & 511;
+			const indexed = item.geometry.index !== null ? 1 : 0; // keeps geometries of one mega-buffer layout adjacent
+			// (((((rank*64 + program)*1024 + mat)*2 + indexed)*512 + geo) * 2^20 + index
+			ok[i] = (((((rank * 64 + program) * 1024 + mat) * 2 + indexed) * 512 + geo) * INDEX_RANGE) + index;
 		}
 		this.opaqueSorted = ok.subarray(0, on);
 		if (sortObjects && on > 1) this.opaqueSorted.sort();

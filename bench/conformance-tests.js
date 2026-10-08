@@ -105,7 +105,8 @@ export function conformanceTests() {
 				scene.add(new T.AmbientLight(0xffffff, 0.3));
 				const geos = [new T.BoxGeometry(0.15, 0.15, 0.15), new T.SphereGeometry(0.1, 8, 6), new T.ConeGeometry(0.08, 0.2, 7), new T.TorusGeometry(0.08, 0.03, 6, 10), new T.PlaneGeometry(0.2, 0.2).toNonIndexed()];
 				const mat = new T.MeshStandardMaterial({ color: 0xcc8844, roughness: 0.5 }), mat2 = new T.MeshLambertMaterial({ color: 0x4488cc });
-				for (let i = 0; i < 300; i++) { const m = new T.Mesh(geos[i % 5], i % 7 === 0 ? mat2 : mat); m.position.set((i % 20 - 10) * 0.2, (Math.floor(i / 20) - 7.5) * 0.2, 0); m.rotation.set(i, i * 0.3, 0); m.scale.set(1 + (i % 3) * 0.2, 1, 1 + (i % 2) * 0.3); scene.add(m); }
+				// every mesh gets its own geometry object (as in a scene of unique parts), so the run is multi-drawn
+				for (let i = 0; i < 300; i++) { const m = new T.Mesh(geos[i % 5].clone(), i % 7 === 0 ? mat2 : mat); m.position.set((i % 20 - 10) * 0.2, (Math.floor(i / 20) - 7.5) * 0.2, 0); m.rotation.set(i, i * 0.3, 0); m.scale.set(1 + (i % 3) * 0.2, 1, 1 + (i % 2) * 0.3); scene.add(m); }
 				renderer.autoMultiDraw = true; renderer.render(scene, camera);
 				const a = readAll(renderer), callsA = renderer.info.render.calls;
 				renderer.autoMultiDraw = false; renderer.autoBatch = false; renderer.render(scene, camera);

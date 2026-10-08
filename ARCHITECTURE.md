@@ -62,7 +62,7 @@ three.js takes. With that, the client-shaped benchmark scenes render pixel-ident
 * **Sorting.** Each render item gets a 52-bit integer key in a `Float64Array`:
 
   ```
-  opaque:      [renderOrder rank 6][program 6][material 10][geometry 10][item index 20]
+  opaque:      [renderOrder rank 6][program 6][material 10][indexed 1][geometry 9][item index 20]
   transparent: [renderOrder rank 6][quantised depth, back to front 26][item index 20]
   ```
 

@@ -138,13 +138,18 @@ in mat4 instanceMatrix;
 	in vec3 instanceColor;
 	#endif
 #endif
-#ifdef USE_MULTIDRAW
-// one object matrix per sub-draw, fetched from a per-frame matrix texture by gl_DrawID
+#ifdef USE_OBJECT_TEXTURE
+// Batched draws: each object's world matrix and normal matrix come from a per-frame matrix
+// texture. Instanced batches index it by gl_InstanceID, multi-draw batches by gl_DrawID.
 uniform highp sampler2D objectMatrices;
 uniform int drawBase;
 ivec2 objectTexel;
 mat4 fetchObjectMatrix() {
-	int id = ( drawBase + gl_DrawID ) * ${TEXELS_PER_OBJECT};
+	int id = drawBase + gl_InstanceID;
+	#ifdef USE_MULTIDRAW
+	id += gl_DrawID;
+	#endif
+	id *= ${TEXELS_PER_OBJECT};
 	int y = id / ${MATRIX_TEXTURE_WIDTH};
 	int x = id - y * ${MATRIX_TEXTURE_WIDTH};
 	objectTexel = ivec2( x, y );
@@ -182,7 +187,7 @@ void main() {
 	#ifdef USE_INSTANCING
 	model = model * instanceMatrix;
 	#endif
-	#ifdef USE_MULTIDRAW
+	#ifdef USE_OBJECT_TEXTURE
 	model = model * fetchObjectMatrix();
 	#endif
 	#ifdef IS_SPRITE
@@ -206,7 +211,7 @@ void main() {
 	#endif
 	vWorldPosition = worldPosition.xyz;
 	#ifdef USE_NORMAL
-		#if defined( USE_MULTIDRAW )
+		#if defined( USE_OBJECT_TEXTURE )
 		vNormal = normalize( fetchObjectNormalMatrix() * normal );
 		#elif defined( USE_INSTANCING )
 		vNormal = normalize( transpose( inverse( mat3( model ) ) ) * normal );
@@ -730,6 +735,7 @@ export function buildBuiltinShader(p) {
 	if (p.vertexAlphas) d('USE_COLOR_ALPHA');
 	if (p.instancing) d('USE_INSTANCING');
 	if (p.instancingColor) d('USE_INSTANCING_COLOR');
+	if (p.objectTexture) d('USE_OBJECT_TEXTURE');
 	if (p.multiDraw) d('USE_MULTIDRAW');
 	if (p.flatShading) d('FLAT_SHADED');
 	if (p.doubleSided) d('DOUBLE_SIDED');

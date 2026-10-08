@@ -34,7 +34,7 @@ const _emptyScene = { fog: null, environment: null, background: null, overrideMa
 
 // variant bits for program selection
 const V_INSTANCING = 1, V_INSTANCING_COLOR = 2, V_RECEIVE_SHADOW = 4, V_SHADOW_PASS = 8;
-const V_HAS_UV = 16, V_HAS_UV1 = 32, V_HAS_COLOR = 64, V_COLOR_ALPHA = 128, V_MULTIDRAW = 256;
+const V_HAS_UV = 16, V_HAS_UV1 = 32, V_HAS_COLOR = 64, V_COLOR_ALPHA = 128, V_MULTIDRAW = 256, V_OBJTEX = 512;
 
 const defaultOnBeforeRender = Object3D.prototype.onBeforeRender;
 const defaultOnAfterRender = Object3D.prototype.onAfterRender;
@@ -635,7 +635,7 @@ class WebGLRenderer {
 		const vflags = {
 			instancing: (variant & V_INSTANCING) !== 0, instancingColor: (variant & V_INSTANCING_COLOR) !== 0,
 			receiveShadow: (variant & V_RECEIVE_SHADOW) !== 0, shadowPass: (variant & V_SHADOW_PASS) !== 0,
-			multiDraw: (variant & V_MULTIDRAW) !== 0,
+			multiDraw: (variant & V_MULTIDRAW) !== 0, objectTexture: (variant & V_OBJTEX) !== 0,
 		};
 		const parameters = this.programs.getParameters(material, object, scene || _emptyScene, this.lights, vflags);
 		if (entry !== undefined && entry.program.parameters.key === parameters.key && material.isShaderMaterial !== true) {
@@ -777,16 +777,22 @@ class WebGLRenderer {
 			let j = i + 1;
 			let kind = 0; // 0 single, 1 instanced run, 2 multi-draw run
 			if (multi && this._isMultiDrawable(item)) {
-				const page = item.mdRecord.page, indexed = item.mdRecord.indexed, geometry = item.geometry;
-				let sameGeometry = true;
+				const page = item.mdRecord.page, indexed = item.mdRecord.indexed;
+				let distinct = 1, lastGeometry = item.geometry, firstGroupEnd = -1;
 				while (j < n) {
 					const next = list.itemFromKey(keys[j]);
 					if (next.material === item.material && next.program === item.program && next.renderOrder === item.renderOrder &&
-						this._isMultiDrawable(next) && next.mdRecord.page === page && next.mdRecord.indexed === indexed) { if (next.geometry !== geometry) sameGeometry = false; j++; }
-					else break;
+						this._isMultiDrawable(next) && next.mdRecord.page === page && next.mdRecord.indexed === indexed) {
+						if (next.geometry !== lastGeometry) { distinct++; lastGeometry = next.geometry; if (firstGroupEnd < 0) firstGroupEnd = j; }
+						j++;
+					} else break;
 				}
-				// identical geometry throughout: instancing is the cheaper form (one draw, no per-sub-draw cost)
-				if (j - i >= minimum) kind = sameGeometry ? 1 : 2;
+				if (firstGroupEnd < 0) firstGroupEnd = j;
+				// Cost model: a multi-draw costs one call plus a small per-sub-draw cost; an instanced draw
+				// costs one call per distinct geometry. Repeated geometries (sorted contiguously) are
+				// therefore drawn instanced, geometry-group by geometry-group; mostly-distinct runs use multi-draw.
+				if (distinct * 2 >= j - i) { if (j - i >= minimum) kind = 2; }
+				else { j = firstGroupEnd; if (j - i >= minimum) kind = 1; }
 			} else if (autoBatch && this._isBatchable(item)) {
 				while (j < n) {
 					const next = list.itemFromKey(keys[j]);
@@ -814,11 +820,11 @@ class WebGLRenderer {
 					mdN++;
 				}
 			} else if (kind === 1) {
-				batcher.ensure(j - i);
-				this._cmdOffset[cmdN] = batcher.count;
+				batcher.ensureTex(j - i);
+				this._cmdOffset[cmdN] = batcher.texCount;
 				this._cmdCount[cmdN] = j - i;
 				this._cmdKind[cmdN] = 1;
-				for (let k = i; k < j; k++) batcher.add(list.itemFromKey(keys[k]).object);
+				for (let k = i; k < j; k++) batcher.addTex(list.itemFromKey(keys[k]).object);
 			} else {
 				j = i + 1;
 				this._cmdOffset[cmdN] = -1;
@@ -828,12 +834,7 @@ class WebGLRenderer {
 			cmdN++;
 			i = j;
 		}
-		let usedTexture = false;
-		for (let c = 0; c < cmdN; c++) if (this._cmdKind[c] === 2) { usedTexture = true; break; }
-		if (usedTexture) batcher.uploadTexture(this.state, TEXTURE_UNITS.objectMatrices);
-		let usedBuffer = false;
-		for (let c = 0; c < cmdN; c++) if (this._cmdKind[c] === 1) { usedBuffer = true; break; }
-		if (usedBuffer) batcher.upload();
+		if (batcher.texCount > 0) batcher.uploadTexture(this.state, TEXTURE_UNITS.objectMatrices);
 		for (let c = 0; c < cmdN; c++) {
 			const item = this._cmdItem[c];
 			const kind = this._cmdKind[c];
@@ -988,18 +989,21 @@ class WebGLRenderer {
 		if (object.onAfterRender !== defaultOnAfterRender) object.onAfterRender(this, scene, camera, geometry, material, group);
 	}
 
-	_renderBatch(item, instanceOffset, instanceCount, scene, camera, shadowPass) {
+	/** One instanced draw for `instanceCount` objects sharing geometry and material; matrices come from the matrix texture at `drawBase`. */
+	_renderBatch(item, drawBase, instanceCount, scene, camera, shadowPass) {
 		const object = item.object, material = item.material;
 		let geometry = item.geometry;
 		const gl = this._gl;
-		const variant = this._variantFor(object, geometry, material, shadowPass) | V_INSTANCING;
+		const variant = this._variantFor(object, geometry, material, shadowPass) | V_OBJTEX;
 		const program = this._getProgram(material, object, scene, variant);
 		this._setupMaterial(item, program, material, camera, false, shadowPass ? shadowSideOf(material) : material.side);
 		if (material.wireframe === true) geometry = this._wireframeGeometry(geometry);
 		const mu = program.modelMatrixUniform;
 		if (mu !== null && !cacheArray(mu, IDENTITY, 16)) { gl.uniformMatrix4fv(mu.location, false, IDENTITY); if (this._traceUniforms !== null) this._trace(mu); }
-		const record = this.bindingStates.bind(geometry, 2, null, this.batcher.buffer, program);
-		this.bindingStates.setBatchOffset(this.batcher.buffer, instanceOffset * 64);
+		const du = program.drawBaseUniform;
+		if (du !== null && du.cache !== drawBase) { du.cache = drawBase; gl.uniform1i(du.location, drawBase); if (this._traceUniforms !== null) this._trace(du); }
+		this.state.bindTexture(gl.TEXTURE_2D, this.batcher.texture, TEXTURE_UNITS.objectMatrices);
+		const record = this.bindingStates.bind(geometry, 0, null, null, program);
 		this._draw(record, geometry, null, this._drawMode(object, material), instanceCount, true);
 		this.info.render.batches++;
 		this.info.render.instances += instanceCount;

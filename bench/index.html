@@ -37,7 +37,7 @@ window.runScenario = async function (libName, scenarioName, opts = {}) {
 	for (let f = 0; f < warmup; f++) { if (update) update(f); renderer.render(scene, camera); }
 	gl.finish();
 	// one instrumented frame: count GL calls by category (timed frames below run un-instrumented)
-	const glCalls = countGLCalls(gl, () => { if (update) update(warmup); renderer.render(scene, camera); });
+	const glCalls = opts.countGL === false ? null : countGLCalls(gl, () => { if (update) update(warmup); renderer.render(scene, camera); });
 	const glErrors = gl.getError();
 	let jsMs = 0, best = Infinity, worst = 0;
 	const wall0 = performance.now();

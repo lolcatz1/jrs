@@ -7,7 +7,6 @@
  * when the geometry's layout version changes or an attribute's buffer is
  * recreated.
  */
-import { INSTANCE_STRIDE_BYTES } from './WebGLBatcher.js';
 
 const LOC_POSITION = 0, LOC_NORMAL = 1, LOC_UV = 2, LOC_COLOR = 3, LOC_UV1 = 4, LOC_INSTANCE_COLOR = 5, LOC_INSTANCE_MATRIX = 8;
 const ATTRIBUTE_LOCATIONS = { position: LOC_POSITION, normal: LOC_NORMAL, uv: LOC_UV, color: LOC_COLOR, uv1: LOC_UV1 };
@@ -181,13 +180,6 @@ class WebGLBindingStates {
 				gl.vertexAttribPointer(LOC_INSTANCE_COLOR, 3, cdata.type, ic.normalized, 0, 0);
 				gl.vertexAttribDivisor(LOC_INSTANCE_COLOR, ic.meshPerAttribute);
 			}
-		} else if (mode === 2) {
-			gl.bindBuffer(gl.ARRAY_BUFFER, batchBuffer);
-			for (let i = 0; i < 4; i++) {
-				gl.enableVertexAttribArray(LOC_INSTANCE_MATRIX + i);
-				gl.vertexAttribPointer(LOC_INSTANCE_MATRIX + i, 4, gl.FLOAT, false, INSTANCE_STRIDE_BYTES, i * 16);
-				gl.vertexAttribDivisor(LOC_INSTANCE_MATRIX + i, 1);
-			}
 		}
 		gl.bindBuffer(gl.ARRAY_BUFFER, null);
 		return { vao, indexType, indexBytes, maxInstancedCount };
@@ -203,14 +195,6 @@ class WebGLBindingStates {
 		} else {
 			gl.vertexAttribPointer(location, attribute.itemSize, data.type, attribute.normalized, 0, 0);
 		}
-	}
-
-	/** Point the batched-instance attributes at a byte offset in the batch buffer (VAO must be bound). */
-	setBatchOffset(batchBuffer, byteOffset) {
-		const gl = this.gl;
-		gl.bindBuffer(gl.ARRAY_BUFFER, batchBuffer);
-		this.state.currentArrayBuffer = batchBuffer;
-		for (let i = 0; i < 4; i++) gl.vertexAttribPointer(LOC_INSTANCE_MATRIX + i, 4, gl.FLOAT, false, INSTANCE_STRIDE_BYTES, byteOffset + i * 16);
 	}
 
 	reset() { this.state.bindVertexArray(null); }

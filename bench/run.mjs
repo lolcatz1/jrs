@@ -13,6 +13,7 @@ fs.mkdirSync(outDir, { recursive: true });
 const only = process.argv.slice(2).filter(a => !a.startsWith('--'));
 const frames = Number((process.argv.find(a => a.startsWith('--frames=')) || '--frames=60').split('=')[1]);
 const compare = process.argv.includes('--compare');
+const countGL = !process.argv.includes('--nocount');
 
 const { server, port } = await startServer();
 const browser = await launchBrowser();
@@ -32,7 +33,7 @@ for (const name of names) {
 	const row = { scenario: name, n: scenarios[name].n };
 	for (const lib of ['three', 'jrs']) {
 		const page = await freshPage();
-		const r = await page.evaluate(([lib, name, frames]) => window.runScenario(lib, name, { frames }), [lib, name, frames]);
+		const r = await page.evaluate(([lib, name, frames, countGL]) => window.runScenario(lib, name, { frames, countGL }), [lib, name, frames, countGL]);
 		await page.close();
 		row[lib] = r;
 	}
@@ -61,6 +62,17 @@ if (compare) {
 	await page.close();
 }
 
-fs.writeFileSync(path.join(outDir, 'latest.json'), JSON.stringify({ date: new Date().toISOString(), frames, renderer: 'headless Chromium / SwiftShader (software WebGL2)', results }, null, 2));
+// merge into the existing results file so a partial run updates only the scenarios it ran
+let merged = results;
+const latestPath = path.join(outDir, 'latest.json');
+if (fs.existsSync(latestPath)) {
+	try {
+		const previous = JSON.parse(fs.readFileSync(latestPath, 'utf8')).results || [];
+		const byName = new Map(previous.map((r) => [r.scenario, r]));
+		for (const r of results) byName.set(r.scenario, r);
+		merged = Object.keys(scenarios).filter((k) => byName.has(k)).map((k) => byName.get(k));
+	} catch (e) { merged = results; }
+}
+fs.writeFileSync(latestPath, JSON.stringify({ date: new Date().toISOString(), frames, renderer: 'headless Chromium / SwiftShader (software WebGL2)', results: merged }, null, 2));
 await browser.close();
 server.close();

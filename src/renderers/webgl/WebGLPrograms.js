@@ -217,6 +217,7 @@ class WebGLPrograms {
 			vertexAlphas: vertexColors && attributes.color.itemSize === 4,
 			instancing: variant.instancing,
 			instancingColor: variant.instancing && variant.instancingColor,
+			objectTexture: variant.objectTexture === true || variant.multiDraw === true,
 			multiDraw: variant.multiDraw === true,
 			flatShading: isLit && material.flatShading === true,
 			doubleSided: material.side === DoubleSide,
@@ -238,7 +239,7 @@ class WebGLPrograms {
 		key = key * 2 + (p.instancing ? 1 : 0); key = key * 2 + (p.instancingColor ? 1 : 0); key = key * 2 + (p.flatShading ? 1 : 0); key = key * 2 + (p.doubleSided ? 1 : 0);
 		key = key * 2 + (fog ? 1 : 0); key = key * 2 + (p.alphaTest ? 1 : 0); key = key * 2 + (p.sizeAttenuation ? 1 : 0); key = key * 2 + (p.premultipliedAlpha ? 1 : 0);
 		key = key * 2 + (p.dithering ? 1 : 0); key = key * 2 + (hasUv1 ? 1 : 0); key = key * 8 + toneMapping; key = key * 2 + (sRGBOutput ? 1 : 0);
-		key = key * 8 + numDirShadows; key = key * 8 + numSpotShadows; key = key * 2 + (p.multiDraw ? 1 : 0);
+		key = key * 8 + numDirShadows; key = key * 8 + numSpotShadows; key = key * 2 + (p.multiDraw ? 1 : 0); key = key * 2 + (p.objectTexture ? 1 : 0);
 		p.key = key;
 		return p;
 	}
