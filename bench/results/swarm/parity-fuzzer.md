@@ -155,7 +155,7 @@ Merge log (the branch keeps absorbing the integration tip; each row is one merge
 |---|---|---|---|---|---|
 | 2c03d79 | 87e7aaf | 117/117, 27/27, ok, ok | all scenes 0 / 0 (shared-animated 0 / 1) | 88 pass, 12 known residuals | none |
 | 646caba | ad397c3 | 130/130, 33/33, ok, ok | all 12 scenes 0 mean (max 0; shared-animated 1 px, skinned-crowd 3 px ≤ 2) | 89 pass with the new mutation feature on; the 11 residuals are a subset of the known set (seed 78 now passes) | two real regressions/bugs, fixed in 8716722 (fixes 18, 19): material-array batches left their record window bound for the next plain batch of the same material (frame 0 of about 1 in 15 scenes with shared materials), and multi-draw ignored a drawRange set after the record was built (only reachable with the new per-frame mutations) |
-| 6858f51 | fc9e2b7 | 139/139, 34/34, ok, ok | BENCH4_PLACEHOLDER | 87 pass (point shadows + mutations on, so seeds no longer map to the earlier set); 11 residuals of the known kinds plus seed 2 (0.467) and seed 14 (0.05), both logged under Open | one compile failure (fix 20, d8f1052); point-light shadows added to the generator and pixel-identical |
+| 6858f51 | fc9e2b7 | 139/139, 34/34, ok, ok | all 17 scenes 0 mean (max ≤ 2 on ≤ 5 px; the three new point-shadow scenes 0 / 0, 0 / 0, 1 on 5 px) | 87 pass (point shadows + mutations on, so seeds no longer map to the earlier set); 11 residuals of the known kinds plus seed 2 (0.467) and seed 14 (0.05), both logged under Open | one compile failure (fix 20, d8f1052); point-light shadows added to the generator and pixel-identical |
 
 ## Mismatches found and what was done
 
@@ -322,6 +322,9 @@ npm run fuzz -- --seeds=200 --continue          # ~10 minutes on the cloud conta
   below); keep `--strict` out of CI (edge pixels) but run it occasionally to watch the edge-pixel rate.
 * The tolerances live in `bench/pixel-compare.js` next to the comparison; `bench/index.html` keeps its
   own identical inline copy for `--compare` so other workers' edits to that page do not conflict.
+* `node bench/run.mjs --compare` occasionally dies with `page.goto: Timeout 30000ms exceeded` on a
+  fresh page (seen three times tonight, always recovered by re-running alone); it is a load/flake of
+  the bench harness, not a renderer failure: every scenario passes when run on its own.
 * `build/jrs.module.js` was not regenerated on this branch (every worker touching `src/` would
   conflict on it): run `npm run build` once after the merge.
 * The README benchmark note "Standard-material scenes differ by a few levels because jrs does not
