@@ -13,6 +13,7 @@ One flat, parent-before-child loop replaces the two recursive walks (`scene.upda
 | `src/cameras/Camera.js`, `src/objects/SkinnedMesh.js` | `_flatUMW` = their own `updateMatrixWorld`, `_flatPostUpdate` = `_updateInverse` / `_updateBindMatrixInverse`, so the pass treats them as known classes and runs the hook after a recompute. |
 | `src/renderers/WebGLRenderer.js` | `flatSceneUpdate` flag, `_flatGraphFor`, `_flatPass` (the loop), merged / split mode selection in `render()`, `_buildList` merged path and rebuild-and-rerun on a `children.length` mismatch, `_pushItem` defers `skeleton.update()` during a merged pass (`_deferSkeletons` / `_skinnedPending`), `debug.flatUpdate` counters. |
 | `src/renderers/webgl/WebGLRenderListCache.js` | `flatChanged`: the last pass of this list's scene recomputed a world matrix. |
+| `WebGLRenderer.render` (verify mode) | A level-0 reused list is now verified right after `_prepareList`, before the shadow pass: `_renderItem` runs `onBeforeRender` hooks in the shadow pass too, and a hook that edits the scene there made the fresh build differ from *any* list built at that point of the frame (the mismatch `flat-check` used to report at "hook removes itself" with shadows on; it reproduced with the recursive renderer as the first instance). The mismatch message now says what differs (counts, first differing item, first order difference). |
 | `bench/profile.mjs` | Fixed: recursive wrappers were counted once per nesting level (`_projectObject` reported 590 ms in an 11 ms frame) and the no-batch pass at the end added to the already-averaged phase timers; new phases `flatPass(update+project)`, `scene.updateMatrixWorld`, `list.finish(sort)`, `batcher.uploadTexture`, `gl.texImage2D`. |
 | `bench/flat-check.mjs` (new) | Twin scenes, flat vs recursive renderer (plus a second pair at a 1-in-3 cadence for the two-renderers case), 328 frame pairs of mutations; requires byte-identical pixels and identical `onBeforeRender` / `onAfterRender` order; also runs 7 bench scenarios flat vs recursive. |
 | `test/flat-scene-update.test.js` (new) | 13 node tests driving `_flatPass` with a GL-free fake renderer against the recursive reference. |
@@ -113,8 +114,7 @@ layers, `frustumCulled` off, `renderOrder`, add / remove / `attach` / reparent, 
 during the draw, 24 adds (rebuild path), direct `children` push / splice, `scene.matrixWorldAutoUpdate` off / on,
 scene invisible, nested scene alternated and mutated, sprite move, `reuseRenderLists` off / on. Plus seven bench
 scenarios (1 500 objects) flat vs recursive. **328 frame pairs, all byte-identical, hook order identical, 0 verify
-mismatches attributable to the flat pass** (one verify mismatch in the shadows run at "hook removes itself" also
-occurs with the main renderer in recursive mode, see Results). The run shows 70 merged / 50 split passes, 6 rebuilds and 42 patches per world.
+mismatches** (both renderers at 0; `node bench/flat-check.mjs main=recursive` runs the recursive walk on both sides). The run shows 70 merged / 50 split passes, 6 rebuilds and 42 patches per world.
 
 ## Results
 
@@ -175,10 +175,16 @@ pairs identical, 0 verify mismatches; `node bench/flat-check.mjs` 328 frame pair
 `node bench/fuzz.mjs --seeds=50 --continue`: seeds 8 23 27 28 35 fail **identically on the integration tip** (same
 worst meanAbsDiff 0.061 / maxDiff 167), i.e. pre-existing parity gaps unrelated to this branch.
 
-One `verifyListReuse` mismatch remains in `flat-check.mjs` (shadows run, step "hook removes itself", an
-`onBeforeRender` hook removing its own object while shadows are on): it reproduces with the main renderer in
-recursive mode (`node bench/flat-check.mjs main=recursive`), only ever on the first renderer instance created, so
-it is a pre-existing list-reuse issue and not the flat pass; pixels are identical in that step too.
+The one `verifyListReuse` mismatch `flat-check.mjs` reported earlier (shadows run, step "hook removes itself") was
+traced with a per-frame trace of reuse decisions: the first renderer reused its list at level 0 with equal epochs,
+then the *shadow pass* ran the `onBeforeRender` hook (`_renderItem` calls it in the shadow pass too) which removed
+the object and moved the structure epoch, and only then did the verify build its fresh list, 3 items short. The
+second renderer never hit it because by its turn the global epoch had moved and it rebuilt. The reused list was
+the correct one (a rebuild that frame is also built before the hooks run); the verification ran at the wrong
+point of the frame. Fix: level-0 verification now runs right after `_prepareList`. Both renderers report 0.
+
+Second merge (integration tip d48164c: drawlist-build, vao-order-base-instance, point-light-shadows, parity fixes;
+no conflicts): VALIDATION2_PLACEHOLDER
 
 ## Risks / notes for the integrator
 
@@ -200,8 +206,7 @@ it is a pre-existing list-reuse issue and not the flat pass; pixels are identica
   0.75 ms, not 43 ms.
 * Pre-existing, found by `flat-check.mjs` and unchanged here: with two renderers drawing one scene that contains a
   skinned mesh, the second renderer shows a stale pose after animation (the skeleton's "no bone moved" check is
-  per skeleton, not per renderer), and a `verifyListReuse` mismatch occurs in the shadows run when an
-  `onBeforeRender` hook removes its own object. Both reproduce with `flatSceneUpdate = false`.
+  per skeleton, not per renderer). Reproduces with `flatSceneUpdate = false`.
 * Bundles in `build/` were not rebuilt (run `npm run build` at integration).
 
 ## Follow-up ideas
@@ -224,5 +229,6 @@ it is a pre-existing list-reuse issue and not the flat pass; pixels are identica
   its list every frame; track "non-camera recompute" separately so level-1 reuse still applies.
 * `Matrix4.multiplyMatrices` boxing in the interpreter (3 KB / frame): a camera-specific unrolled path, or simply
   accept it.
-* The two pre-existing issues found by `flat-check.mjs` (stale skinned pose on a second renderer; verify mismatch on
-  the first renderer with a self-removing hook under shadows) deserve their own look.
+* Pre-existing, found by `flat-check.mjs` and left alone: with two renderers drawing one scene that contains a
+  skinned mesh, the second renderer shows a stale pose after animation (the skeleton's "no bone moved" check is per
+  skeleton, not per renderer). Also `onBeforeRender` runs in the shadow pass (three.js calls `onBeforeShadow` there).

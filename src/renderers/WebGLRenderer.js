@@ -464,6 +464,9 @@ class WebGLRenderer {
 			this.debug.flatUpdate[merged ? 'merged' : update ? 'split' : 'projectOnly']++;
 		} else { this._flatGraph = null; this._flatMerged = false; }
 		const level = this._prepareList(list, cache, scene, camera);
+		// verify a reused list before the shadow pass: its draws run onBeforeRender hooks, and a hook that edits the scene
+		// would make a fresh build differ from any list built at this point of the frame (reused or not)
+		if (level >= 0 && this.debug.verifyListReuse === true && cache.resort === false) this._verifyReuse(list, scene, camera, level);
 
 		if (this.info.autoReset === true && this._renderCallDepth === 1) { this.info.reset(); this._traceDraws = 0; }
 
@@ -484,8 +487,10 @@ class WebGLRenderer {
 
 		if (level < 0) list.finish(this.sortObjects, this._rankOfRenderOrder);
 		else {
-			if (cache.resort === true) { cache.resort = false; list.resortTransparent(this.sortObjects, this._rankOfRenderOrder, cache.itemZ); }
-			if (this.debug.verifyListReuse === true) this._verifyReuse(list, scene, camera, level);
+			if (cache.resort === true) {
+				cache.resort = false; list.resortTransparent(this.sortObjects, this._rankOfRenderOrder, cache.itemZ);
+				if (this.debug.verifyListReuse === true) this._verifyReuse(list, scene, camera, level);
+			}
 		}
 
 		// background + clear
@@ -720,7 +725,14 @@ class WebGLRenderer {
 		for (let i = 0; ok && i < list.opaqueCount; i++) ok = scratch.opaqueSorted[i] === list.opaqueSorted[i];
 		for (let i = 0; ok && i < list.transparentCount; i++) ok = scratch.transparentSorted[i] === list.transparentSorted[i];
 		this._materialCounter = savedStamps[0]; this._geometryCounter = savedStamps[1]; this._programCounter = savedStamps[2];
-		if (!ok) { this.debug.listReuse.mismatches++; console.error('jrs: reused render list differs from a fresh build (level ' + level + ')'); }
+		if (!ok) {
+			this.debug.listReuse.mismatches++;
+			let detail = `counts ${scratch.count}/${list.count} opaque ${scratch.opaqueCount}/${list.opaqueCount} transparent ${scratch.transparentCount}/${list.transparentCount}`;
+			for (let i = 0; i < Math.min(scratch.count, list.count); i++) { const a = scratch.items[i], b = list.items[i]; if (a.object !== b.object || a.material !== b.material || a.geometry !== b.geometry || a.program !== b.program || a.group !== b.group) { detail += ` | item ${i}: fresh ${a.object.name || a.object.type}#${a.object.id} mat ${a.material.id} prog ${a.program && a.program.id} vs reused ${b.object.name || b.object.type}#${b.object.id} mat ${b.material.id} prog ${b.program && b.program.id}`; break; } }
+			for (let i = 0; i < Math.min(scratch.opaqueCount, list.opaqueCount); i++) if (scratch.opaqueSorted[i] !== list.opaqueSorted[i]) { detail += ` | opaque order differs at ${i}: ${scratch.opaqueSorted[i]} vs ${list.opaqueSorted[i]}`; break; }
+			for (let i = 0; i < Math.min(scratch.transparentCount, list.transparentCount); i++) if (scratch.transparentSorted[i] !== list.transparentSorted[i]) { detail += ` | transparent order differs at ${i}: ${scratch.transparentSorted[i]} vs ${list.transparentSorted[i]}`; break; }
+			console.error('jrs: reused render list differs from a fresh build (level ' + level + '): ' + detail);
+		}
 	}
 
 	_renderOrderReset() { this._renderOrderList.length = 0; this._lastNotedRenderOrder = NaN; }
