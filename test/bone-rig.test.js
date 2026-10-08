@@ -242,3 +242,30 @@ test('Object3D.add / remove involving bones invalidates rig plans (bones added l
 	g.position.y = 6; scene.updateMatrixWorld();
 	assert.equal(root.matrixWorld.elements[13], 6);
 });
+
+test('applyMatrix4, attach, lookAt, copy and getWorldPosition on bones match three.js', () => {
+	const build = (T) => {
+		const scene = new T.Scene(); const g = new T.Group(); g.position.set(1, 2, 3); g.rotation.y = 0.5; scene.add(g);
+		const root = new T.Bone(), child = new T.Bone(); root.position.set(0, 1, 0); child.position.set(0, 1, 0); root.add(child); g.add(root);
+		const target = new T.Group(); target.position.set(-2, 0, 1); target.rotation.x = 0.3; scene.add(target);
+		scene.updateMatrixWorld(true);
+		return { scene, g, root, child, target, T };
+	};
+	const A = build(JRS), B = build(THREE);
+	const apply = (S, fn) => { fn(S); S.scene.updateMatrixWorld(); };
+	const cmp = (label) => {
+		for (const k of ['root', 'child']) for (let i = 0; i < 16; i++) {
+			near(A[k].matrix.elements[i], B[k].matrix.elements[i], 2e-5, `${label} ${k}.matrix[${i}]`);
+			near(A[k].matrixWorld.elements[i], B[k].matrixWorld.elements[i], 2e-5, `${label} ${k}.matrixWorld[${i}]`);
+		}
+	};
+	apply(A, S => S.child.applyMatrix4(new S.T.Matrix4().makeRotationZ(0.4).setPosition(0.3, 0.2, 0.1))); apply(B, S => S.child.applyMatrix4(new S.T.Matrix4().makeRotationZ(0.4).setPosition(0.3, 0.2, 0.1))); cmp('applyMatrix4');
+	apply(A, S => S.child.lookAt(new S.T.Vector3(3, 1, 2))); apply(B, S => S.child.lookAt(new S.T.Vector3(3, 1, 2))); cmp('lookAt');
+	apply(A, S => S.target.attach(S.child)); apply(B, S => S.target.attach(S.child)); cmp('attach to group');
+	apply(A, S => S.root.attach(S.child)); apply(B, S => S.root.attach(S.child)); cmp('attach back to bone');
+	const pa = A.child.getWorldPosition(new JRS.Vector3()), pb = B.child.getWorldPosition(new THREE.Vector3());
+	for (const k of ['x', 'y', 'z']) near(pa[k], pb[k], 2e-5, 'world position ' + k);
+	const ca = new JRS.Bone().copy(A.child), cb = new THREE.Bone().copy(B.child);
+	ca.updateMatrix(); cb.updateMatrix();
+	for (let i = 0; i < 16; i++) near(ca.matrix.elements[i], cb.matrix.elements[i], 2e-5, 'copy matrix ' + i);
+});

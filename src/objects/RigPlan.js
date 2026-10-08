@@ -34,26 +34,26 @@ class RigPlan {
 		visit(root, -1);
 		const n = this.n = bones.length;
 		this.bones = bones;
-		this.recData = new Array(n); this.recOff = new Int32Array(n);
-		this.slabData = new Array(n); this.slabOff = new Int32Array(n);
+		this.recData = []; this.recOff = new Int32Array(n);
+		this.slabData = []; this.slabOff = new Int32Array(n);
 		// per bone: where its parent's world matrix and world version live, and where its parent's force flag is
 		// (index n = the root's, which comes from the caller)
-		this.parData = new Array(n); this.parOff = new Int32Array(n);
-		this.parVerData = new Array(n); this.parVerOff = new Int32Array(n);
+		this.parData = []; this.parOff = new Int32Array(n);
+		this.parVerData = []; this.parVerOff = new Int32Array(n);
 		this.forceFrom = new Int32Array(n);
 		this.forceOut = new Uint8Array(n + 1);
 		this.rootVersion = new Float64Array(1); // the external parent's world version, copied here each update
 		for (let k = 0; k < n; k++) {
 			const b = bones[k], pk = parents[k];
-			this.recData[k] = b._snapData; this.recOff[k] = b._snapOffset;
-			this.slabData[k] = b._slabData; this.slabOff[k] = b._slabOffset;
+			this.recData.push(b._snapData); this.recOff[k] = b._snapOffset;
+			this.slabData.push(b._slabData); this.slabOff[k] = b._slabOffset;
 			if (pk >= 0) {
-				this.parData[k] = bones[pk]._slabData; this.parOff[k] = bones[pk]._slabOffset + 16;
-				this.parVerData[k] = bones[pk]._snapData; this.parVerOff[k] = bones[pk]._snapOffset + TRS_WORLD_VERSION;
+				this.parData.push(bones[pk]._slabData); this.parOff[k] = bones[pk]._slabOffset + 16;
+				this.parVerData.push(bones[pk]._snapData); this.parVerOff[k] = bones[pk]._snapOffset + TRS_WORLD_VERSION;
 				this.forceFrom[k] = pk;
 			} else {
-				this.parData[k] = b._slabData; this.parOff[k] = 0; // replaced by the external parent's matrix on update
-				this.parVerData[k] = this.rootVersion; this.parVerOff[k] = 0;
+				this.parData.push(b._slabData); this.parOff[k] = 0; // replaced by the external parent's matrix on update
+				this.parVerData.push(this.rootVersion); this.parVerOff[k] = 0;
 				this.forceFrom[k] = n;
 			}
 		}
