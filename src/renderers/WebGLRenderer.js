@@ -1110,6 +1110,37 @@ function shadowSideOf(material) {
 const MAP_KEYS = ['map', 'alphaMap', 'normalMap', 'emissiveMap', 'roughnessMap', 'metalnessMap', 'aoMap', 'specularMap'];
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
+// WebGL2 uniform type enums as literals: reading them off the context costs a getter call per switch case
+const U_FLOAT = 0x1406;
+const U_INT = 0x1404;
+const U_BOOL = 0x8B56;
+const U_UNSIGNED_INT = 0x1405;
+const U_FLOAT_VEC2 = 0x8B50;
+const U_FLOAT_VEC3 = 0x8B51;
+const U_FLOAT_VEC4 = 0x8B52;
+const U_INT_VEC2 = 0x8B53;
+const U_INT_VEC3 = 0x8B54;
+const U_INT_VEC4 = 0x8B55;
+const U_BOOL_VEC2 = 0x8B57;
+const U_BOOL_VEC3 = 0x8B58;
+const U_BOOL_VEC4 = 0x8B59;
+const U_FLOAT_MAT2 = 0x8B5A;
+const U_FLOAT_MAT3 = 0x8B5B;
+const U_FLOAT_MAT4 = 0x8B5C;
+const U_SAMPLER_2D = 0x8B5E;
+const U_SAMPLER_3D = 0x8B5F;
+const U_SAMPLER_CUBE = 0x8B60;
+const U_SAMPLER_2D_SHADOW = 0x8B62;
+const U_SAMPLER_2D_ARRAY = 0x8DC1;
+const U_SAMPLER_2D_ARRAY_SHADOW = 0x8DC4;
+const U_SAMPLER_CUBE_SHADOW = 0x8DC5;
+const U_INT_SAMPLER_2D = 0x8DCA;
+const U_INT_SAMPLER_3D = 0x8DCB;
+const U_INT_SAMPLER_2D_ARRAY = 0x8DCF;
+const U_UNSIGNED_INT_SAMPLER_2D = 0x8DD2;
+const U_UNSIGNED_INT_SAMPLER_3D = 0x8DD3;
+const U_UNSIGNED_INT_SAMPLER_2D_ARRAY = 0x8DD7;
+
 function isLeafValue(v) {
 	return v.isVector2 || v.isVector3 || v.isVector4 || v.isColor || v.isMatrix3 || v.isMatrix4 || v.isQuaternion || v.isTexture || ArrayBuffer.isView(v);
 }
@@ -1130,9 +1161,9 @@ function bindTextureUniform(renderer, u, value, unit) {
 	if (!value || !value.isTexture) return;
 	// never sample a texture attached to the framebuffer being rendered to (feedback loop)
 	if (value.renderTarget !== null && value.renderTarget !== undefined && value.renderTarget === renderer._currentRenderTarget) { renderer.textures.bindEmpty(u, unit); return; }
-	if (u.type === gl.SAMPLER_3D) renderer.textures.setTexture3D(value, unit);
-	else if (u.type === gl.SAMPLER_2D_ARRAY) renderer.textures.setTexture2DArray(value, unit);
-	else if (u.type === gl.SAMPLER_CUBE || u.type === gl.SAMPLER_CUBE_SHADOW) renderer.textures.setTextureCube(value, unit);
+	if (u.type === U_SAMPLER_3D) renderer.textures.setTexture3D(value, unit);
+	else if (u.type === U_SAMPLER_2D_ARRAY) renderer.textures.setTexture2DArray(value, unit);
+	else if (u.type === U_SAMPLER_CUBE || u.type === U_SAMPLER_CUBE_SHADOW) renderer.textures.setTextureCube(value, unit);
 	else renderer.textures.setTexture2D(value, unit);
 }
 /** True if `u.cache` already holds these components; otherwise stores them. */
@@ -1175,36 +1206,36 @@ function setUniformValueImpl(gl, renderer, u, value) {
 	const loc = u.location;
 	if (value === null || value === undefined) return;
 	switch (u.type) {
-		case gl.FLOAT:
+		case U_FLOAT:
 			if (u.size > 1 || Array.isArray(value) || ArrayBuffer.isView(value)) { if (!cacheArray(u, value, value.length)) { traceCounter++; gl.uniform1fv(loc, value); } }
 			else if (u.cache !== value) { u.cache = value; { traceCounter++; gl.uniform1f(loc, value); } }
 			break;
-		case gl.INT: case gl.BOOL:
+		case U_INT: case U_BOOL:
 			if (u.size > 1 || Array.isArray(value) || ArrayBuffer.isView(value)) { if (!cacheArray(u, value, value.length)) { traceCounter++; gl.uniform1iv(loc, value); } }
 			else { const v = value ? (typeof value === 'boolean' ? 1 : value) : 0; if (u.cache !== v) { u.cache = v; { traceCounter++; gl.uniform1i(loc, v); } } }
 			break;
-		case gl.UNSIGNED_INT: if (u.size > 1) { traceCounter++; gl.uniform1uiv(loc, value); } else if (u.cache !== value) { u.cache = value; { traceCounter++; gl.uniform1ui(loc, value); } } break;
-		case gl.FLOAT_VEC2:
+		case U_UNSIGNED_INT: if (u.size > 1) { traceCounter++; gl.uniform1uiv(loc, value); } else if (u.cache !== value) { u.cache = value; { traceCounter++; gl.uniform1ui(loc, value); } } break;
+		case U_FLOAT_VEC2:
 			if (value.isVector2) { if (!cacheVec(u, value.x, value.y, 0, 0)) { traceCounter++; gl.uniform2f(loc, value.x, value.y); } }
 			else { const a = flattenArray(value, 2); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniform2fv(loc, a); } }
 			break;
-		case gl.FLOAT_VEC3:
+		case U_FLOAT_VEC3:
 			if (value.isVector3) { if (!cacheVec(u, value.x, value.y, value.z, 0)) { traceCounter++; gl.uniform3f(loc, value.x, value.y, value.z); } }
 			else if (value.isColor) { if (!cacheVec(u, value.r, value.g, value.b, 0)) { traceCounter++; gl.uniform3f(loc, value.r, value.g, value.b); } }
 			else { const a = flattenArray(value, 3); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniform3fv(loc, a); } }
 			break;
-		case gl.FLOAT_VEC4:
+		case U_FLOAT_VEC4:
 			if (value.isVector4 || value.isQuaternion) { if (!cacheVec(u, value.x, value.y, value.z, value.w)) { traceCounter++; gl.uniform4f(loc, value.x, value.y, value.z, value.w); } }
 			else { const a = flattenArray(value, 4); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniform4fv(loc, a); } }
 			break;
-		case gl.INT_VEC2: case gl.BOOL_VEC2: if (value.isVector2) { traceCounter++; gl.uniform2i(loc, value.x, value.y); } else { traceCounter++; gl.uniform2iv(loc, value); } break;
-		case gl.INT_VEC3: case gl.BOOL_VEC3: if (value.isVector3) { traceCounter++; gl.uniform3i(loc, value.x, value.y, value.z); } else { traceCounter++; gl.uniform3iv(loc, value); } break;
-		case gl.INT_VEC4: case gl.BOOL_VEC4: if (value.isVector4) { traceCounter++; gl.uniform4i(loc, value.x, value.y, value.z, value.w); } else { traceCounter++; gl.uniform4iv(loc, value); } break;
-		case gl.FLOAT_MAT2: { const a = value.elements || flattenArray(value, 4); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniformMatrix2fv(loc, false, a); } break; }
-		case gl.FLOAT_MAT3: { const a = value.elements || flattenArray(value, 9); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniformMatrix3fv(loc, false, a); } break; }
-		case gl.FLOAT_MAT4: { const a = value.elements || flattenArray(value, 16); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniformMatrix4fv(loc, false, a); } break; }
-		case gl.SAMPLER_2D: case gl.SAMPLER_2D_SHADOW: case gl.SAMPLER_3D: case gl.SAMPLER_2D_ARRAY: case gl.SAMPLER_CUBE: case gl.SAMPLER_CUBE_SHADOW:
-		case gl.INT_SAMPLER_2D: case gl.UNSIGNED_INT_SAMPLER_2D: case gl.INT_SAMPLER_3D: case gl.UNSIGNED_INT_SAMPLER_3D: case gl.INT_SAMPLER_2D_ARRAY: case gl.UNSIGNED_INT_SAMPLER_2D_ARRAY:
+		case U_INT_VEC2: case U_BOOL_VEC2: if (value.isVector2) { traceCounter++; gl.uniform2i(loc, value.x, value.y); } else { traceCounter++; gl.uniform2iv(loc, value); } break;
+		case U_INT_VEC3: case U_BOOL_VEC3: if (value.isVector3) { traceCounter++; gl.uniform3i(loc, value.x, value.y, value.z); } else { traceCounter++; gl.uniform3iv(loc, value); } break;
+		case U_INT_VEC4: case U_BOOL_VEC4: if (value.isVector4) { traceCounter++; gl.uniform4i(loc, value.x, value.y, value.z, value.w); } else { traceCounter++; gl.uniform4iv(loc, value); } break;
+		case U_FLOAT_MAT2: { const a = value.elements || flattenArray(value, 4); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniformMatrix2fv(loc, false, a); } break; }
+		case U_FLOAT_MAT3: { const a = value.elements || flattenArray(value, 9); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniformMatrix3fv(loc, false, a); } break; }
+		case U_FLOAT_MAT4: { const a = value.elements || flattenArray(value, 16); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniformMatrix4fv(loc, false, a); } break; }
+		case U_SAMPLER_2D: case U_SAMPLER_2D_SHADOW: case U_SAMPLER_3D: case U_SAMPLER_2D_ARRAY: case U_SAMPLER_CUBE: case U_SAMPLER_CUBE_SHADOW:
+		case U_INT_SAMPLER_2D: case U_UNSIGNED_INT_SAMPLER_2D: case U_INT_SAMPLER_3D: case U_UNSIGNED_INT_SAMPLER_3D: case U_INT_SAMPLER_2D_ARRAY: case U_UNSIGNED_INT_SAMPLER_2D_ARRAY:
 			// units were assigned at link time (u.unit .. u.unit + size - 1); bind textures, placeholders for gaps
 			u.boundStamp = renderer._samplerStamp;
 			if (Array.isArray(value)) {
