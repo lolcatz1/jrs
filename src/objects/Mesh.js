@@ -4,6 +4,7 @@ import { Sphere } from '../math/Sphere.js';
 import { Ray } from '../math/Ray.js';
 import { Matrix4 } from '../math/Matrix4.js';
 import { Object3D } from '../core/Object3D.js';
+import { trackRenderProperty } from '../core/epochs.js';
 import { Triangle } from '../math/Triangle.js';
 import { BackSide, FrontSide } from '../constants.js';
 import { MeshBasicMaterial } from '../materials/MeshBasicMaterial.js';
@@ -215,5 +216,9 @@ function checkGeometryIntersection(object, material, raycaster, ray, uv, uv1, no
 	}
 	return intersection;
 }
+
+// swapping geometry or material changes what is drawn: invalidates cached render lists
+trackRenderProperty(Mesh.prototype, 'geometry');
+trackRenderProperty(Mesh.prototype, 'material');
 
 export { Mesh };

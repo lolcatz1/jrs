@@ -3,6 +3,7 @@ import { Vector3 } from '../math/Vector3.js';
 import { Matrix4 } from '../math/Matrix4.js';
 import { Triangle } from '../math/Triangle.js';
 import { Object3D } from '../core/Object3D.js';
+import { trackRenderProperty } from '../core/epochs.js';
 import { BufferGeometry } from '../core/BufferGeometry.js';
 import { Float32BufferAttribute } from '../core/BufferAttribute.js';
 import { SpriteMaterial } from '../materials/SpriteMaterial.js';
@@ -86,5 +87,9 @@ function transformVertex(vertexPosition, mvPosition, center, scale, sin, cos) {
 	vertexPosition.y += _rotatedPosition.y;
 	vertexPosition.applyMatrix4(_viewWorldMatrix);
 }
+
+// swapping geometry or material changes what is drawn: invalidates cached render lists
+trackRenderProperty(Sprite.prototype, 'geometry');
+trackRenderProperty(Sprite.prototype, 'material');
 
 export { Sprite };
