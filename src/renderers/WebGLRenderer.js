@@ -25,7 +25,7 @@ import { computeNormalMatrix } from '../core/TransformSlab.js';
 import { WebGLInfo } from './webgl/WebGLInfo.js';
 import { WebGLShadowMap } from './webgl/WebGLShadowMap.js';
 import { getDFGLUT } from './shaders/DFGLUTData.js';
-import { MATERIAL_SHADER, MATERIAL_SPRITE, MATERIAL_POINTS, FRAME_BLOCK_SIZE, LIGHTS_BLOCK_SIZE, MATERIAL_BLOCK_SIZE, TEXTURE_UNITS } from './shaders/ShaderLib.js';
+import { MATERIAL_SHADER, MATERIAL_SPRITE, MATERIAL_POINTS, MATERIAL_SHADOW_DEPTH, FRAME_BLOCK_SIZE, LIGHTS_BLOCK_SIZE, MATERIAL_BLOCK_SIZE, TEXTURE_UNITS } from './shaders/ShaderLib.js';
 
 const _projScreenMatrix = /*@__PURE__*/ new Matrix4();
 const _vector3 = /*@__PURE__*/ new Vector3();
@@ -954,7 +954,8 @@ class WebGLRenderer {
 		if (materialChanged) {
 			this._currentMaterial = material;
 			this._currentSide = side;
-			state.setMaterial(material, frontFaceCW, side);
+			if (program.parameters.materialType === MATERIAL_SHADOW_DEPTH) state.setShadowPassMaterial(frontFaceCW, side);
+			else state.setMaterial(material, frontFaceCW, side);
 			if (program.hasMaterialBlock) {
 				const props = this._materialProps(material);
 				const offset = this._syncMaterialBlock(material, props);

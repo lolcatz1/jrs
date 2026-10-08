@@ -185,6 +185,23 @@ class WebGLState {
 			this.setStencilOp(material.stencilFail, material.stencilZFail, material.stencilZPass);
 		}
 	}
+	/** Shadow pass state: three.js renders casters with its own MeshDepthMaterial, so the caster's depth, blend,
+	 *  stencil and polygon-offset settings do not apply; only the (flipped) side does. */
+	setShadowPassMaterial(frontFaceCW, side) {
+		const gl = this.gl;
+		side === DoubleSide ? this.disable(gl.CULL_FACE) : this.enable(gl.CULL_FACE);
+		let flipSided = (side === BackSide);
+		if (frontFaceCW) flipSided = !flipSided;
+		this.setFlipSided(flipSided);
+		this.setBlending(NoBlending);
+		this.setDepthFunc(LessEqualDepth);
+		this.setDepthTest(true);
+		this.setDepthMask(true);
+		this.setColorMask(true);
+		this.setPolygonOffset(false, 0, 0);
+		this.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
+		this.setStencilTest(false);
+	}
 	setStencilTest(stencilTest) {
 		if (this.currentStencilTest === stencilTest) return;
 		if (stencilTest) this.enable(this.gl.STENCIL_TEST); else this.disable(this.gl.STENCIL_TEST);

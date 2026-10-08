@@ -68,7 +68,8 @@ class WebGLShadowMap {
 			let list = this.lists.get(light);
 			if (list === undefined) { list = new WebGLRenderList(); this.lists.set(light, list); }
 			list.init();
-			renderer._renderOrderReset();
+			// no _renderOrderReset() here: the main pass has already registered every renderOrder of the frame and
+			// sorts with that table after this pass; resetting it to the casters' orders alone mis-ranked receivers
 			this._collect(scene, shadow.camera, list);
 			renderer._resolvePrograms(list, scene);
 			list.finish(true, renderer._rankOfRenderOrder);
