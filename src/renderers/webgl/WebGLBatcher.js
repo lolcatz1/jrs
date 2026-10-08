@@ -8,10 +8,12 @@
  * is skipped entirely (the frame hash covers object identity and
  * _worldVersion of every batched object).
  */
-import { MATRIX_TEXTURE_WIDTH } from '../shaders/ShaderLib.js';
+import { MATRIX_TEXTURE_WIDTH, TEXELS_PER_OBJECT } from '../shaders/ShaderLib.js';
+import { computeNormalMatrix } from '../../core/TransformSlab.js';
 
 export const INSTANCE_STRIDE_FLOATS = 16;
-const MATRICES_PER_ROW = MATRIX_TEXTURE_WIDTH / 4;
+const TEX_STRIDE_FLOATS = TEXELS_PER_OBJECT * 4; // model matrix (4 texels) + normal matrix columns (3 texels) + spare
+const MATRICES_PER_ROW = MATRIX_TEXTURE_WIDTH / TEXELS_PER_OBJECT;
 export const INSTANCE_STRIDE_BYTES = INSTANCE_STRIDE_FLOATS * 4;
 
 class WebGLBatcher {
@@ -29,11 +31,40 @@ class WebGLBatcher {
 		gl.bindBuffer(gl.ARRAY_BUFFER, null);
 		// matrix texture for multi-draw: RGBA32F, 4 texels per matrix, rows of MATRICES_PER_ROW matrices
 		this.texture = null; this.textureRows = 0; this.textureHash = 0; this.textureCount = 0;
+		this.texCapacity = MATRICES_PER_ROW * 8;
+		this.texData = new Float32Array(this.texCapacity * TEX_STRIDE_FLOATS);
+		this.texCount = 0; this.texHash = 0;
+	}
+	ensureTex(extra) {
+		if (this.texCount + extra > this.texCapacity) {
+			let cap = this.texCapacity;
+			while (cap < this.texCount + extra) cap *= 2;
+			cap = Math.ceil(cap / MATRICES_PER_ROW) * MATRICES_PER_ROW;
+			const nd = new Float32Array(cap * TEX_STRIDE_FLOATS);
+			nd.set(this.texData);
+			this.texData = nd; this.texCapacity = cap;
+		}
+	}
+	/** Append an object's world matrix and (CPU-cached) normal matrix for the multi-draw matrix texture. */
+	addTex(object) {
+		const d = this.texData, o = this.texCount * TEX_STRIDE_FLOATS;
+		const s = object._slabData, so = object._slabOffset + 16;
+		for (let i = 0; i < 16; i++) d[o + i] = s[so + i];
+		if (object._normalVersion !== object._worldVersion) { computeNormalMatrix(s, object._slabOffset); object._normalVersion = object._worldVersion; }
+		const no = object._slabOffset + 32;
+		d[o + 16] = s[no]; d[o + 17] = s[no + 1]; d[o + 18] = s[no + 2]; d[o + 19] = 0;
+		d[o + 20] = s[no + 3]; d[o + 21] = s[no + 4]; d[o + 22] = s[no + 5]; d[o + 23] = 0;
+		d[o + 24] = s[no + 6]; d[o + 25] = s[no + 7]; d[o + 26] = s[no + 8]; d[o + 27] = 0;
+		let h = this.texHash;
+		h = Math.imul(h ^ object.id, 16777619);
+		h = Math.imul(h ^ object._worldVersion, 16777619);
+		this.texHash = h;
+		return this.texCount++;
 	}
 	/** Upload the frame's matrices into the matrix texture (unit `unit`) if they changed. The texture stays bound to `unit`. */
 	uploadTexture(state, unit) {
 		const gl = this.gl;
-		const rows = Math.max(1, Math.ceil(this.count / MATRICES_PER_ROW));
+		const rows = Math.max(1, Math.ceil(this.texCount / MATRICES_PER_ROW));
 		if (this.texture === null || rows > this.textureRows) {
 			if (this.texture !== null) gl.deleteTexture(this.texture);
 			this.texture = gl.createTexture();
@@ -47,15 +78,15 @@ class WebGLBatcher {
 		} else {
 			state.bindTexture(gl.TEXTURE_2D, this.texture, unit);
 		}
-		if (this.count === 0) return;
-		if (this.textureHash === this.hash && this.textureCount === this.count) return;
-		// data capacity is a multiple of a full row (see ensure), so whole rows can be uploaded
+		if (this.texCount === 0) return;
+		if (this.textureHash === this.texHash && this.textureCount === this.texCount) return;
+		// texData capacity is a multiple of a full row (see ensureTex), so whole rows can be uploaded
 		gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
 		gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-		gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, MATRIX_TEXTURE_WIDTH, rows, gl.RGBA, gl.FLOAT, this.data, 0);
-		this.textureHash = this.hash; this.textureCount = this.count;
+		gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, MATRIX_TEXTURE_WIDTH, rows, gl.RGBA, gl.FLOAT, this.texData, 0);
+		this.textureHash = this.texHash; this.textureCount = this.texCount;
 	}
-	begin() { this.count = 0; this.hash = 0x811c9dc5 | 0; }
+	begin() { this.count = 0; this.hash = 0x811c9dc5 | 0; this.texCount = 0; this.texHash = 0x811c9dc5 | 0; }
 	ensure(extra) {
 		if (this.count + extra > this.capacity) {
 			let cap = this.capacity;

@@ -74,3 +74,20 @@ class TransformSlab {
 }
 
 export const transformSlab = new TransformSlab();
+
+/** Inverse-transpose of the upper 3x3 of the world matrix at slab[o+16..32) -> slab[o+32..41) (column-major mat3). */
+export function computeNormalMatrix(s, o) {
+	const e = o + 16;
+	const n11 = s[e], n21 = s[e + 1], n31 = s[e + 2], n12 = s[e + 4], n22 = s[e + 5], n32 = s[e + 6], n13 = s[e + 8], n23 = s[e + 9], n33 = s[e + 10];
+	const t11 = n33 * n22 - n32 * n23, t12 = n32 * n13 - n33 * n12, t13 = n23 * n12 - n22 * n13;
+	const det = n11 * t11 + n21 * t12 + n31 * t13;
+	const m = o + 32;
+	if (det === 0) { for (let i = 0; i < 9; i++) s[m + i] = 0; return; }
+	const detInv = 1 / det;
+	const i0 = t11 * detInv, i1 = (n31 * n23 - n33 * n21) * detInv, i2 = (n32 * n21 - n31 * n22) * detInv;
+	const i3 = t12 * detInv, i4 = (n33 * n11 - n31 * n13) * detInv, i5 = (n31 * n12 - n32 * n11) * detInv;
+	const i6 = t13 * detInv, i7 = (n21 * n13 - n23 * n11) * detInv, i8 = (n22 * n11 - n21 * n12) * detInv;
+	s[m] = i0; s[m + 1] = i3; s[m + 2] = i6;
+	s[m + 3] = i1; s[m + 4] = i4; s[m + 5] = i7;
+	s[m + 6] = i2; s[m + 7] = i5; s[m + 8] = i8;
+}

@@ -40,7 +40,8 @@ export const TEXTURE_UNITS = {
 	spotShadowMap0: 12, spotShadowMap1: 13, spotShadowMap2: 14, spotShadowMap3: 15,
 	objectMatrices: 15, // multi-draw matrix texture (spot shadow maps are capped at 3 when it is used)
 };
-export const MATRIX_TEXTURE_WIDTH = 1024; // texels; 4 texels per matrix -> 256 matrices per row
+export const MATRIX_TEXTURE_WIDTH = 1024; // texels
+export const TEXELS_PER_OBJECT = 8; // model matrix (4) + normal matrix columns (3) + spare -> 128 objects per row
 
 export const FRAME_BLOCK = /* glsl */`
 layout(std140) uniform Frame {
@@ -141,11 +142,16 @@ in mat4 instanceMatrix;
 // one object matrix per sub-draw, fetched from a per-frame matrix texture by gl_DrawID
 uniform highp sampler2D objectMatrices;
 uniform int drawBase;
+ivec2 objectTexel;
 mat4 fetchObjectMatrix() {
-	int id = ( drawBase + gl_DrawID ) * 4;
+	int id = ( drawBase + gl_DrawID ) * ${TEXELS_PER_OBJECT};
 	int y = id / ${MATRIX_TEXTURE_WIDTH};
 	int x = id - y * ${MATRIX_TEXTURE_WIDTH};
+	objectTexel = ivec2( x, y );
 	return mat4( texelFetch( objectMatrices, ivec2( x, y ), 0 ), texelFetch( objectMatrices, ivec2( x + 1, y ), 0 ), texelFetch( objectMatrices, ivec2( x + 2, y ), 0 ), texelFetch( objectMatrices, ivec2( x + 3, y ), 0 ) );
+}
+mat3 fetchObjectNormalMatrix() {
+	return mat3( texelFetch( objectMatrices, objectTexel + ivec2( 4, 0 ), 0 ).xyz, texelFetch( objectMatrices, objectTexel + ivec2( 5, 0 ), 0 ).xyz, texelFetch( objectMatrices, objectTexel + ivec2( 6, 0 ), 0 ).xyz );
 }
 #endif
 out vec3 vWorldPosition;
@@ -200,7 +206,9 @@ void main() {
 	#endif
 	vWorldPosition = worldPosition.xyz;
 	#ifdef USE_NORMAL
-		#if defined( USE_INSTANCING ) || defined( USE_MULTIDRAW )
+		#if defined( USE_MULTIDRAW )
+		vNormal = normalize( fetchObjectNormalMatrix() * normal );
+		#elif defined( USE_INSTANCING )
 		vNormal = normalize( transpose( inverse( mat3( model ) ) ) * normal );
 		#else
 		vNormal = normalize( normalMatrix * normal );

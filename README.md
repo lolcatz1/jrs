@@ -40,7 +40,7 @@ application keeps working. WebGL2 is required (every current browser has it).
 | Recomposes and remultiplies **every** object's matrices every frame | Only objects whose position/rotation/scale (or ancestor) changed are touched; everything derived (normal matrix, bounding sphere, instance data) is cached by a per-object version counter |
 | 16-element `Array`s of doubles per matrix, converted on every upload | `Float32Array` records in shared slab pages; uploaded with zero-copy `srcOffset` calls |
 | Sorts an array of item objects with a JS comparator | Packs a 52-bit key per item into a `Float64Array` and uses the native comparator-free sort |
-| One draw call per mesh | Consecutive meshes sharing geometry and material become **one instanced draw call**; static scenes skip the instance-buffer upload entirely |
+| One draw call per mesh | Consecutive meshes sharing geometry and material become **one instanced draw call**; runs of *different* geometries sharing a material become **one multi-draw call** over shared mega-buffers with a `gl_DrawID`-indexed matrix texture; static scenes skip the uploads entirely |
 | Re-sends camera, light and material uniforms per draw/material | Camera, lights and all materials live in std140 uniform blocks: one upload per frame, one `bindBufferRange` per material switch |
 | Recompiles all shaders when the light count changes | Fixed-capacity light arrays, counts read from the block: no recompiles |
 | Raycasts test every triangle | Lazy bounding-volume hierarchy per geometry, built on first raycast |
@@ -154,7 +154,9 @@ the controls), WebGL1.
 * Lights are limited to 4 directional, 8 point, 4 spot and 2 hemisphere per scene.
 * `renderer.info.render` has two extra counters: `batches` and `instances`. `renderer.info.memory.geometries`
   counts geometries the renderer has uploaded, like three.js.
-* `renderer.autoBatch` (default `true`) toggles automatic instancing.
+* `renderer.autoBatch` (default `true`) toggles automatic batching; `renderer.autoMultiDraw` (default `true`)
+  toggles the multi-draw form (needs `WEBGL_multi_draw`, present in current Chrome, Firefox and Safari);
+  `renderer.autoBatchMinimum` (default 4) is the shortest run that is batched.
 * `geometry.boundsTree`, `computeBoundsTree()`, `disposeBoundsTree()` and the `MeshBVH` class are
   additions.
 
@@ -181,8 +183,9 @@ MIT. Geometry generators and parts of the math library are ported from three.js 
 Open `bench/conformance.html` from any static host (GitHub Pages, `npm run bench:serve` then
 `http://<your-machine>:8765/bench/conformance.html` on the phone). It reports the device's WebGL2
 limits, runs 23 rendering checks with pixel probes (lighting, batching vs. individual draws,
-instancing, transparency, 2D/3D/array/cube textures, stencil, fog, shadows, sprites,
-ShaderMaterial with chunks and custom attributes, render targets, raycasting), times a 2 000-object scene, and when a CDN is reachable runs the same scene with
+multi-draw of mixed geometries vs. individual draws, instancing, transparency, 2D/3D/array/cube
+textures, stencil, fog, shadows, sprites, ShaderMaterial with chunks, shared programs and custom
+attributes, render targets, raycasting), times a 2 000-object scene, and when a CDN is reachable runs the same scene with
 three.js for a side-by-side number. "Copy report" puts the JSON on the clipboard.
 `node bench/conformance.mjs` runs the same page in headless Chromium.
 

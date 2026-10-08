@@ -21,6 +21,7 @@ import { WebGLLights } from './webgl/WebGLLights.js';
 import { WebGLBindingStates } from './webgl/WebGLBindingStates.js';
 import { WebGLBatcher } from './webgl/WebGLBatcher.js';
 import { WebGLMegaBuffers } from './webgl/WebGLMegaBuffers.js';
+import { computeNormalMatrix } from '../core/TransformSlab.js';
 import { WebGLInfo } from './webgl/WebGLInfo.js';
 import { WebGLShadowMap } from './webgl/WebGLShadowMap.js';
 import { MATERIAL_SHADER, MATERIAL_SPRITE, MATERIAL_POINTS, FRAME_BLOCK_SIZE, LIGHTS_BLOCK_SIZE, MATERIAL_BLOCK_SIZE, TEXTURE_UNITS } from './shaders/ShaderLib.js';
@@ -776,14 +777,16 @@ class WebGLRenderer {
 			let j = i + 1;
 			let kind = 0; // 0 single, 1 instanced run, 2 multi-draw run
 			if (multi && this._isMultiDrawable(item)) {
-				const page = item.mdRecord.page, indexed = item.mdRecord.indexed;
+				const page = item.mdRecord.page, indexed = item.mdRecord.indexed, geometry = item.geometry;
+				let sameGeometry = true;
 				while (j < n) {
 					const next = list.itemFromKey(keys[j]);
 					if (next.material === item.material && next.program === item.program && next.renderOrder === item.renderOrder &&
-						this._isMultiDrawable(next) && next.mdRecord.page === page && next.mdRecord.indexed === indexed) j++;
+						this._isMultiDrawable(next) && next.mdRecord.page === page && next.mdRecord.indexed === indexed) { if (next.geometry !== geometry) sameGeometry = false; j++; }
 					else break;
 				}
-				if (j - i >= minimum) kind = 2;
+				// identical geometry throughout: instancing is the cheaper form (one draw, no per-sub-draw cost)
+				if (j - i >= minimum) kind = sameGeometry ? 1 : 2;
 			} else if (autoBatch && this._isBatchable(item)) {
 				while (j < n) {
 					const next = list.itemFromKey(keys[j]);
@@ -796,15 +799,15 @@ class WebGLRenderer {
 			if (cmdN === this._cmdCapacity) this._growCommands();
 			this._cmdItem[cmdN] = item;
 			if (kind === 2) {
-				batcher.ensure(j - i);
+				batcher.ensureTex(j - i);
 				if (mdN + (j - i) > this._mdCounts.length) this._growMultiDraw(mdN + (j - i));
-				this._cmdOffset[cmdN] = batcher.count;
+				this._cmdOffset[cmdN] = batcher.texCount;
 				this._cmdCount[cmdN] = j - i;
 				this._cmdKind[cmdN] = 2;
 				this._cmdMdStart[cmdN] = mdN;
 				for (let k = i; k < j; k++) {
 					const it = list.itemFromKey(keys[k]);
-					batcher.add(it.object);
+					batcher.addTex(it.object);
 					const rec = it.mdRecord;
 					if (rec.indexed) { this._mdCounts[mdN] = rec.indexCount; this._mdOffsets[mdN] = rec.byteOffset; }
 					else { this._mdCounts[mdN] = rec.vertexCount; this._mdOffsets[mdN] = rec.baseVertex; }
@@ -1102,24 +1105,6 @@ function shadowSideOf(material) {
 
 const MAP_KEYS = ['map', 'alphaMap', 'normalMap', 'emissiveMap', 'roughnessMap', 'metalnessMap', 'aoMap', 'specularMap'];
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
-
-/** Inverse-transpose of the upper 3x3 of the world matrix at slab[o+16..32) -> slab[o+32..41). */
-function computeNormalMatrix(s, o) {
-	const e = o + 16;
-	const n11 = s[e], n21 = s[e + 1], n31 = s[e + 2], n12 = s[e + 4], n22 = s[e + 5], n32 = s[e + 6], n13 = s[e + 8], n23 = s[e + 9], n33 = s[e + 10];
-	const t11 = n33 * n22 - n32 * n23, t12 = n32 * n13 - n33 * n12, t13 = n23 * n12 - n22 * n13;
-	const det = n11 * t11 + n21 * t12 + n31 * t13;
-	const m = o + 32;
-	if (det === 0) { for (let i = 0; i < 9; i++) s[m + i] = 0; return; }
-	const detInv = 1 / det;
-	// inverse (column-major) then transpose => write transposed directly
-	const i0 = t11 * detInv, i1 = (n31 * n23 - n33 * n21) * detInv, i2 = (n32 * n21 - n31 * n22) * detInv;
-	const i3 = t12 * detInv, i4 = (n33 * n11 - n31 * n13) * detInv, i5 = (n31 * n12 - n32 * n11) * detInv;
-	const i6 = t13 * detInv, i7 = (n21 * n13 - n23 * n11) * detInv, i8 = (n22 * n11 - n21 * n12) * detInv;
-	s[m] = i0; s[m + 1] = i3; s[m + 2] = i6;
-	s[m + 3] = i1; s[m + 4] = i4; s[m + 5] = i7;
-	s[m + 6] = i2; s[m + 7] = i5; s[m + 8] = i8;
-}
 
 function isLeafValue(v) {
 	return v.isVector2 || v.isVector3 || v.isVector4 || v.isColor || v.isMatrix3 || v.isMatrix4 || v.isQuaternion || v.isTexture || ArrayBuffer.isView(v);
