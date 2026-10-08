@@ -14,6 +14,71 @@ import { WebGLRenderList } from '/src/renderers/webgl/WebGLRenderLists.js';
 const libs = { jrs: JRS, three: THREE };
 const log = (s) => { document.getElementById('log').textContent += s + '\n'; };
 
+
+const median = (a) => { if (!a.length) return null; const b = a.slice().sort((x, y) => x - y); return b[b.length >> 1]; };
+const r3 = (v) => v === null || v === undefined ? null : +v.toFixed(3);
+
+/**
+ * GPU-side cost per frame. Runs `frames` extra frames after the JS-timed loop (so the JS numbers are unaffected).
+ *  - gpuMs: median EXT_disjoint_timer_query_webgl2 TIME_ELAPSED around the whole frame (all passes), results polled
+ *    a few frames later (never blocking inside the loop), frames flagged GPU_DISJOINT discarded. null if the extension is missing.
+ *  - finishMs: median wall time of doFrame + gl.finish() per frame: the fallback GPU proxy (it also contains the CPU work,
+ *    so it is an upper bound on CPU+GPU, not pure GPU).
+ */
+function measureGpu(gl, doFrame, firstFrame, frames) {
+	const out = { gpuSource: 'none', gpuMs: null, gpuSamples: 0, gpuDisjoint: 0, finishMs: null, finishWaitMs: null, timerMs: null };
+	let timerOk = false;
+	const ext = gl.getExtension('EXT_disjoint_timer_query_webgl2');
+	let f = firstFrame;
+	if (ext) {
+		const pending = [], gpu = [];
+		let disjoint = 0;
+		const poll = (final) => {
+			if (!pending.length) return;
+			const dj = gl.getParameter(ext.GPU_DISJOINT_EXT);
+			while (pending.length && (final || gl.getQueryParameter(pending[0], gl.QUERY_RESULT_AVAILABLE))) {
+				const q = pending.shift();
+				if (dj) disjoint++; else gpu.push(gl.getQueryParameter(q, gl.QUERY_RESULT) / 1e6);
+				gl.deleteQuery(q);
+			}
+		};
+		gl.getParameter(ext.GPU_DISJOINT_EXT); // clear the sticky flag
+		for (let i = 0; i < frames; i++) {
+			const q = gl.createQuery();
+			gl.beginQuery(ext.TIME_ELAPSED_EXT, q);
+			doFrame(f++);
+			gl.endQuery(ext.TIME_ELAPSED_EXT);
+			pending.push(q);
+			if (i >= 3) poll(false); // a few frames of latency
+		}
+		gl.finish();
+		poll(true);
+		out.timerMs = r3(median(gpu)); out.gpuSamples = gpu.length; out.gpuDisjoint = disjoint;
+		// SwiftShader exposes the extension but returns 0 ns for every query: treat an all-zero / empty result as 'timer unusable'
+		timerOk = gpu.length >= frames / 2 && gpu.some((v) => v > 0) && out.timerMs > 0;
+		if (timerOk) { out.gpuSource = 'EXT_disjoint_timer_query_webgl2'; out.gpuMs = out.timerMs; }
+	}
+	const fin = [], wait = [];
+	gl.finish();
+	for (let i = 0; i < frames; i++) { const s = performance.now(); doFrame(f++); const m = performance.now(); gl.finish(); const e = performance.now(); fin.push(e - s); wait.push(e - m); }
+	out.finishMs = r3(median(fin)); out.finishWaitMs = r3(median(wait));
+	if (!timerOk) { out.gpuSource = ext ? 'gl.finish() wall time per frame (timer query extension present but returns 0 ns)' : 'gl.finish() wall time per frame (no timer query extension)'; out.gpuMs = out.finishMs; }
+	out.nextFrame = f;
+	return out;
+}
+
+/** Pure renderer CPU: draw calls stubbed to no-ops, median over chunks of frames (performance.now() is coarse here). DESTRUCTIVE: run last. */
+function measureCpuStubbed(gl, doFrame, firstFrame, chunks = 30, chunk = 20) {
+	for (const nm of ['drawElements', 'drawArrays', 'drawElementsInstanced', 'drawArraysInstanced', 'drawRangeElements']) gl[nm] = function () {};
+	const ext = gl.getExtension('WEBGL_multi_draw');
+	if (ext) for (const nm of ['multiDrawElementsWEBGL', 'multiDrawArraysWEBGL', 'multiDrawElementsInstancedWEBGL', 'multiDrawArraysInstancedWEBGL']) ext[nm] = function () {};
+	let f = firstFrame;
+	for (let i = 0; i < 20; i++) doFrame(f++);
+	const per = [];
+	for (let c = 0; c < chunks; c++) { const s = performance.now(); for (let i = 0; i < chunk; i++) doFrame(f++); per.push((performance.now() - s) / chunk); }
+	return r3(median(per));
+}
+
 /**
  * Runs one scenario with one library on a fresh canvas and returns timings.
  * frames: measured frames after warmup. Timing is the JS time spent in scene update + render.
@@ -22,7 +87,7 @@ window.runScenario = async function (libName, scenarioName, opts = {}) {
 	const T = libs[libName];
 	const sc = scenarios[scenarioName];
 	const n = opts.n || sc.n;
-	const frames = opts.frames || 60, warmup = opts.warmup || 10;
+	const frames = opts.frames || 60, warmup = opts.warmup ?? 40;
 	const canvas = document.createElement('canvas');
 	canvas.width = 320; canvas.height = 240;
 	document.body.appendChild(canvas);
@@ -57,6 +122,9 @@ window.runScenario = async function (libName, scenarioName, opts = {}) {
 	renderSamples.sort((a, b) => a - b);
 	gl.finish();
 	const wallMs = performance.now() - wall0;
+	const doFrame1 = (f) => { if (update) update(f); renderer.render(scene, camera); };
+	const gpu = opts.gpu === false ? null : measureGpu(gl, doFrame1, warmup + frames, frames);
+	const cpuOnlyMs = opts.cpuStubbed ? measureCpuStubbed(gl, doFrame1, warmup + frames * 3) : null;
 	const rawSamples = opts.raw ? samples.slice() : null;
 	samples.sort((a, b) => a - b);
 	const info = renderer.info.render;
@@ -68,6 +136,8 @@ window.runScenario = async function (libName, scenarioName, opts = {}) {
 		drawCalls: info.calls, triangles: Math.round(info.triangles),
 		programs: renderer.info.programs ? renderer.info.programs.length : undefined,
 		glCalls, glError: glErrors,
+		warmup, ...(gpu ? { gpuMs: gpu.gpuMs, gpuSource: gpu.gpuSource, gpuSamples: gpu.gpuSamples, gpuDisjoint: gpu.gpuDisjoint, finishMs: gpu.finishMs, finishWaitMs: gpu.finishWaitMs, timerMs: gpu.timerMs } : {}),
+		...(cpuOnlyMs !== null ? { cpuOnlyMs } : {}),
 	};
 	if (rawSamples) result.rawSamples = rawSamples.map((v) => +v.toFixed(2));
 	// capture a thumbnail for visual sanity
@@ -111,11 +181,15 @@ async function runScenarioStencil(T, libName, scenarioName, sc, n, frames, warmu
 	const wallMs = performance.now() - wall0;
 	samples.sort((a, b) => a - b);
 	const info = renderer.info.render;
+	const gpu = opts.gpu === false ? null : measureGpu(gl, doFrame, warmup + 1 + frames, frames);
+	const cpuOnlyMs = opts.cpuStubbed ? measureCpuStubbed(gl, doFrame, warmup + 1 + frames * 3) : null;
 	const uniformTrace = hasTrace ? renderer.debug.uniformTrace.map((t) => ({ target: t.target, useProgram: t.useProgram, draws: t.draws, uniforms: t.uniforms })) : undefined;
 	const result = {
 		lib: libName, scenario: scenarioName, n, frames, buildMs: +buildMs.toFixed(2),
 		avgMs: +(jsMs / frames).toFixed(3), medianMs: +samples[samples.length >> 1].toFixed(3), bestMs: +best.toFixed(3), worstMs: +worst.toFixed(3), wallAvgMs: +(wallMs / frames).toFixed(3),
 		drawCalls: info.calls, triangles: Math.round(info.triangles), programs: renderer.info.programs ? renderer.info.programs.length : undefined,
+		warmup, ...(gpu ? { gpuMs: gpu.gpuMs, gpuSource: gpu.gpuSource, gpuSamples: gpu.gpuSamples, gpuDisjoint: gpu.gpuDisjoint, finishMs: gpu.finishMs, finishWaitMs: gpu.finishWaitMs, timerMs: gpu.timerMs } : {}),
+		...(cpuOnlyMs !== null ? { cpuOnlyMs } : {}),
 		glCalls, glError: glErrors, passes: passes.map((p, i) => ({ name: built.passes ? built.passes[i] : 'pass ' + i, ...p })), uniformTrace,
 	};
 	renderer.dispose(); canvas.remove();
