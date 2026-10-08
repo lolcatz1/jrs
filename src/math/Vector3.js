@@ -146,7 +146,7 @@ class Vector3 {
 	}
 	setFromMatrixColumn(m, index) { return this.fromArray(m.elements, index * 4); }
 	setFromMatrix3Column(m, index) { return this.fromArray(m.elements, index * 3); }
-	setFromEuler(e) { this.x = e._x; this.y = e._y; this.z = e._z; return this; }
+	setFromEuler(e) { if (e._stale) e._flush(); this.x = e._x; this.y = e._y; this.z = e._z; return this; }
 	setFromColor(c) { this.x = c.r; this.y = c.g; this.z = c.b; return this; }
 	equals(v) { return v.x === this.x && v.y === this.y && v.z === this.z; }
 	fromArray(array, offset = 0) { this.x = array[offset]; this.y = array[offset + 1]; this.z = array[offset + 2]; return this; }

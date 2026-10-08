@@ -243,6 +243,7 @@ class WebGLTextures {
 			texture.addEventListener('dispose', this._onTextureDispose);
 		}
 		state.bindTexture(gl.TEXTURE_2D, p.webglTexture, slot);
+		state.activeTexture(slot); // bindTexture skips both calls when its cache says the texture is already bound at `slot`
 		state.setUnpack(texture.flipY, texture.premultiplyAlpha, texture.unpackAlignment);
 		const image = texture.image;
 		const glFormat = this.glFormat(texture.format);

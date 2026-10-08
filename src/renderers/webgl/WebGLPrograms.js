@@ -70,6 +70,7 @@ class WebGLProgram {
 		this.bindMatrixUniform = this.uniforms.bindMatrix || null;
 		this.bindMatrixInverseUniform = this.uniforms.bindMatrixInverse || null;
 		this.boneTextureUniform = this.uniforms.boneTexture || null;
+		this.boneBaseUniform = this.uniforms.boneBase || null;
 		this.morphBaseInfluenceUniform = this.uniforms.morphTargetBaseInfluence || null;
 		this.morphInfluencesUniform = this.uniforms.morphTargetInfluences || null;
 		this.morphTextureUniform = this.uniforms.morphTargetsTexture || null;

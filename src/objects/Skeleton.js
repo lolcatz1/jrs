@@ -21,6 +21,10 @@ class Skeleton {
 		this.boneTexture = null;
 		/** Frame stamp used by the renderer to call update() once per frame. */
 		this.frame = -1;
+		// bone atlas bookkeeping (renderer): the atlas holding this skeleton's matrices, its slot range, and which `_dataVersion` was copied
+		this._atlas = null; this._atlasBase = 0; this._atlasCount = 0; this._atlasVersion = -1;
+		/** Bumped every time `boneMatrices` is recomputed. */
+		this._dataVersion = 0;
 		// change detection: last seen _worldVersion per bone and the boneInverses array it was computed with
 		this._boneVersions = null;
 		this._versionsFor = null;
@@ -92,17 +96,36 @@ class Skeleton {
 		this._versionsFor = boneInverses; this._lastInversesVersion = this._inversesVersion;
 		for (let i = 0; i < n; i++) {
 			const bone = bones[i];
-			const ae = bone ? bone.matrixWorld.elements : _identityMatrix.elements;
+			const ae = bone ? bone._slabData : _identityMatrix.elements;
+			const ao = bone ? bone._slabOffset + 16 : 0;
 			const be = boneInverses[i].elements;
 			versions[i] = bone ? bone._worldVersion : -2;
 			const o = i * 16;
-			const a11 = ae[0], a12 = ae[4], a13 = ae[8], a14 = ae[12];
-			const a21 = ae[1], a22 = ae[5], a23 = ae[9], a24 = ae[13];
-			const a31 = ae[2], a32 = ae[6], a33 = ae[10], a34 = ae[14];
-			const a41 = ae[3], a42 = ae[7], a43 = ae[11], a44 = ae[15];
+			const a11 = ae[ao], a12 = ae[ao + 4], a13 = ae[ao + 8], a14 = ae[ao + 12];
+			const a21 = ae[ao + 1], a22 = ae[ao + 5], a23 = ae[ao + 9], a24 = ae[ao + 13];
+			const a31 = ae[ao + 2], a32 = ae[ao + 6], a33 = ae[ao + 10], a34 = ae[ao + 14];
 			const b11 = be[0], b12 = be[4], b13 = be[8], b14 = be[12];
 			const b21 = be[1], b22 = be[5], b23 = be[9], b24 = be[13];
 			const b31 = be[2], b32 = be[6], b33 = be[10], b34 = be[14];
+			if (ae[ao + 3] === 0 && ae[ao + 7] === 0 && ae[ao + 11] === 0 && ae[ao + 15] === 1 && be[3] === 0 && be[7] === 0 && be[11] === 0 && be[15] === 1) {
+				// affine * affine (every skeleton in practice): the bottom row of the product is (0, 0, 0, 1) and the
+				// terms multiplied by it are exact zeros, so the 3x4 product equals the general one
+				boneMatrices[o] = a11 * b11 + a12 * b21 + a13 * b31;
+				boneMatrices[o + 4] = a11 * b12 + a12 * b22 + a13 * b32;
+				boneMatrices[o + 8] = a11 * b13 + a12 * b23 + a13 * b33;
+				boneMatrices[o + 12] = a11 * b14 + a12 * b24 + a13 * b34 + a14;
+				boneMatrices[o + 1] = a21 * b11 + a22 * b21 + a23 * b31;
+				boneMatrices[o + 5] = a21 * b12 + a22 * b22 + a23 * b32;
+				boneMatrices[o + 9] = a21 * b13 + a22 * b23 + a23 * b33;
+				boneMatrices[o + 13] = a21 * b14 + a22 * b24 + a23 * b34 + a24;
+				boneMatrices[o + 2] = a31 * b11 + a32 * b21 + a33 * b31;
+				boneMatrices[o + 6] = a31 * b12 + a32 * b22 + a33 * b32;
+				boneMatrices[o + 10] = a31 * b13 + a32 * b23 + a33 * b33;
+				boneMatrices[o + 14] = a31 * b14 + a32 * b24 + a33 * b34 + a34;
+				boneMatrices[o + 3] = 0; boneMatrices[o + 7] = 0; boneMatrices[o + 11] = 0; boneMatrices[o + 15] = 1;
+				continue;
+			}
+			const a41 = ae[ao + 3], a42 = ae[ao + 7], a43 = ae[ao + 11], a44 = ae[ao + 15];
 			const b41 = be[3], b42 = be[7], b43 = be[11], b44 = be[15];
 			boneMatrices[o] = a11 * b11 + a12 * b21 + a13 * b31 + a14 * b41;
 			boneMatrices[o + 4] = a11 * b12 + a12 * b22 + a13 * b32 + a14 * b42;
@@ -121,6 +144,7 @@ class Skeleton {
 			boneMatrices[o + 11] = a41 * b13 + a42 * b23 + a43 * b33 + a44 * b43;
 			boneMatrices[o + 15] = a41 * b14 + a42 * b24 + a43 * b34 + a44 * b44;
 		}
+		this._dataVersion++;
 		if (this.boneTexture !== null) this.boneTexture.needsUpdate = true;
 	}
 	clone() { return new Skeleton(this.bones, this.boneInverses); }
@@ -144,6 +168,7 @@ class Skeleton {
 		return undefined;
 	}
 	dispose() {
+		if (this._atlas !== null) this._atlas.release(this);
 		if (this.boneTexture !== null) { this.boneTexture.dispose(); this.boneTexture = null; }
 	}
 	fromJSON(json, bones) {

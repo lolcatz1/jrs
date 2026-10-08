@@ -13,6 +13,7 @@ import { BufferGeometry } from '../core/BufferGeometry.js';
 import { BufferAttribute } from '../core/BufferAttribute.js';
 import { Object3D } from '../core/Object3D.js';
 import { epochs } from '../core/epochs.js';
+import { WebGLBoneAtlas } from './webgl/WebGLBoneAtlas.js';
 import { WebGLState } from './webgl/WebGLState.js';
 import { WebGLAttributes } from './webgl/WebGLAttributes.js';
 import { WebGLTextures } from './webgl/WebGLTextures.js';
@@ -58,6 +59,13 @@ const defaultOnAfterRender = Object3D.prototype.onAfterRender;
  *  - Per object, the only GPU traffic is a single matrix upload taken directly
  *    from slab memory with the WebGL2 srcOffset overload.
  */
+/** True when `bone` and all its descendants are Bones (no meshes, lights, helpers hanging off the rig). */
+function boneTreeIsPure(bone) {
+	const children = bone.children;
+	for (let i = 0, l = children.length; i < l; i++) { const c = children[i]; if (c.isBone !== true || !boneTreeIsPure(c)) return false; }
+	return true;
+}
+
 class WebGLRenderer {
 	constructor(parameters = {}) {
 		const {
@@ -120,6 +128,7 @@ class WebGLRenderer {
 		this._activeCubeFace = 0;
 		this._renderCallDepth = 0;
 		this._frameId = 0;
+		this._boneAtlas = null; // shared bone texture of every skeleton drawn with a built-in material (created on first use)
 		this._cameraLayerMask = 1;
 		this._envVersion = 0;
 		// env version = lights epoch * 65536 + interned id of the (tone mapping, colour space, shadows, fog)
@@ -318,6 +327,7 @@ class WebGLRenderer {
 		canvas.removeEventListener && canvas.removeEventListener('webglcontextrestored', this._onContextRestore, false);
 		this.programs.dispose();
 		this.batcher.dispose();
+		if (this._boneAtlas !== null) { this._boneAtlas.dispose(); this._boneAtlas = null; }
 		if (this.megaBuffers !== null) this.megaBuffers.dispose();
 		this._gl.deleteBuffer(this._frameBuffer); this._gl.deleteBuffer(this._lightsBuffer); this._gl.deleteBuffer(this._materialBuffer);
 		this.setAnimationLoop(null);
@@ -752,6 +762,8 @@ class WebGLRenderer {
 	}
 
 	_projectObject(object, camera, groupOrder, sortObjects, list) {
+		// a bone hierarchy that contains nothing but bones draws nothing and holds no lights: skipped whole (see below)
+		if (object._skipStamp === epochs.structure) return;
 		if (object.visible === false) return;
 		const rec = this._rec;
 		if ((object.layers.mask & this._cameraLayerMask) !== 0) {
@@ -802,6 +814,11 @@ class WebGLRenderer {
 				if (rec !== null) rec.addCandidate(object, inside, list.count > first ? first : -1);
 			}
 		}
+		if (object.isBone === true && object._skipStamp !== -(epochs.structure + 2)) {
+			// pure-bone subtree test, redone only after a structural change (every add / remove / visibility flip bumps the epoch)
+			if (boneTreeIsPure(object)) { object._skipStamp = epochs.structure; return; }
+			object._skipStamp = -(epochs.structure + 2);
+		}
 		const children = object.children;
 		for (let i = 0, l = children.length; i < l; i++) this._projectObject(children[i], camera, groupOrder, sortObjects, list);
 	}
@@ -815,7 +832,10 @@ class WebGLRenderer {
 		if (object.isSkinnedMesh === true) {
 			// bone matrices once per render call (the skeleton itself skips the work when no bone moved)
 			const skeleton = object.skeleton;
-			if (skeleton !== undefined && skeleton.frame !== this._frameId) { skeleton.update(); skeleton.frame = this._frameId; }
+			if (skeleton !== undefined) {
+				if (skeleton.frame !== this._frameId) { skeleton.update(); skeleton.frame = this._frameId; }
+				if (material.isShaderMaterial !== true) (this._boneAtlas !== null ? this._boneAtlas : (this._boneAtlas = new WebGLBoneAtlas())).sync(skeleton);
+			}
 		}
 		this._noteRenderOrder(object.renderOrder);
 		// compact per-frame ids for materials and geometries (dense -> good key packing). A material that
@@ -1406,7 +1426,7 @@ class WebGLRenderer {
 			}
 		}
 		if (program.spriteCenterLocation !== null) gl.uniform2f(program.spriteCenterLocation, object.center.x, object.center.y);
-		if (object.isSkinnedMesh === true) this._uploadSkinning(program, object);
+		if (object.isSkinnedMesh === true) this._uploadSkinning(program, object, material);
 		if (object.morphTargetInfluences !== undefined && program.morphInfluencesUniform !== null) this._uploadMorphTargets(program, object, geometry);
 		// geometry
 		const mode = object.isInstancedMesh ? 1 : 0;
@@ -1419,7 +1439,7 @@ class WebGLRenderer {
 	}
 
 	/** bindMatrix / bindMatrixInverse (re-sent only when the mesh's bind version changed) and the skeleton's bone texture. */
-	_uploadSkinning(program, object) {
+	_uploadSkinning(program, object, material) {
 		const gl = this._gl;
 		const bm = program.bindMatrixUniform, bmi = program.bindMatrixInverseUniform;
 		if (bm !== null && !cacheArray(bm, object.bindMatrix.elements, 16)) { gl.uniformMatrix4fv(bm.location, false, object.bindMatrix.elements); if (this._traceUniforms !== null) this._trace(bm); }
@@ -1427,9 +1447,16 @@ class WebGLRenderer {
 		const bt = program.boneTextureUniform;
 		const skeleton = object.skeleton;
 		if (bt !== null && skeleton !== undefined) {
-			if (skeleton.boneTexture === null) skeleton.computeBoneTexture();
 			bt.boundStamp = this._samplerStamp;
-			this.textures.setTexture2D(skeleton.boneTexture, bt.unit);
+			if (material.isShaderMaterial !== true && program.boneBaseUniform !== null) {
+				// built-in programs: one shared atlas, the skeleton's slot range selected by `boneBase`
+				const bb = program.boneBaseUniform, base = skeleton._atlasBase;
+				if (bb.cache !== base) { bb.cache = base; gl.uniform1i(bb.location, base); if (this._traceUniforms !== null) this._trace(bb); }
+				this.textures.setTexture2D(this._boneAtlas.flush(), bt.unit);
+			} else {
+				if (skeleton.boneTexture === null) skeleton.computeBoneTexture();
+				this.textures.setTexture2D(skeleton.boneTexture, bt.unit);
+			}
 		}
 	}
 	/** Morph target influences, base influence and the geometry's morph texture (three.js r186 texture layout). */
