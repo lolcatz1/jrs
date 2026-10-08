@@ -238,15 +238,16 @@ class WebGLShadowMap {
 			if (object.castShadow && (object.frustumCulled === false || renderer._cullTest(object, object.geometry, _frustum, true))) {
 				const geometry = object.geometry;
 				const material = object.material;
+				list.zScratch[0] = 0;
 				if (Array.isArray(material)) {
 					const groups = geometry.groups;
 					for (let k = 0, kl = groups.length; k < kl; k++) {
 						const group = groups[k];
 						const groupMaterial = material[group.materialIndex];
-						if (groupMaterial && groupMaterial.visible) renderer._pushItem(list, object, geometry, groupMaterial, group, 0, true);
+						if (groupMaterial && groupMaterial.visible) renderer._pushItem(list, object, geometry, groupMaterial, group, true);
 					}
 				} else if (material.visible) {
-					renderer._pushItem(list, object, geometry, material, null, 0, true);
+					renderer._pushItem(list, object, geometry, material, null, true);
 				}
 			}
 		}
