@@ -181,6 +181,12 @@ transparent list to a handful of draws.
 | shadows-point-animated | 78.0 ms | 2.0 ms | 2.1 ms | 4001 -> 3 | 0 / 0 | 0 / 0 (point-shadows report) |
 | shadows-point-multi | 60.7 ms | 0.4 ms | 0.3 ms | 2031 -> 2 | 0.193 / 41 | 0.193 / 41 (point-shadows report) |
 
+A final full run after the second integration merge (parity fuzzer + two-pass transparency, which
+tightened several references to 0 / 0): shader-client 1.3 ms / 297 draws, shader-client-static
+0.6 ms / 53 draws, and every one of the 17 scenarios equal to its upstream reference pixel difference
+(shared-static 0 / 0, shared-animated 0 / 1, shadows 0 / 0, shadows-point-multi 0 / 1, ...); that run's
+`latest.json` is the one committed. The medians above are the better of the two earlier runs.
+
 Every scenario keeps its reference pixel difference. The skinned-crowd and shared-animated medians
 are noisy on this host (the branch does not touch skinning; shared-animated re-uploads 1.3 MB of
 matrices per frame as before and sits inside its run-to-run spread of 4.5-9.6 ms across this
@@ -192,8 +198,13 @@ batches: the opaque list of `transparent-sort` replays now instead of refilling 
 `npm test` 139/139 (133 before the merge); `node bench/conformance.mjs` all pass including the new
 "ShaderMaterial batching: 50 instances reading modelViewMatrix / normalMatrix" check (76 -> 3
 draws, max diff 0 vs individual draws, 0 / 0 vs three.js, hooked mesh keeps its per-object uniform);
-`node bench/addons.mjs` and `node bench/smoke.mjs` pass with GL error 0; `bench/fuzz.mjs` does not
-exist on this branch. Edge-case script (scratchpad, not committed): 8 shader kinds x 10 frames
+`node bench/addons.mjs` and `node bench/smoke.mjs` pass with GL error 0. `node bench/fuzz.mjs --seeds=50
+--continue` (the parity fuzzer merged from the integration branch during this session; its random
+scenes include ShaderMaterials, which are batched here): 45 / 50 seeds pass, seeds 8, 23, 27, 28, 35
+fail with exactly the same frames, pixel counts and maxDiff values on the integration branch itself
+(run in a worktree of `origin/claude/threejs-performance-fork-vfqpcw` with the same node_modules),
+and every passing seed's line is identical between the two, so the fuzzer sees no change from this
+branch. Edge-case script (scratchpad, not committed): 8 shader kinds x 10 frames
 (orbiting camera, rotating objects, a uniform changed without `needsUpdate`, an attribute update,
 visibility toggles, the flag toggled off and on mid-run, an `InstancedBufferGeometry` mesh, a
 mirrored mesh, an `onBeforeRender` hook, wireframe, transparent, RawShaderMaterial GLSL3, chunk-based,
