@@ -41,3 +41,11 @@ meanAbsDiff/maxDiff are identical to `latest.json` in every scenario (shared-sta
 * Cache the transparent depth key between frames when the camera and object matrices did not move (skip the key loop entirely).
 * Compute depth keys from a flat Float32 array of view-space z written during `_projectObject` to avoid the per-item `items[...]` lookup in `finish`.
 * Use a fixed (not per-frame normalised) depth quantisation so keys stay stable between frames and the repair pass can succeed for slowly moving cameras.
+
+## Post-merge (rebased onto the integration branch incl. swarm/zero-alloc-frame)
+* Conflict only in `WebGLRenderLists.js`; resolved by keeping this branch's 32-bit key / repair+radix design and adopting zero-alloc's conventions (`push` without `z`, depth read from `list.zScratch`, no `item.z`). `test/renderlists.test.js` updated for the new `push` signature.
+* Validation on the merged tree: `npm test` 103/103, conformance (no FAIL), addons, smoke all pass; `node bench/run.mjs --compare --frames=60` x2: meanAbsDiff/maxDiff are at or below `latest.json` in every scenario (transparent-sort 0/0).
+* `finish()` per frame (us, best of 3): shared-static 117, many-materials 91, transparent-sort 359-490 (noisy; ~480 typical).
+* Allocation (`bench/alloc.mjs`, jrs): transparent-sort 44,482 B/frame on the integration branch -> 16,668 B/frame here (the native TypedArray sort allocated); shared-static 4,669 -> 4,492. The sorted item-index views allocate nothing in steady state.
+* Frame medians (ms, two runs, this host): shared-static 7.7/8.5, shared-animated 12/12.5, many-materials 7.9/6.8, unique-geometries 2.3/1.6, transparent-sort 18.5/13.9, hierarchy-animated 9.5/10.9, shader-client 7.2/7.1, shadows 2.0/1.9. shader-client-static is dominated by run-to-run noise on this host (53-72 ms; the integration branch shows 46-67 ms), no sorting involvement beyond a ~200-item list.
+* swarm/render-list-reuse is not yet in the integration branch at this time, so it was not merged here; it will conflict in `finish()` (halves + `resortTransparent()`), where this branch's `SortSlot.finish` per kind maps naturally onto the opaque/transparent halves.
