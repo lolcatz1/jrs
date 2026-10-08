@@ -176,8 +176,8 @@ One whole frame, all `render()` calls, from `bench/glcalls-diff.mjs` (full per-f
 | unique-geometries | 6 002 → 9 | `bindBuffer` +2, `bufferSubData` +2, `multiDrawElementsWEBGL` +1 | |
 | hierarchy-animated | 16 002 → 12 | as shared-animated | |
 | instanced-100k | 3 → 9 | `bindBuffer` +2, `bufferSubData` +2, `bindVertexArray` +2 | fixed per-frame cost only; #9 removes 4 of the 6 |
-| shader-client | 3 805 → 3 325 | `uniform1f` +2, `bindBuffer` +2, `bufferSubData` +2 | `bindVertexArray` 1 248 → 763; `useProgram` 13 = 13, `bindTexture` 171 = 171, `uniformMatrix4fv` 871 = 871, `drawElements` 1 313 = 1 313. The two extra `uniform1f` are the fog/exposure-style per-program scalars; check with `renderer.debug.traceUniforms` |
-| shader-client-static | 1 870 → 1 626 | `bindBuffer` +6, `bufferSubData` +6, `bindBufferRange` +3, `uniform1f` +2, `uniformMatrix4fv` +1 | `bindVertexArray` 643 → 382, `useProgram` 17 → 16; everything else identical per pass |
+| shader-client | 3 805 → 3 325 | `uniform1f` +2, `bindBuffer` +2, `bufferSubData` +2 | `bindVertexArray` 1 248 → 763; `useProgram` 13 = 13, `bindTexture` 171 = 171, `uniformMatrix4fv` 871 = 871, `drawElements` 1 313 = 1 313. `renderer.debug.traceUniforms` for the frame: `modelMatrix` 871, `reflectance` 170, `lamp0Dir` 12, `opacity` 2 — the +2 is `opacity` flipping between the transparent (0.6) and opaque (1.0) instance of a program; three's count differs by two, not worth chasing |
+| shader-client-static | 1 870 → 1 626 | `bindBuffer` +6, `bufferSubData` +6, `bindBufferRange` +3, `uniform1f` +2, `uniformMatrix4fv` +1 | `bindVertexArray` 643 → 382, `useProgram` 17 → 16; per pass (three → jrs): shadow RT `uniform*` 147 → 147 (jrs: `modelViewMatrix` 146 + `projectionMatrix` 1), near RT 147 → 147, main 184 → 187 (jrs: `modelMatrix` 143, `reflectance` 42, `opacity` 2); `bindTexture` 44 → 44 |
 | shadows | 10 027 → 29 | `bindBuffer` +3, `bufferSubData` +3, `drawElementsInstanced` +2, `bindBufferRange` +2, `useProgram` +1, `bindVertexArray` +1 | 4 001 draws → 3 |
 
 Everything jrs is above three on is either the per-render block upload (#9, constant) or a batching
