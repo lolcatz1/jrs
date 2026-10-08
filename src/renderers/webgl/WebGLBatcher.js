@@ -9,6 +9,7 @@
  * _worldVersion of every batched object).
  */
 import { MATRIX_TEXTURE_WIDTH, TEXELS_PER_OBJECT } from '../shaders/ShaderLib.js';
+import { LiveSet } from './LiveSet.js';
 import { computeNormalMatrix } from '../../core/TransformSlab.js';
 import { Matrix4 } from '../../math/Matrix4.js';
 import { Matrix3 } from '../../math/Matrix3.js';
@@ -25,7 +26,10 @@ const _nm = new Matrix3();
  * draw through the batcher, and the list's draw commands can be replayed without a fill or an upload.
  */
 class MatrixTextureSlot {
-	constructor() { this.texture = null; this.textureRows = 0; this.textureHash = 0; this.textureCount = 0; }
+	// the GL texture lives in a box the slot's finalizer can reach without keeping the slot alive
+	constructor() { this.box = { texture: null }; this.textureRows = 0; this.textureHash = 0; this.textureCount = 0; }
+	get texture() { return this.box.texture; }
+	set texture(value) { this.box.texture = value; }
 }
 
 class WebGLBatcher {
@@ -34,6 +38,11 @@ class WebGLBatcher {
 		// matrix texture: RGBA32F, TEXELS_PER_OBJECT texels per object (world matrix + normal matrix), rows of MATRICES_PER_ROW objects.
 		// textureRows is the height the texture was last (re)defined with; see uploadTexture for why it is redefined per upload.
 		this.defaultSlot = new MatrixTextureSlot();
+		// slots belong to render lists, which are simply garbage collected with their scene: a slot's texture is deleted when the slot is,
+		// or by dispose() for the ones still alive
+		this.live = new LiveSet();
+		this._disposed = false;
+		this._registry = typeof FinalizationRegistry !== 'undefined' ? new FinalizationRegistry((box) => { if (box.texture !== null && !this._disposed) this.gl.deleteTexture(box.texture); box.texture = null; }) : null;
 		this.slot = this.defaultSlot;
 		this.texCapacity = MATRICES_PER_ROW * 8;
 		this.texData = new Float32Array(this.texCapacity * TEX_STRIDE_FLOATS);
@@ -50,7 +59,12 @@ class WebGLBatcher {
 	get textureCount() { return this.slot.textureCount; }
 	/** Selects the GPU texture the next fill is uploaded to (`null` = the shared default slot). */
 	use(slot) { this.slot = slot === null ? this.defaultSlot : slot; }
-	newSlot() { return new MatrixTextureSlot(); }
+	newSlot() {
+		const slot = new MatrixTextureSlot();
+		this.live.add(slot);
+		if (this._registry !== null) this._registry.register(slot, slot.box);
+		return slot;
+	}
 	begin() { this.texCount = 0; this.texHash = 0x811c9dc5 | 0; this.viewDependent = false; }
 	ensureTex(extra) {
 		if (this.texCount + extra > this.texCapacity) {
@@ -166,7 +180,11 @@ class WebGLBatcher {
 		slot.textureRows = rows; slot.textureHash = this.texHash; slot.textureCount = this.texCount;
 	}
 	disposeSlot(slot) { if (slot.texture !== null) { this.gl.deleteTexture(slot.texture); slot.texture = null; slot.textureHash = 0; slot.textureCount = 0; } }
-	dispose() { this.disposeSlot(this.defaultSlot); }
+	dispose() {
+		this.disposeSlot(this.defaultSlot);
+		this.live.drain((slot) => this.disposeSlot(slot));
+		this._disposed = true;
+	}
 }
 
 export { WebGLBatcher };

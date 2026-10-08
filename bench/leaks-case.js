@@ -167,7 +167,7 @@ function sizes(renderer) {
 		out.megaPages = pages;
 		out.megaLayouts = r.megaBuffers.layouts.size;
 	}
-	if (r.batcher) out.batcherTexRows = r.batcher.textureRows;
+	if (r.batcher) out.batcherTexRows = r.batcher.defaultSlot.textureRows;
 	if (r._materialSlotsUsed !== undefined) out.matSlots = r._materialSlotsUsed - r._materialFreeSlots.length;
 	if (r._batchGroups) out.batchGroups = r._batchGroups.size;
 	if (r.programs && r.programs.cache) out.programCache = r.programs.cache.size;

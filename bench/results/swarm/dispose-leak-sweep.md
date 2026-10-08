@@ -21,28 +21,27 @@ cycle-5 value at the end (JS heap: slack 1 MB), context restore pixel-identical,
 
 Leaks: GL buffers +2 per cycle, batch groups +8 per cycle (and the one mega-buffer page, ~16 MB of GPU memory, was never given back).
 
-### jrs AFTER
+### jrs AFTER (after merging the integration tip incl. per-list matrix texture slots)
 | cycle | geometries | textures | programs | buffer | texture | vertexarray | program | framebuffer | heapKB | megaPages | batcherTexRows | matSlots | batchGroups | programCache | envKeys |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| base | 0 | 0 | 0 | 3 | 0 | 0 | 0 | 0 | 4672 | 0 | 0 | 0 | 0 | 0 | 1 |
-| 1 | 1 | 1 | 0 | 6 | 2 | 1 | 0 | 0 | 5969 | 0 | 1 | 0 | 0 | 0 | 2 |
-| 2 | 1 | 1 | 0 | 6 | 2 | 1 | 0 | 0 | 6101 | 0 | 1 | 0 | 0 | 0 | 2 |
-| 5 | 1 | 1 | 0 | 6 | 2 | 1 | 0 | 0 | 6309 | 0 | 1 | 0 | 0 | 0 | 2 |
-| 10 | 1 | 1 | 0 | 6 | 2 | 1 | 0 | 0 | 6479 | 0 | 1 | 0 | 0 | 0 | 2 |
-| 15 | 1 | 1 | 0 | 6 | 2 | 1 | 0 | 0 | 6545 | 0 | 1 | 0 | 0 | 0 | 2 |
-| 20 | 1 | 1 | 0 | 6 | 2 | 1 | 0 | 0 | 6596 | 0 | 1 | 0 | 0 | 0 | 2 |
+| base | 0 | 0 | 0 | 3 | 0 | 0 | 0 | 0 | 4998 | 0 | 0 | 0 | 0 | 0 | 1 |
+| 1 | 1 | 1 | 0 | 6 | 1 | 1 | 0 | 0 | 6503 | 0 | 0 | 0 | 0 | 0 | 2 |
+| 2 | 1 | 1 | 0 | 6 | 1 | 1 | 0 | 0 | 6647 | 0 | 0 | 0 | 0 | 0 | 2 |
+| 5 | 1 | 1 | 0 | 6 | 1 | 1 | 0 | 0 | 6896 | 0 | 0 | 0 | 0 | 0 | 2 |
+| 10 | 1 | 1 | 0 | 6 | 1 | 1 | 0 | 0 | 7072 | 0 | 0 | 0 | 0 | 0 | 2 |
+| 15 | 1 | 1 | 0 | 6 | 1 | 1 | 0 | 0 | 7136 | 0 | 0 | 0 | 0 | 0 | 2 |
+| 20 | 1 | 1 | 0 | 6 | 1 | 1 | 0 | 0 | 7222 | 0 | 0 | 0 | 0 | 0 | 2 |
 
 ### three.js r186 (reference)
 | cycle | geometries | textures | programs | buffer | texture | vertexarray | program | framebuffer | heapKB |
 |---|---|---|---|---|---|---|---|---|---|
-| base | 0 | 0 | 0 | 0 | 4 | 0 | 0 | 3 | 6210 |
+| base | 0 | 0 | 0 | 0 | 4 | 0 | 0 | 3 | 6219 |
 | 1 | 1 | 1 | 8 | 2 | 6 | 0 | 8 | 3 | 7670 |
-| 2 | 1 | 1 | 8 | 2 | 7 | 0 | 8 | 3 | 7791 |
-| 5 | 1 | 1 | 8 | 2 | 10 | 0 | 8 | 3 | 7936 |
-| 10 | 1 | 1 | 8 | 2 | 15 | 0 | 8 | 3 | 8115 |
-| 15 | 1 | 1 | 8 | 2 | 20 | 0 | 8 | 3 | 8161 |
+| 2 | 1 | 1 | 8 | 2 | 7 | 0 | 8 | 3 | 7788 |
+| 5 | 1 | 1 | 8 | 2 | 10 | 0 | 8 | 3 | 7937 |
+| 10 | 1 | 1 | 8 | 2 | 15 | 0 | 8 | 3 | 8116 |
+| 15 | 1 | 1 | 8 | 2 | 20 | 0 | 8 | 3 | 8159 |
 | 20 | 1 | 1 | 8 | 2 | 25 | 0 | 8 | 3 | 8213 |
-
 three.js itself keeps 8 linked programs (shadow depth/distance variants), grows by one GL texture per cycle (a depth texture it does not delete) and
 holds the sprite geometry/index; those are three.js behaviours, not goals. jrs is at or below three on every column. JS heap creeps by a few hundred
 KB over 20 cycles in both libraries (JIT/IC warm-up, same slope); no per-cycle growth.
@@ -52,14 +51,16 @@ KB over 20 cycles in both libraries (JIT/IC warm-up, same slope); no per-cycle g
    removes them on the mesh's `dispose` event. Now hooked (`_onInstancedMeshDispose`), VAO and `instancedFor` released too.
 2. **`_batchGroups` Map grew forever** (`WebGLRenderer`): one entry per distinct (state, textures, slot-page) signature, never removed. Now reference
    counted by materials (`_setBatchGroup` / `_releaseGroup`), released on `material.dispose()`.
-3. **Material-buffer slots / batch groups of materials collected without `dispose()`**: a `FinalizationRegistry` returns them (epoch-guarded so a
+3. **Per-render-list matrix textures** (added by another worker's `MatrixTextureSlot`, found when merging): a slot's GL texture was never deleted. Now a
+   finalizer deletes it with the slot and `renderer.dispose()` drains the live ones (`WebGLBatcher.live`).
+4. **Material-buffer slots / batch groups of materials collected without `dispose()`**: a `FinalizationRegistry` returns them (epoch-guarded so a
    restored context ignores stale callbacks). Verified by `runNoDispose` (matSlots, batchGroups, programCache constant after GC).
-4. **Empty mega-buffer pages** never freed: `WebGLMegaBuffers.sweep()` (once per outermost `render`) deletes a page empty for 30 renders (reused if a new
+5. **Empty mega-buffer pages** never freed: `WebGLMegaBuffers.sweep()` (once per outermost `render`) deletes a page empty for 30 renders (reused if a new
    level allocates within the grace period).
-5. **`renderer.dispose()` released only programs/UBOs/matrix texture/pages.** Now also deletes every attribute buffer, VAO, texture, framebuffer,
+6. **`renderer.dispose()` released only programs/UBOs/matrix texture/pages.** Now also deletes every attribute buffer, VAO, texture, framebuffer,
    renderbuffer and placeholder texture, tracked weakly (`LiveSet`, so undisposed-and-collected objects are still collected by the GC). `info.memory`
    resets. Like three.js the renderer stays usable: the next `render()` re-creates its GL objects (`_ensureGL`).
-6. **Context restore was incomplete**: only programs/material props were reset; UBOs, mega pages, matrix texture, attribute buffers, VAOs, textures,
+7. **Context restore was incomplete**: only programs/material props were reset; UBOs, mega pages, matrix texture, attribute buffers, VAOs, textures,
    render targets and shadow maps all pointed at dead objects. `_onContextRestore` now releases references (delete calls suppressed to avoid
    "object does not belong to this context" warnings) and rebuilds via `_initGLContext()` (the constructor's GL part, extracted); `shadowMap.enabled/type`,
    `info` and user-visible state survive.
@@ -74,11 +75,11 @@ KB over 20 cycles in both libraries (JIT/IC warm-up, same slope); no per-cycle g
 | render after `dispose()` vs before | maxDiff 0 | maxDiff 0 |
 
 ## Validation
-`npm test` 152/152; `bench/smoke.mjs`, `conformance.mjs` (0 FAIL), `addons.mjs` clean; `leaks.mjs` flat after 20 cycles.
+`npm test` 168/168; `bench/smoke.mjs`, `conformance.mjs` (0 FAIL), `addons.mjs` clean; `leaks.mjs` flat after 20 cycles.
 `bench/run.mjs --compare --frames=60`: meanAbsDiff/maxDiff identical to the integration tip for every scenario (max 2 on skinned-crowd, as before).
 Two A/B runs per tree, medians within run-to-run noise (best-of equal; shader-client-static and shared-animated each had one noisy outlier on either side).
-`fuzz.mjs --seeds=30 --continue`: failing seeds are 2 8 12 14 23 27, **identical on the unmodified integration tip** (9c8bf94), so seeds 2/12/14 come from
-a recent merge (not this branch; seed 28 now passes there).
+`fuzz.mjs --seeds=30 --continue`: failing seeds are 8 12 27, **identical on the unmodified integration tip**. Seed 12 is outside the allowed set (8, 23, 27, 28) but
+fails without this branch too (introduced by a recent merge).
 
 ## Risks
 - Context restore is now a full re-init; code that held `renderer.state/textures/capabilities/extensions` across a restore sees new objects (three.js does the same).

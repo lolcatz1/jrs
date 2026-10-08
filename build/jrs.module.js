@@ -21040,17 +21040,30 @@ var MATRICES_PER_ROW = MATRIX_TEXTURE_WIDTH / TEXELS_PER_OBJECT;
 var _mv = new Matrix4();
 var _nm = new Matrix3();
 var MatrixTextureSlot = class {
+  // the GL texture lives in a box the slot's finalizer can reach without keeping the slot alive
   constructor() {
-    this.texture = null;
+    this.box = { texture: null };
     this.textureRows = 0;
     this.textureHash = 0;
     this.textureCount = 0;
+  }
+  get texture() {
+    return this.box.texture;
+  }
+  set texture(value) {
+    this.box.texture = value;
   }
 };
 var WebGLBatcher = class {
   constructor(gl) {
     this.gl = gl;
     this.defaultSlot = new MatrixTextureSlot();
+    this.live = new LiveSet();
+    this._disposed = false;
+    this._registry = typeof FinalizationRegistry !== "undefined" ? new FinalizationRegistry((box) => {
+      if (box.texture !== null && !this._disposed) this.gl.deleteTexture(box.texture);
+      box.texture = null;
+    }) : null;
     this.slot = this.defaultSlot;
     this.texCapacity = MATRICES_PER_ROW * 8;
     this.texData = new Float32Array(this.texCapacity * TEX_STRIDE_FLOATS);
@@ -21076,7 +21089,10 @@ var WebGLBatcher = class {
     this.slot = slot === null ? this.defaultSlot : slot;
   }
   newSlot() {
-    return new MatrixTextureSlot();
+    const slot = new MatrixTextureSlot();
+    this.live.add(slot);
+    if (this._registry !== null) this._registry.register(slot, slot.box);
+    return slot;
   }
   begin() {
     this.texCount = 0;
@@ -21238,6 +21254,8 @@ var WebGLBatcher = class {
   }
   dispose() {
     this.disposeSlot(this.defaultSlot);
+    this.live.drain((slot) => this.disposeSlot(slot));
+    this._disposed = true;
   }
 };
 
