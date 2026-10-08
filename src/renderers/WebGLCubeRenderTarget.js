@@ -1,4 +1,3 @@
-// Ported from three.js r186 (MIT License, Copyright 2010-2026 three.js authors).
 import { BackSide, LinearFilter, LinearMipmapLinearFilter, NoBlending } from '../constants.js';
 import { Mesh } from '../objects/Mesh.js';
 import { BoxGeometry } from '../geometries/BoxGeometry.js';
@@ -8,30 +7,33 @@ import { WebGLRenderTarget } from './WebGLRenderTarget.js';
 import { CubeCamera } from '../cameras/CubeCamera.js';
 import { CubeTexture } from '../textures/CubeTexture.js';
 
-/**
- * A render target whose colour attachment is a cube map (six faces of `size` x `size`).
- * Rendered into with CubeCamera; the texture is usable as an environment map directly.
- */
+/** Render target with six faces; select the face to draw with `renderer.setRenderTarget(target, face)`. */
 class WebGLCubeRenderTarget extends WebGLRenderTarget {
 	constructor(size = 1, options = {}) {
 		super(size, size, options);
 		this.isWebGLCubeRenderTarget = true;
 		const image = { width: size, height: size, depth: 1 };
-		const images = [image, image, image, image, image, image];
-		const texture = new CubeTexture(images, options.mapping, options.wrapS, options.wrapT, options.magFilter, options.minFilter, options.format, options.type, options.anisotropy, options.colorSpace);
-		texture.generateMipmaps = options.generateMipmaps !== undefined ? options.generateMipmaps : false;
-		texture.minFilter = options.minFilter !== undefined ? options.minFilter : LinearFilter;
-		texture.internalFormat = options.internalFormat !== undefined ? options.internalFormat : null;
-		texture.renderTarget = this;
-		// By convention cube maps are specified in a left-handed frame (px/nx appear swapped in a
-		// right-handed world). The flip is not applied when the cube texture is a render target
-		// texture, which isRenderTargetTexture signals to the renderer.
+		const old = this.texture;
+		const texture = new CubeTexture([image, image, image, image, image, image], options.mapping, options.wrapS, options.wrapT, options.magFilter, options.minFilter, options.format, options.type, options.anisotropy, options.colorSpace);
+		texture.generateMipmaps = old.generateMipmaps;
+		texture.internalFormat = old.internalFormat;
 		texture.isRenderTargetTexture = true;
+		texture.renderTarget = this;
 		this.texture = texture;
 		this.textures = [texture];
 	}
-
-	/** Renders an equirectangular texture into the six faces. */
+	setSize(width, height) {
+		if (this.width !== width || this.height !== height) {
+			this.width = width; this.height = height;
+			const image = { width: width, height: height, depth: 1 };
+			this.texture.image = [image, image, image, image, image, image];
+			if (this.depthTexture) this.depthTexture.image = [image, image, image, image, image, image];
+			this.dispose();
+		}
+		this.viewport.set(0, 0, width, height);
+		this.scissor.set(0, 0, width, height);
+	}
+	/** Renders an equirectangular texture into the six faces (three.js r186). */
 	fromEquirectangularTexture(renderer, texture) {
 		this.texture.type = texture.type;
 		this.texture.colorSpace = texture.colorSpace;
@@ -83,14 +85,11 @@ class WebGLCubeRenderTarget extends WebGLRenderTarget {
 		mesh.material.dispose();
 		return this;
 	}
-
-	clear(renderer, color = true, depth = true, stencil = true) {
-		const currentRenderTarget = renderer.getRenderTarget();
-		for (let i = 0; i < 6; i++) {
-			renderer.setRenderTarget(this, i);
-			renderer.clear(color, depth, stencil);
-		}
-		renderer.setRenderTarget(currentRenderTarget);
+	/** Clears every face. */
+	clear(renderer, color, depth, stencil) {
+		const previous = renderer.getRenderTarget();
+		for (let i = 0; i < 6; i++) { renderer.setRenderTarget(this, i); renderer.clear(color, depth, stencil); }
+		renderer.setRenderTarget(previous);
 	}
 }
 

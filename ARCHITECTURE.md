@@ -73,6 +73,27 @@ three.js takes. With that, the client-shaped benchmark scenes render pixel-ident
   are grouped by state rather than sorted front-to-back: with batching (§4) the state
   grouping is what removes CPU work, and early-z handles overdraw.
 
+### 3b. Render-list reuse (`src/renderers/webgl/WebGLRenderListCache.js`)
+
+Traversal, culling, key building, sorting and command building are pure functions of a small set of inputs, so a
+frame that has the same inputs as the previous frame of the same (scene, call depth, camera) skips all of them.
+`core/epochs.js` holds two global counters: `structure` (add / remove / attach, `visible`, `renderOrder`,
+`frustumCulled`, `receiveShadow`, `layers.mask`, a mesh's `geometry` / `material`, the first `onBeforeRender` /
+`onAfterRender` assignment) and `world` (a non-camera world matrix was recomputed). Alongside them the cache snapshots
+the camera's view and view-projection matrices, every consulted geometry (bounding sphere, layout version, index),
+material (`visible`, `transparent`, `wireframe`, `vertexColors`, `allowOverride`) and instanced mesh, and the program
+each (material, variant) pair resolved to. Unchanged -> the sorted lists, items and programs are reused and the lights,
+render-order ranks and per-frame ids are replayed. Camera moved only -> every candidate is re-culled; if no result
+flips the opaque list stays and the transparent keys are rebuilt from fresh depths (the same keys a full rebuild
+produces). Anything else -> a normal rebuild. Dependencies are recorded only on a build that follows an unchanged
+frame, so animated scenes pay for a signature copy. Draw commands are cached per list too and replayed when the
+matrix texture still holds that list's matrices (`renderer.debug.listReuse` counts rebuilds, reuses and replays).
+
+`renderer.reuseRenderLists = false` disables it; `renderer.debug.verifyListReuse = true` rebuilds every reused list
+from scratch and compares (`node bench/reuse-check.mjs` renders twin scenes through ~60 scene mutations that way).
+Material arrays and `LOD` objects are never reused. The epochs are global, so any change anywhere invalidates every
+cached list.
+
 ## 4. Automatic draw-call batching (`src/renderers/webgl/WebGLBatcher.js`)
 
 After sorting, consecutive items with the same geometry, material and program (and no
@@ -231,6 +252,19 @@ compare). The main pass samples them through `sampler2DShadow` with 3x3 PCF. Sha
 go through the same sort + batch path as the main pass, so a thousand identical casters
 are one draw call in the shadow pass too.
 
+Point lights render into a cube depth map (`WebGLCubeRenderTarget` + `CubeDepthTexture`, as in three r186; three no longer
+uses the 4x2 "cube in a 2D map" layout or a distance-RGBA pass: the hardware depth of a 90 degree perspective face is the
+value compared). The six faces use three's `_cubeDirections` / `_cubeUps`. Casters are gathered once per light and culled
+against each face's frustum; each face goes through the same sort + batch path (and its matrix texture) as any other pass,
+and the per-light signature skip applies to the whole cube. The main pass samples the cube with `samplerCubeShadow` (PCF:
+five Vogel-disk taps rotated by interleaved gradient noise, the same code as three) or `samplerCube` plus a manual compare
+(`BasicShadowMap`). The vertex shader passes the light-to-fragment vector, so no matrix is stored per point shadow; the Lights
+block holds `pointShadowParams` (bias, normalBias, radius, intensity) and `pointShadowInfo` (mapSize, near, far).
+Capacity: 4 point shadows, and each cube map needs a texture unit, so they take the units of 8-14 left free by the
+directional (8..) and spot (12..) shadow maps (`pointShadowUnit`); a scene with 4 directional and 3 spot shadows has none left.
+Point lights are sorted shadow-casting first, so the i-th shadow is the i-th point light. `VSMShadowMap` is unsupported for
+point lights (three warns and skips them as well).
+
 ## 11. Skinning, morph targets and animation (`src/objects/Skeleton.js`, `src/renderers/webgl/WebGLMorphtargets.js`)
 
 The GPU side is three.js r186's: the built-in vertex shader includes the `skinning_*` and
@@ -297,8 +331,8 @@ before the opaque list and without depth writes.
 
 * `MeshPhysicalMaterial`'s extra layers (the class exists; it renders as `MeshStandardMaterial`
   with the 0.04 dielectric F0), `lightMap`, `bumpMap`.
-* Point-light shadows (cube maps), VSM, rendering into mip levels of a render target,
-  `InstancedMesh` morph targets (`morphTexture`), clipping planes, WebGL1.
+* VSM (and `BasicShadowMap` for directional/spot lights, which always use hardware PCF), rendering
+  into mip levels of a render target, `InstancedMesh` morph targets (`morphTexture`), clipping planes, WebGL1.
 * `ShaderMaterial` with `lights: true`: three.js fills light uniforms from the scene in
   view space; here lighting data lives in the `Lights` block, which custom shaders do not
   see. Everything else about `ShaderMaterial` (prefix, chunks, `UniformsLib`, GLSL 1.00

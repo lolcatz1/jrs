@@ -1,4 +1,5 @@
-// Ported from three.js r186 (MIT License, Copyright 2010-2026 three.js authors).
+// Ported from three.js r186 (MIT, © 2010-2026 three.js authors): the same 16x16 RG16F DFG lookup
+// table, so MeshStandardMaterial shading is identical to three.js.
 /**
  * Precomputed DFG LUT for physically based specular lighting, used by both
  * image-based lighting and direct-light multi-scattering energy compensation

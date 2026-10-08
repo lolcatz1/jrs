@@ -18,6 +18,8 @@ export const MAX_DIR_LIGHTS = 4;
 export const MAX_POINT_LIGHTS = 8;
 export const MAX_SPOT_LIGHTS = 4;
 export const MAX_HEMI_LIGHTS = 2;
+/** Point lights that can cast shadows at once (one cube depth map each; they share texture units 8-14 with directional and spot shadow maps). */
+export const MAX_POINT_SHADOWS = 4;
 
 export const MATERIAL_BASIC = 1;
 export const MATERIAL_LAMBERT = 2;
@@ -36,14 +38,26 @@ export const MATERIAL_SHADOW_DEPTH = 11; // internal: shadow map pass
 export const TEXTURE_UNITS = {
 	map: 0, alphaMap: 1, normalMap: 2, emissiveMap: 3, roughnessMap: 4, metalnessMap: 5, aoMap: 6, specularMap: 7,
 	bumpMap: 7, // shares with specularMap (never used together by one material type)
-	dfgLUT: 7, // Standard materials only (they have neither specularMap nor bumpMap): the DFG lookup table
+	dfgLUT: 7, // MeshStandardMaterial's DFG lookup table (Standard has no specularMap; bumpMap is not implemented)
 	dirShadowMap0: 8, dirShadowMap1: 9, dirShadowMap2: 10, dirShadowMap3: 11,
 	spotShadowMap0: 12, spotShadowMap1: 13, spotShadowMap2: 14, // shadow-casting spot lights are capped at 3
+	// pointShadowMap[i] takes the free units of 8-14 after directional and spot shadow maps, see pointShadowUnit()
 	envMap: 15, // environment map: samplerCube, or the sampler2D CubeUV (PMREM) layout
 	// vertex-shader data textures live above the 16 fragment units (WebGL2 guarantees 32 combined units)
 	boneTexture: 16, morphTargetsTexture: 17,
 	objectMatrices: 18, // batched draws' matrix texture
 };
+/**
+ * Texture unit of the i-th point shadow cube map: the i-th unit of 8..14 not used by the directional (8..8+numDir-1)
+ * or spot (12..12+numSpot-1) shadow maps. Returns -1 when none is left.
+ */
+export function pointShadowUnit(i, numDir, numSpot) {
+	for (let u = 8; u < 15; u++) {
+		if (u < 8 + numDir || (u >= 12 && u < 12 + numSpot)) continue;
+		if (i-- === 0) return u;
+	}
+	return -1;
+}
 export const MATRIX_TEXTURE_WIDTH = 1024; // texels
 export const TEXELS_PER_OBJECT = 8; // model matrix (4) + normal matrix columns (3) + spare -> 128 objects per row
 
@@ -72,14 +86,16 @@ layout(std140) uniform Lights {
 	SpotLight spotLights[${MAX_SPOT_LIGHTS}];
 	HemiLight hemiLights[${MAX_HEMI_LIGHTS}];
 	mat4 dirShadowMatrix[${MAX_DIR_LIGHTS}];
-	vec4 dirShadowParams[${MAX_DIR_LIGHTS}];   // bias, normalBias, radius, 1/mapSize
+	vec4 dirShadowParams[${MAX_DIR_LIGHTS}];   // bias, normalBias, radius / mapSize.x, intensity
 	mat4 spotShadowMatrix[${MAX_SPOT_LIGHTS}];
 	vec4 spotShadowParams[${MAX_SPOT_LIGHTS}];
+	vec4 pointShadowParams[${MAX_POINT_SHADOWS}]; // bias, normalBias, radius, intensity
+	vec4 pointShadowInfo[${MAX_POINT_SHADOWS}];   // mapSize, camera near, camera far
 };
 `;
 
 // Byte size of the Lights block (std140): 16 + 16 + 4*32 + 8*48 + 4*64 + 2*48 + 4*64 + 4*16 + 4*64 + 4*16
-export const LIGHTS_BLOCK_SIZE = 16 + 16 + MAX_DIR_LIGHTS * 32 + MAX_POINT_LIGHTS * 48 + MAX_SPOT_LIGHTS * 64 + MAX_HEMI_LIGHTS * 48 + MAX_DIR_LIGHTS * 64 + MAX_DIR_LIGHTS * 16 + MAX_SPOT_LIGHTS * 64 + MAX_SPOT_LIGHTS * 16;
+export const LIGHTS_BLOCK_SIZE = 16 + 16 + MAX_DIR_LIGHTS * 32 + MAX_POINT_LIGHTS * 48 + MAX_SPOT_LIGHTS * 64 + MAX_HEMI_LIGHTS * 48 + MAX_DIR_LIGHTS * 64 + MAX_DIR_LIGHTS * 16 + MAX_SPOT_LIGHTS * 64 + MAX_SPOT_LIGHTS * 16 + MAX_POINT_SHADOWS * 32;
 export const FRAME_BLOCK_SIZE = 64 * 3 + 16 * 4;
 
 export const MATERIAL_BLOCK = /* glsl */`
@@ -137,14 +153,22 @@ layout(std140) uniform Material {
 `;
 export const MATERIAL_BLOCK_SIZE = 16 * 12;
 
-// three's <common> chunk: PI, pow2/pow4, saturate, F_Schlick, BRDF_Lambert, equirectUv and the
-// direction helpers the environment-map chunks rely on. The GLSL 1.00 sampler names are mapped
-// onto ES 3.00 so the chunks compile unchanged.
 const common = /* glsl */`
+#define PI 3.141592653589793
+#define PI2 6.283185307179586
+#define RECIPROCAL_PI 0.3183098861837907
+#define EPSILON 1e-6
+float pow2( const in float x ) { return x*x; }
+float pow4( const in float x ) { float x2 = x*x; return x2*x2; }
+vec3 F_Schlick( const in vec3 f0, const in float f90, const in float dotVH ) {
+	float fresnel = exp2( ( - 5.55473 * dotVH - 6.98316 ) * dotVH );
+	return f0 * ( 1.0 - fresnel ) + ( f90 * fresnel );
+}
+vec3 BRDF_Lambert( const in vec3 diffuseColor ) { return RECIPROCAL_PI * diffuseColor; }
+// GLSL 1.00 sampler names of three's chunks (cube_uv_reflection_fragment) mapped onto ES 3.00
 #define texture2D texture
 #define textureCube texture
 #define texture2DGradEXT textureGrad
-#include <common>
 `;
 
 const vertexShader = /* glsl */`
@@ -153,7 +177,7 @@ precision highp int;
 precision highp sampler2DArray;
 ${FRAME_BLOCK}
 ${MATERIAL_BLOCK}
-#if NUM_DIR_SHADOWS > 0 || NUM_SPOT_SHADOWS > 0
+#if NUM_DIR_SHADOWS > 0 || NUM_SPOT_SHADOWS > 0 || NUM_POINT_SHADOWS > 0
 ${LIGHTS_BLOCK}
 #endif
 uniform mat4 modelMatrix;
@@ -239,6 +263,9 @@ out vec4 vDirShadowCoord[ NUM_DIR_SHADOWS ];
 #endif
 #if NUM_SPOT_SHADOWS > 0
 out vec4 vSpotShadowCoord[ NUM_SPOT_SHADOWS ];
+#endif
+#if NUM_POINT_SHADOWS > 0
+out vec3 vPointShadowCoord[ NUM_POINT_SHADOWS ];
 #endif
 
 void main() {
@@ -380,6 +407,17 @@ void main() {
 		vSpotShadowCoord[ i ] = spotShadowMatrix[ i ] * shadowWorldPosition;
 	}
 	#endif
+	#if NUM_POINT_SHADOWS > 0
+	for ( int i = 0; i < NUM_POINT_SHADOWS; i ++ ) {
+		vec3 shadowWorldNormal = vec3( 0.0 );
+		#ifdef USE_NORMAL
+		shadowWorldNormal = vNormal;
+		#endif
+		vec4 shadowWorldPosition = worldPosition + vec4( shadowWorldNormal * pointShadowParams[ i ].y, 0.0 );
+		// the vector from the light to the shadowed position (three.js: translation matrix times position)
+		vPointShadowCoord[ i ] = shadowWorldPosition.xyz - pointLights[ i ].position.xyz;
+	}
+	#endif
 }
 `;
 
@@ -387,6 +425,7 @@ const fragmentShader = /* glsl */`
 precision highp float;
 precision highp int;
 precision highp sampler2DShadow;
+precision highp samplerCubeShadow;
 ${FRAME_BLOCK}
 ${LIGHTS_BLOCK}
 #ifdef USE_MATERIAL_ARRAY
@@ -435,6 +474,9 @@ uniform sampler2D aoMap;
 #ifdef USE_SPECULARMAP
 uniform sampler2D specularMap;
 #endif
+#if defined( LIGHTING_STANDARD )
+uniform sampler2D dfgLUT;
+#endif
 #ifdef USE_ENVMAP
 	#ifdef ENVMAP_TYPE_CUBE
 	uniform samplerCube envMap;
@@ -444,9 +486,6 @@ uniform sampler2D specularMap;
 	#ifndef ENV_WORLDPOS
 	in vec3 vReflect;
 	#endif
-#endif
-#ifdef LIGHTING_STANDARD
-uniform sampler2D dfgLUT;
 #endif
 #include <cube_uv_reflection_fragment>
 #if defined( USE_ENVMAP ) && defined( ENVMAP_TYPE_CUBE_UV )
@@ -471,29 +510,113 @@ uniform sampler2DShadow dirShadowMap[ NUM_DIR_SHADOWS ];
 in vec4 vSpotShadowCoord[ NUM_SPOT_SHADOWS ];
 uniform sampler2DShadow spotShadowMap[ NUM_SPOT_SHADOWS ];
 #endif
+#if NUM_POINT_SHADOWS > 0
+in vec3 vPointShadowCoord[ NUM_POINT_SHADOWS ];
+#ifdef POINT_SHADOW_BASIC
+uniform samplerCube pointShadowMap[ NUM_POINT_SHADOWS ];
+#else
+uniform samplerCubeShadow pointShadowMap[ NUM_POINT_SHADOWS ];
+#endif
+#endif
 out vec4 fragColor;
 
 #if NUM_DIR_SHADOWS > 0 || NUM_SPOT_SHADOWS > 0
-float sampleShadow( sampler2DShadow shadowMap, vec4 coord, vec4 params ) {
-	vec3 c = coord.xyz / coord.w;
-	c.z -= params.x;
-	bvec4 inFrustumVec = bvec4( c.x >= 0.0, c.x <= 1.0, c.y >= 0.0, c.y <= 1.0 );
-	bool inFrustum = all( inFrustumVec );
-	bvec2 frustumTestVec = bvec2( inFrustum, c.z <= 1.0 );
-	if ( ! all( frustumTestVec ) ) return 1.0;
-	float texel = params.w * params.z;
-	float shadow = 0.0;
-	shadow += texture( shadowMap, c + vec3( - texel, - texel, 0.0 ) );
-	shadow += texture( shadowMap, c + vec3( 0.0, - texel, 0.0 ) );
-	shadow += texture( shadowMap, c + vec3( texel, - texel, 0.0 ) );
-	shadow += texture( shadowMap, c + vec3( - texel, 0.0, 0.0 ) );
-	shadow += texture( shadowMap, c );
-	shadow += texture( shadowMap, c + vec3( texel, 0.0, 0.0 ) );
-	shadow += texture( shadowMap, c + vec3( - texel, texel, 0.0 ) );
-	shadow += texture( shadowMap, c + vec3( 0.0, texel, 0.0 ) );
-	shadow += texture( shadowMap, c + vec3( texel, texel, 0.0 ) );
-	return shadow / 9.0;
+// three.js r186 PCF shadows (shadowmap_pars_fragment): hardware-compared taps on a Vogel disk rotated per
+// pixel by interleaved gradient noise. params = ( bias, normalBias, radius / mapSize.x, intensity ).
+float interleavedGradientNoise( vec2 position ) {
+	return fract( 52.9829189 * fract( dot( position, vec2( 0.06711056, 0.00583715 ) ) ) );
 }
+vec2 vogelDiskSample( int sampleIndex, int samplesCount, float phi ) {
+	const float goldenAngle = 2.399963229728653;
+	float r = sqrt( ( float( sampleIndex ) + 0.5 ) / float( samplesCount ) );
+	float theta = float( sampleIndex ) * goldenAngle + phi;
+	return vec2( cos( theta ), sin( theta ) ) * r;
+}
+float sampleShadow( sampler2DShadow shadowMap, vec4 shadowCoord, vec4 params ) {
+	float shadow = 1.0;
+	shadowCoord.xyz /= shadowCoord.w;
+	shadowCoord.z += params.x;
+	bool inFrustum = shadowCoord.x >= 0.0 && shadowCoord.x <= 1.0 && shadowCoord.y >= 0.0 && shadowCoord.y <= 1.0;
+	bool frustumTest = inFrustum && shadowCoord.z <= 1.0;
+	if ( frustumTest ) {
+		float radius = params.z;
+		float phi = interleavedGradientNoise( gl_FragCoord.xy ) * PI2;
+		shadow = (
+			texture( shadowMap, vec3( shadowCoord.xy + vogelDiskSample( 0, 5, phi ) * radius, shadowCoord.z ) ) +
+			texture( shadowMap, vec3( shadowCoord.xy + vogelDiskSample( 1, 5, phi ) * radius, shadowCoord.z ) ) +
+			texture( shadowMap, vec3( shadowCoord.xy + vogelDiskSample( 2, 5, phi ) * radius, shadowCoord.z ) ) +
+			texture( shadowMap, vec3( shadowCoord.xy + vogelDiskSample( 3, 5, phi ) * radius, shadowCoord.z ) ) +
+			texture( shadowMap, vec3( shadowCoord.xy + vogelDiskSample( 4, 5, phi ) * radius, shadowCoord.z ) )
+		) * 0.2;
+	}
+	return mix( 1.0, shadow, params.w );
+}
+#endif
+
+#if NUM_POINT_SHADOWS > 0
+#define PI2 6.283185307179586
+// three.js r186 shadowmap_pars_fragment: Vogel disk + interleaved gradient noise taps around the light-to-fragment direction
+#ifndef POINT_SHADOW_BASIC
+#if !( NUM_DIR_SHADOWS > 0 || NUM_SPOT_SHADOWS > 0 )
+// (already defined above when directional or spot shadows are present)
+float interleavedGradientNoise( vec2 position ) {
+	return fract( 52.9829189 * fract( dot( position, vec2( 0.06711056, 0.00583715 ) ) ) );
+}
+vec2 vogelDiskSample( int sampleIndex, int samplesCount, float phi ) {
+	const float goldenAngle = 2.399963229728653;
+	float r = sqrt( ( float( sampleIndex ) + 0.5 ) / float( samplesCount ) );
+	float theta = float( sampleIndex ) * goldenAngle + phi;
+	return vec2( cos( theta ), sin( theta ) ) * r;
+}
+#endif
+float getPointShadow( samplerCubeShadow shadowMap, vec4 params, vec4 info, vec3 lightToPosition ) {
+	float shadow = 1.0;
+	float shadowBias = params.x, shadowRadius = params.z, shadowIntensity = params.w;
+	float shadowMapSize = info.x, shadowCameraNear = info.y, shadowCameraFar = info.z;
+	vec3 bd3D = normalize( lightToPosition );
+	vec3 absVec = abs( lightToPosition );
+	float viewSpaceZ = max( max( absVec.x, absVec.y ), absVec.z );
+	if ( viewSpaceZ - shadowCameraFar <= 0.0 && viewSpaceZ - shadowCameraNear >= 0.0 ) {
+		float dp = ( shadowCameraFar * ( viewSpaceZ - shadowCameraNear ) ) / ( viewSpaceZ * ( shadowCameraFar - shadowCameraNear ) );
+		dp += shadowBias;
+		float texelSize = shadowRadius / shadowMapSize;
+		vec3 absDir = abs( bd3D );
+		vec3 tangent = absDir.x > absDir.z ? vec3( 0.0, 1.0, 0.0 ) : vec3( 1.0, 0.0, 0.0 );
+		tangent = normalize( cross( bd3D, tangent ) );
+		vec3 bitangent = cross( bd3D, tangent );
+		float phi = interleavedGradientNoise( gl_FragCoord.xy ) * PI2;
+		vec2 sample0 = vogelDiskSample( 0, 5, phi );
+		vec2 sample1 = vogelDiskSample( 1, 5, phi );
+		vec2 sample2 = vogelDiskSample( 2, 5, phi );
+		vec2 sample3 = vogelDiskSample( 3, 5, phi );
+		vec2 sample4 = vogelDiskSample( 4, 5, phi );
+		shadow = (
+			texture( shadowMap, vec4( bd3D + ( tangent * sample0.x + bitangent * sample0.y ) * texelSize, dp ) ) +
+			texture( shadowMap, vec4( bd3D + ( tangent * sample1.x + bitangent * sample1.y ) * texelSize, dp ) ) +
+			texture( shadowMap, vec4( bd3D + ( tangent * sample2.x + bitangent * sample2.y ) * texelSize, dp ) ) +
+			texture( shadowMap, vec4( bd3D + ( tangent * sample3.x + bitangent * sample3.y ) * texelSize, dp ) ) +
+			texture( shadowMap, vec4( bd3D + ( tangent * sample4.x + bitangent * sample4.y ) * texelSize, dp ) )
+		) * 0.2;
+	}
+	return mix( 1.0, shadow, shadowIntensity );
+}
+#else
+float getPointShadow( samplerCube shadowMap, vec4 params, vec4 info, vec3 lightToPosition ) {
+	float shadow = 1.0;
+	float shadowBias = params.x, shadowIntensity = params.w;
+	float shadowCameraNear = info.y, shadowCameraFar = info.z;
+	vec3 absVec = abs( lightToPosition );
+	float viewSpaceZ = max( max( absVec.x, absVec.y ), absVec.z );
+	if ( viewSpaceZ - shadowCameraFar <= 0.0 && viewSpaceZ - shadowCameraNear >= 0.0 ) {
+		float dp = ( shadowCameraFar * ( viewSpaceZ - shadowCameraNear ) ) / ( viewSpaceZ * ( shadowCameraFar - shadowCameraNear ) );
+		dp += shadowBias;
+		vec3 bd3D = normalize( lightToPosition );
+		float depth = texture( shadowMap, bd3D ).r;
+		shadow = step( dp, depth );
+	}
+	return mix( 1.0, shadow, shadowIntensity );
+}
+#endif
 #endif
 
 #ifdef USE_NORMALMAP
@@ -525,46 +648,30 @@ float getSpotAttenuation( const in float coneCosine, const in float penumbraCosi
 }
 
 #if defined( LIGHTING_STANDARD )
-struct PhysicalMaterial {
-	vec3 diffuseColor;
-	vec3 diffuseContribution;
-	vec3 specularColor;
-	vec3 specularColorBlended;
-	float roughness;
-	float metalness;
-	float specularF90;
-	vec2 dfg;
-	vec3 multiScatteringCompensation;
-};
+float D_GGX( const in float alpha, const in float dotNH ) {
+	float a2 = pow2( alpha );
+	float denom = pow2( dotNH ) * ( a2 - 1.0 ) + 1.0;
+	return RECIPROCAL_PI * a2 / pow2( denom );
+}
 float V_GGX_SmithCorrelated( const in float alpha, const in float dotNL, const in float dotNV ) {
 	float a2 = pow2( alpha );
 	float gv = dotNL * sqrt( a2 + ( 1.0 - a2 ) * pow2( dotNV ) );
 	float gl = dotNV * sqrt( a2 + ( 1.0 - a2 ) * pow2( dotNL ) );
 	return 0.5 / max( gv + gl, EPSILON );
 }
-float D_GGX( const in float alpha, const in float dotNH ) {
-	float a2 = pow2( alpha );
-	float denom = pow2( dotNH ) * ( a2 - 1.0 ) + 1.0; // avoid alpha = 0 with dotNH = 1
-	return RECIPROCAL_PI * a2 / pow2( denom );
-}
-vec3 BRDF_GGX( const in vec3 lightDir, const in vec3 viewDir, const in vec3 normal, const in PhysicalMaterial material ) {
-	vec3 f0 = material.specularColorBlended;
-	float f90 = material.specularF90;
-	float roughness = material.roughness;
-	float alpha = pow2( roughness ); // UE4's roughness
+vec3 BRDF_GGX( const in vec3 lightDir, const in vec3 viewDir, const in vec3 normal, const in vec3 f0, const in float f90, const in float roughness ) {
+	float alpha = pow2( roughness );
 	vec3 halfDir = normalize( lightDir + viewDir );
-	float dotNL = saturate( dot( normal, lightDir ) );
-	float dotNV = saturate( dot( normal, viewDir ) );
-	float dotNH = saturate( dot( normal, halfDir ) );
-	float dotVH = saturate( dot( viewDir, halfDir ) );
+	float dotNL = clamp( dot( normal, lightDir ), 0.0, 1.0 );
+	float dotNV = clamp( dot( normal, viewDir ), 0.0, 1.0 );
+	float dotNH = clamp( dot( normal, halfDir ), 0.0, 1.0 );
+	float dotVH = clamp( dot( viewDir, halfDir ), 0.0, 1.0 );
 	vec3 F = F_Schlick( f0, f90, dotVH );
 	float V = V_GGX_SmithCorrelated( alpha, dotNL, dotNV );
 	float D = D_GGX( alpha, dotNH );
 	return F * ( V * D );
 }
-// Fdez-Agüera's "Multiple-Scattering Microfacet Model for Real-Time Image Based Lighting"
-// Approximates multiscattering in order to preserve energy.
-// http://www.jcgt.org/published/0008/01/03/
+// three.js r186 lights_physical_pars_fragment: multiple-scattering split of the DFG term
 void computeMultiscattering( const in vec2 fab, const in vec3 specularColor, const in float specularF90, inout vec3 singleScatter, inout vec3 multiScatter ) {
 	vec3 Fr = specularColor;
 	vec3 FssEss = Fr * fab.x + specularF90 * fab.y;
@@ -575,38 +682,19 @@ void computeMultiscattering( const in vec2 fab, const in vec3 specularColor, con
 	singleScatter += FssEss;
 	multiScatter += Fms * Ems;
 }
-void RE_Direct_Physical( const in vec3 lightDir, const in vec3 irradiance, const in vec3 normal, const in vec3 viewDir, const in PhysicalMaterial material, inout vec3 directDiffuse, inout vec3 directSpecular ) {
-	vec3 specularBRDF = BRDF_GGX( lightDir, viewDir, normal, material );
-	directSpecular += irradiance * specularBRDF * material.multiScatteringCompensation;
-	// Light reflected by the specular interface is not available to the diffuse layer ( glTF fresnel_mix )
-	vec3 halfDir = normalize( lightDir + viewDir );
-	float dotVH = saturate( dot( viewDir, halfDir ) );
-	vec3 F = F_Schlick( material.specularColor, material.specularF90, dotVH );
-	directDiffuse += irradiance * BRDF_Lambert( material.diffuseContribution ) * ( 1.0 - F );
-}
-void RE_IndirectDiffuse_Physical( const in vec3 irradiance, const in PhysicalMaterial material, inout vec3 indirectDiffuse ) {
-	// Energy reflected by the specular lobe is not available to the diffuse layer
-	vec3 singleScattering = vec3( 0.0 );
-	vec3 multiScattering = vec3( 0.0 );
-	computeMultiscattering( material.dfg, material.specularColor, material.specularF90, singleScattering, multiScattering );
-	vec3 diffuseTerm = irradiance * BRDF_Lambert( material.diffuseContribution ) * ( 1.0 - singleScattering - multiScattering ); // three names this diffuse; that is a record macro in batched programs
-	indirectDiffuse += diffuseTerm;
-}
-void RE_IndirectSpecular_Physical( const in vec3 radiance, const in vec3 irradiance, const in PhysicalMaterial material, inout vec3 indirectDiffuse, inout vec3 indirectSpecular ) {
-	// Both indirect specular and indirect diffuse light accumulate here
-	// Compute multiscattering separately for dielectric and metallic, then mix
+// three.js r186 RE_IndirectSpecular_Physical: the environment's radiance and irradiance through the
+// single / multi-scattering split, dielectric and metallic paths mixed by metalness
+void RE_IndirectSpecular_Standard( const in vec3 radiance, const in vec3 irradiance, const in vec2 fab, const in vec3 diffuseColor, const in vec3 diffuseContribution, const in float metalness, inout vec3 indirectDiffuse, inout vec3 indirectSpecular ) {
 	vec3 singleScatteringDielectric = vec3( 0.0 );
 	vec3 multiScatteringDielectric = vec3( 0.0 );
 	vec3 singleScatteringMetallic = vec3( 0.0 );
 	vec3 multiScatteringMetallic = vec3( 0.0 );
-	computeMultiscattering( material.dfg, material.specularColor, material.specularF90, singleScatteringDielectric, multiScatteringDielectric );
-	computeMultiscattering( material.dfg, material.diffuseColor, material.specularF90, singleScatteringMetallic, multiScatteringMetallic );
-	// Mix based on metalness
-	vec3 singleScattering = mix( singleScatteringDielectric, singleScatteringMetallic, material.metalness );
-	vec3 multiScattering = mix( multiScatteringDielectric, multiScatteringMetallic, material.metalness );
-	// Diffuse energy conservation uses dielectric path
+	computeMultiscattering( fab, vec3( 0.04 ), 1.0, singleScatteringDielectric, multiScatteringDielectric );
+	computeMultiscattering( fab, diffuseColor, 1.0, singleScatteringMetallic, multiScatteringMetallic );
+	vec3 singleScattering = mix( singleScatteringDielectric, singleScatteringMetallic, metalness );
+	vec3 multiScattering = mix( multiScatteringDielectric, multiScatteringMetallic, metalness );
 	vec3 totalScatteringDielectric = singleScatteringDielectric + multiScatteringDielectric;
-	vec3 diffuseTerm = material.diffuseContribution * ( 1.0 - totalScatteringDielectric );
+	vec3 diffuseTerm = diffuseContribution * ( 1.0 - totalScatteringDielectric );
 	vec3 cosineWeightedIrradiance = irradiance * RECIPROCAL_PI;
 	vec3 indirectSpecularAdd = radiance * singleScattering;
 	indirectSpecularAdd += multiScattering * cosineWeightedIrradiance;
@@ -616,7 +704,16 @@ void RE_IndirectSpecular_Physical( const in vec3 radiance, const in vec3 irradia
 }
 // ref: https://seblagarde.files.wordpress.com/2015/07/course_notes_moving_frostbite_to_pbr_v32.pdf
 float computeSpecularOcclusion( const in float dotNV, const in float ambientOcclusion, const in float roughness ) {
-	return saturate( pow( dotNV + ambientOcclusion, exp2( - 16.0 * roughness - 1.0 ) ) - 1.0 + ambientOcclusion );
+	return clamp( pow( dotNV + ambientOcclusion, exp2( - 16.0 * roughness - 1.0 ) ) - 1.0 + ambientOcclusion, 0.0, 1.0 );
+}
+// three.js r186 RE_Direct_Physical (no clearcoat/sheen/iridescence/retroreflection): GGX specular with
+// multi-scattering energy compensation, and a diffuse term reduced by the Fresnel-reflected energy
+void RE_Direct_Standard( const in vec3 irradiance, const in vec3 L, const in vec3 V, const in vec3 N, const in vec3 f0Blended, const in float roughness, const in vec3 msComp, const in vec3 diffuseContribution, inout vec3 directDiffuse, inout vec3 directSpecular ) {
+	directSpecular += irradiance * BRDF_GGX( L, V, N, f0Blended, 1.0, roughness ) * msComp;
+	vec3 halfDir = normalize( L + V );
+	float dotVH = clamp( dot( V, halfDir ), 0.0, 1.0 );
+	vec3 F = F_Schlick( vec3( 0.04 ), 1.0, dotVH );
+	directDiffuse += irradiance * BRDF_Lambert( diffuseContribution ) * ( 1.0 - F );
 }
 #endif
 #if defined( LIGHTING_PHONG )
@@ -767,28 +864,20 @@ void main() {
 		metalnessFactor *= texture( metalnessMap, vUv ).b;
 		#endif
 		#if defined( LIGHTING_STANDARD )
-		// three.js r186 <lights_physical_fragment> + the STANDARD part of <lights_fragment_begin>
-		PhysicalMaterial material;
-		material.diffuseColor = diffuseColor.rgb;
-		material.diffuseContribution = diffuseColor.rgb * ( 1.0 - metalnessFactor );
-		material.metalness = metalnessFactor;
-		// three.js measures the geometric roughness on the view-space normal; rotate ours into view space first
-		vec3 viewNonPerturbedNormal = mat3( viewMatrix ) * nonPerturbedNormal;
-		vec3 dxy = max( abs( dFdx( viewNonPerturbedNormal ) ), abs( dFdy( viewNonPerturbedNormal ) ) );
+		vec3 diffuseBase = diffuseColor.rgb * ( 1.0 - metalnessFactor );
+		vec3 specularF0 = mix( vec3( 0.04 ), diffuseColor.rgb, metalnessFactor );
+		// specular anti-aliasing term as in three.js (lights_physical_fragment): derivative of the
+		// view-space unperturbed normal, largest component; zero on flat surfaces
+		vec3 viewNormal = mat3( viewMatrix ) * nonPerturbedNormal;
+		vec3 dxy = max( abs( dFdx( viewNormal ) ), abs( dFdy( viewNormal ) ) );
 		float geometryRoughness = max( max( dxy.x, dxy.y ), dxy.z );
-		material.roughness = max( roughnessFactor, 0.0525 ); // 0.0525 corresponds to the base mip of a 256 cubemap.
-		material.roughness += geometryRoughness;
-		material.roughness = min( material.roughness, 1.0 );
-		material.specularColor = vec3( 0.04 );
-		material.specularColorBlended = mix( material.specularColor, diffuseColor.rgb, metalnessFactor );
-		material.specularF90 = 1.0;
-		float dotNVms = saturate( dot( normal, viewDir ) );
-		material.dfg = texture2D( dfgLUT, vec2( material.roughness, dotNVms ) ).rg;
-		// Multi-scattering energy compensation for direct lighting
-		// Based on "Practical Multiple Scattering Compensation for Microfacet Models"
-		// https://blog.selfshadow.com/publications/turquin/ms_comp_final.pdf
-		float EssMs = material.dfg.x + material.dfg.y;
-		material.multiScatteringCompensation = 1.0 + material.specularColorBlended * ( 1.0 / EssMs - 1.0 );
+		float roughness = max( roughnessFactor, 0.0525 );
+		roughness = min( roughness + geometryRoughness, 1.0 );
+		// DFG lookup (three.js lights_fragment_begin) and direct-light multi-scattering compensation
+		float dotNVms = clamp( dot( normal, viewDir ), 0.0, 1.0 );
+		vec2 dfg = texture( dfgLUT, vec2( roughness, dotNVms ) ).rg;
+		float EssMs = dfg.x + dfg.y;
+		vec3 msComp = 1.0 + specularF0 * ( 1.0 / EssMs - 1.0 );
 		#else
 		vec3 diffuseBase = diffuseColor.rgb;
 		#endif
@@ -798,8 +887,6 @@ void main() {
 		#endif
 		vec3 directDiffuse = vec3( 0.0 );
 		vec3 directSpecular = vec3( 0.0 );
-		vec3 indirectDiffuse = vec3( 0.0 );
-		vec3 indirectSpecular = vec3( 0.0 );
 		vec3 irradiance;
 		vec3 L;
 		float dotNL;
@@ -807,7 +894,7 @@ void main() {
 		for ( int i = 0; i < ${MAX_DIR_LIGHTS}; i ++ ) {
 			if ( i >= lightCounts.x ) break;
 			L = dirLights[ i ].direction.xyz;
-			dotNL = saturate( dot( normal, L ) );
+			dotNL = clamp( dot( normal, L ), 0.0, 1.0 );
 			irradiance = dotNL * dirLights[ i ].color.rgb;
 			#if NUM_DIR_SHADOWS > 0
 			if ( i < NUM_DIR_SHADOWS ) {
@@ -815,12 +902,12 @@ void main() {
 			}
 			#endif
 			#if defined( LIGHTING_STANDARD )
-			RE_Direct_Physical( L, irradiance, normal, viewDir, material, directDiffuse, directSpecular );
+			RE_Direct_Standard( irradiance, L, viewDir, normal, specularF0, roughness, msComp, diffuseBase, directDiffuse, directSpecular );
 			#else
 			directDiffuse += irradiance * BRDF_Lambert( diffuseBase );
-				#if defined( LIGHTING_PHONG )
-				directSpecular += irradiance * BRDF_BlinnPhong( L, viewDir, normal, specularColor, shininess ) * specularStrength;
-				#endif
+			#endif
+			#if defined( LIGHTING_PHONG )
+			directSpecular += irradiance * BRDF_BlinnPhong( L, viewDir, normal, specularColor, shininess ) * specularStrength;
 			#endif
 		}
 		// point
@@ -829,17 +916,20 @@ void main() {
 			vec3 lVector = pointLights[ i ].position.xyz - vWorldPosition;
 			L = normalize( lVector );
 			float lightDistance = length( lVector );
-			vec3 lightColor = pointLights[ i ].color.rgb;
-			lightColor *= getDistanceAttenuation( lightDistance, pointLights[ i ].params.x, pointLights[ i ].params.y );
-			dotNL = saturate( dot( normal, L ) );
-			irradiance = dotNL * lightColor;
+			dotNL = clamp( dot( normal, L ), 0.0, 1.0 );
+			irradiance = dotNL * pointLights[ i ].color.rgb * getDistanceAttenuation( lightDistance, pointLights[ i ].params.x, pointLights[ i ].params.y );
+			#if NUM_POINT_SHADOWS > 0
+			if ( i < NUM_POINT_SHADOWS ) {
+				irradiance *= pointShadowFactor( i );
+			}
+			#endif
 			#if defined( LIGHTING_STANDARD )
-			RE_Direct_Physical( L, irradiance, normal, viewDir, material, directDiffuse, directSpecular );
+			RE_Direct_Standard( irradiance, L, viewDir, normal, specularF0, roughness, msComp, diffuseBase, directDiffuse, directSpecular );
 			#else
 			directDiffuse += irradiance * BRDF_Lambert( diffuseBase );
-				#if defined( LIGHTING_PHONG )
-				directSpecular += irradiance * BRDF_BlinnPhong( L, viewDir, normal, specularColor, shininess ) * specularStrength;
-				#endif
+			#endif
+			#if defined( LIGHTING_PHONG )
+			directSpecular += irradiance * BRDF_BlinnPhong( L, viewDir, normal, specularColor, shininess ) * specularStrength;
 			#endif
 		}
 		// spot
@@ -851,27 +941,24 @@ void main() {
 			float spotAttenuation = getSpotAttenuation( spotLights[ i ].params.z, spotLights[ i ].params.w, angleCos );
 			if ( spotAttenuation > 0.0 ) {
 				float lightDistance = length( lVector );
-				vec3 lightColor = spotLights[ i ].color.rgb * spotAttenuation;
-				lightColor *= getDistanceAttenuation( lightDistance, spotLights[ i ].params.x, spotLights[ i ].params.y );
-				dotNL = saturate( dot( normal, L ) );
-				irradiance = dotNL * lightColor;
+				dotNL = clamp( dot( normal, L ), 0.0, 1.0 );
+				irradiance = dotNL * spotLights[ i ].color.rgb * spotAttenuation * getDistanceAttenuation( lightDistance, spotLights[ i ].params.x, spotLights[ i ].params.y );
 				#if NUM_SPOT_SHADOWS > 0
 				if ( i < NUM_SPOT_SHADOWS ) {
 					irradiance *= spotShadowFactor( i );
 				}
 				#endif
 				#if defined( LIGHTING_STANDARD )
-				RE_Direct_Physical( L, irradiance, normal, viewDir, material, directDiffuse, directSpecular );
+				RE_Direct_Standard( irradiance, L, viewDir, normal, specularF0, roughness, msComp, diffuseBase, directDiffuse, directSpecular );
 				#else
 				directDiffuse += irradiance * BRDF_Lambert( diffuseBase );
-					#if defined( LIGHTING_PHONG )
-					directSpecular += irradiance * BRDF_BlinnPhong( L, viewDir, normal, specularColor, shininess ) * specularStrength;
-					#endif
+				#endif
+				#if defined( LIGHTING_PHONG )
+				directSpecular += irradiance * BRDF_BlinnPhong( L, viewDir, normal, specularColor, shininess ) * specularStrength;
 				#endif
 			}
 		}
-		// indirect: ambient + hemisphere (+ the environment's irradiance and radiance)
-		vec3 iblIrradiance = vec3( 0.0 );
+		// indirect (ambient + hemisphere)
 		vec3 indirectIrradiance = ambient.rgb;
 		for ( int i = 0; i < ${MAX_HEMI_LIGHTS}; i ++ ) {
 			if ( i >= lightCounts.w ) break;
@@ -879,19 +966,26 @@ void main() {
 			float hemiDiffuseWeight = 0.5 * dotNLh + 0.5;
 			indirectIrradiance += mix( hemiLights[ i ].ground.rgb, hemiLights[ i ].sky.rgb, hemiDiffuseWeight );
 		}
+		// environment: irradiance (PMREM mip 1) for every lit material, radiance for Standard (three.js lights_fragment_maps)
+		vec3 iblIrradiance = vec3( 0.0 );
 		#if defined( USE_ENVMAP ) && defined( ENVMAP_TYPE_CUBE_UV )
 		iblIrradiance += getIBLIrradiance( normal );
 		#endif
 		#if defined( LIGHTING_STANDARD )
+		// three.js RE_IndirectDiffuse_Physical: energy reflected by the specular lobe is not available to the diffuse layer
+		vec3 singleScattering = vec3( 0.0 );
+		vec3 multiScattering = vec3( 0.0 );
+		computeMultiscattering( dfg, vec3( 0.04 ), 1.0, singleScattering, multiScattering );
+		vec3 indirectDiffuse = indirectIrradiance * BRDF_Lambert( diffuseBase ) * ( 1.0 - singleScattering - multiScattering );
+		vec3 indirectSpecular = vec3( 0.0 );
 		vec3 radiance = vec3( 0.0 );
 			#if defined( USE_ENVMAP ) && defined( ENVMAP_TYPE_CUBE_UV )
-			radiance += getIBLRadiance( viewDir, normal, material.roughness );
+			radiance += getIBLRadiance( viewDir, normal, roughness );
 			#endif
-		RE_IndirectDiffuse_Physical( indirectIrradiance, material, indirectDiffuse );
-		RE_IndirectSpecular_Physical( radiance, iblIrradiance, material, indirectDiffuse, indirectSpecular );
+		RE_IndirectSpecular_Standard( radiance, iblIrradiance, dfg, diffuseColor.rgb, diffuseBase, metalnessFactor, indirectDiffuse, indirectSpecular );
 		#else
 		indirectIrradiance += iblIrradiance;
-		indirectDiffuse += indirectIrradiance * BRDF_Lambert( diffuseBase );
+		vec3 indirectDiffuse = indirectIrradiance * BRDF_Lambert( diffuseBase );
 		#endif
 		#ifdef USE_AOMAP
 			#ifdef USE_UV1
@@ -901,8 +995,8 @@ void main() {
 			#endif
 		indirectDiffuse *= ambientOcclusion;
 			#if defined( USE_ENVMAP ) && defined( LIGHTING_STANDARD )
-			float dotNV = saturate( dot( normal, viewDir ) );
-			indirectSpecular *= computeSpecularOcclusion( dotNV, ambientOcclusion, material.roughness );
+			float dotNV = clamp( dot( normal, viewDir ), 0.0, 1.0 );
+			indirectSpecular *= computeSpecularOcclusion( dotNV, ambientOcclusion, roughness );
 			#endif
 		#endif
 		vec3 totalEmissive = emissive.rgb * matParams.w;
@@ -913,10 +1007,8 @@ void main() {
 		vec3 totalDiffuse = directDiffuse + indirectDiffuse;
 		vec3 totalSpecular = directSpecular + indirectSpecular;
 		outgoingLight = totalDiffuse + totalSpecular + totalEmissive;
-		#elif defined( LIGHTING_PHONG )
-		outgoingLight = directDiffuse + indirectDiffuse + directSpecular + indirectSpecular + totalEmissive;
 		#else
-		outgoingLight = directDiffuse + indirectDiffuse + totalEmissive;
+		outgoingLight = directDiffuse + indirectDiffuse + directSpecular + totalEmissive;
 		#endif
 	#else
 		// unlit
@@ -987,7 +1079,7 @@ void main() {
 `;
 
 // shadow factor helpers need the sampler arrays indexed by a constant; generate unrolled functions
-function shadowFactorFunctions(numDir, numSpot) {
+function shadowFactorFunctions(numDir, numSpot, numPoint) {
 	let s = '';
 	if (numDir > 0) {
 		s += 'float dirShadowFactor( int i ) {\n';
@@ -997,6 +1089,11 @@ function shadowFactorFunctions(numDir, numSpot) {
 	if (numSpot > 0) {
 		s += 'float spotShadowFactor( int i ) {\n';
 		for (let i = 0; i < numSpot; i++) s += `\tif ( i == ${i} ) return sampleShadow( spotShadowMap[ ${i} ], vSpotShadowCoord[ ${i} ], spotShadowParams[ ${i} ] );\n`;
+		s += '\treturn 1.0;\n}\n';
+	}
+	if (numPoint > 0) {
+		s += 'float pointShadowFactor( int i ) {\n';
+		for (let i = 0; i < numPoint; i++) s += `\tif ( i == ${i} ) return getPointShadow( pointShadowMap[ ${i} ], pointShadowParams[ ${i} ], pointShadowInfo[ ${i} ], vPointShadowCoord[ ${i} ] );\n`;
 		s += '\treturn 1.0;\n}\n';
 	}
 	return s;
@@ -1022,7 +1119,7 @@ function envMapDefines(p, vertex) {
 	}
 	return out;
 }
-let _resolvedVertex = null, _resolvedFragment = null;
+let _resolvedFragment = null; // the fragment template with its #include <...> chunks resolved (once)
 
 /**
  * Build GLSL ES 3.00 sources for a built-in material program.
@@ -1081,17 +1178,19 @@ export function buildBuiltinShader(p) {
 	d('TONE_MAPPING', p.toneMapping | 0);
 	d('NUM_DIR_SHADOWS', p.numDirShadows | 0);
 	d('NUM_SPOT_SHADOWS', p.numSpotShadows | 0);
+	d('NUM_POINT_SHADOWS', p.numPointShadows | 0);
+	if (p.pointShadowBasic) d('POINT_SHADOW_BASIC');
 	const prefix = '#version 300 es\n' + defines.join('\n') + '\n';
 	const vsExtra = (p.multiDraw ? '#extension GL_ANGLE_multi_draw : require\n' : '') + (p.materialType === MATERIAL_SPRITE ? spriteUniform : '');
-	if (_resolvedVertex === null) { _resolvedVertex = resolveIncludes(vertexShader); _resolvedFragment = resolveIncludes(fragmentShader); }
-	const vs = prefix + vsExtra + _resolvedVertex;
+	const vs = prefix + vsExtra + vertexShader;
 	if (p.leanShadow) {
 		// depth-only caster: no varyings, no fragment work (the depth attachment is all that is written)
 		return { vertexShader: vs, fragmentShader: '#version 300 es\nprecision mediump float;\nlayout(location = 0) out vec4 fragColor;\nvoid main() { fragColor = vec4( 0.0 ); }\n' };
 	}
 	// insert shadow helper functions after sampleShadow definition
+	if (_resolvedFragment === null) _resolvedFragment = resolveIncludes(fragmentShader);
 	let fs = _resolvedFragment;
-	const helpers = shadowFactorFunctions(p.numDirShadows | 0, p.numSpotShadows | 0);
+	const helpers = shadowFactorFunctions(p.numDirShadows | 0, p.numSpotShadows | 0, p.numPointShadows | 0);
 	if (helpers !== '') fs = fs.replace('#ifdef USE_NORMALMAP\nvec3 perturbNormal2Arb', helpers + '#ifdef USE_NORMALMAP\nvec3 perturbNormal2Arb');
 	return { vertexShader: vs, fragmentShader: prefix + fs };
 }
@@ -1234,7 +1333,7 @@ export function buildCustomShader(material, p) {
 			customDefines,
 			p.fog ? '#define USE_FOG' : '',
 			p.fogExp2 ? '#define FOG_EXP2' : '',
-			p.vertexColors ? '#define USE_COLOR' : '',
+			(p.vertexColors || p.instancingColor) ? '#define USE_COLOR' : '', // three.js defines USE_COLOR in the fragment shader for instance colours too
 			p.vertexAlphas ? '#define USE_COLOR_ALPHA' : '',
 			p.vertexUv1s ? '#define USE_UV1' : '',
 			p.flatShading ? '#define FLAT_SHADED' : '',

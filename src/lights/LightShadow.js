@@ -37,6 +37,7 @@ class LightShadow {
 		shadowMatrix.set(0.5, 0.0, 0.0, 0.5, 0.0, 0.5, 0.0, 0.5, 0.0, 0.0, 0.5, 0.5, 0.0, 0.0, 0.0, 1.0);
 		shadowMatrix.multiply(_projScreenMatrix);
 	}
+	getCamera() { return this.camera; }
 	getViewport(viewportIndex) { return this._viewports[viewportIndex]; }
 	getFrameExtents() { return this._frameExtents; }
 	dispose() { if (this.map) this.map.dispose(); if (this.mapPass) this.mapPass.dispose(); }

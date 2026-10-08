@@ -22,6 +22,7 @@ class BufferAttribute {
 		this.updateRanges = [];
 		this.gpuType = FloatType;
 		this.version = 0;
+		this._uploadSeq = 0; // bumped whenever a renderer consumes updateRanges (lets several GPU copies stay in sync)
 		this._rid = _attributeRid++;
 	}
 	onUploadCallback() {}

@@ -25,6 +25,7 @@ export { Texture } from './textures/Texture.js';
 export { CanvasTexture } from './textures/CanvasTexture.js';
 export { DataTexture } from './textures/DataTexture.js';
 export { DepthTexture } from './textures/DepthTexture.js';
+export { CubeDepthTexture } from './textures/CubeDepthTexture.js';
 export { Data3DTexture } from './textures/Data3DTexture.js';
 export { DataArrayTexture } from './textures/DataArrayTexture.js';
 export { CubeTexture } from './textures/CubeTexture.js';

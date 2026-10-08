@@ -37,6 +37,20 @@ class WebGLBindingStates {
 		if (geometry.index !== null) this.attributes.remove(geometry.index);
 	}
 
+	_entry(geometry) {
+		let entry = this.cache.get(geometry);
+		if (entry === undefined) {
+			entry = { vaos: [null, null, null], layoutVersion: -1, instancedFor: null, hadInstanceColor: false, custom: null, attrList: null, versionSum: -1, epoch: -1, epochMode: -1 };
+			this.cache.set(geometry, entry);
+			geometry.addEventListener('dispose', this._onGeometryDispose);
+			if (this.info !== null) this.info.memory.geometries++;
+		}
+		return entry;
+	}
+
+	/** Counts a geometry that is drawn from a mega-buffer page (it never gets a VAO of its own) in info.memory and hooks its disposal. */
+	register(geometry) { this._entry(geometry); }
+
 	/**
 	 * Make sure the geometry's GPU buffers are current and bind the right VAO.
 	 * mode: 0 plain, 1 InstancedMesh (its own instance attributes), 2 batched (renderer's instance buffer).
@@ -48,13 +62,7 @@ class WebGLBindingStates {
 	 */
 	bind(geometry, mode, instancedObject, batchBuffer, program = null) {
 		const gl = this.gl, attributes = this.attributes;
-		let entry = this.cache.get(geometry);
-		if (entry === undefined) {
-			entry = { vaos: [null, null, null], layoutVersion: -1, instancedFor: null, hadInstanceColor: false, custom: null, attrList: null, versionSum: -1, epoch: -1, epochMode: -1 };
-			this.cache.set(geometry, entry);
-			geometry.addEventListener('dispose', this._onGeometryDispose);
-			if (this.info !== null) this.info.memory.geometries++;
-		}
+		const entry = this._entry(geometry);
 		const useCustom = program !== null && program.hasCustomAttributes === true;
 		// Fast path: layout unchanged and no attribute version changed since the VAO was last validated.
 		if (entry.layoutVersion === geometry._layoutVersion && entry.attrList !== null && (mode !== 1 || entry.instancedFor === instancedObject)) {
@@ -132,8 +140,9 @@ class WebGLBindingStates {
 			}
 		}
 		// remember the validated state for the fast path
-		const list = [];
-		for (const name in geometryAttributes) list.push(geometryAttributes[name]);
+		const list = entry.attrList !== null ? entry.attrList : [];
+		list.length = 0;
+		for (const name in geometryAttributes) { const a = geometryAttributes[name]; list.push(a.isInterleavedBufferAttribute === true ? a.data : a); } // owners of `version`
 		let sum = 0;
 		for (let i = 0; i < list.length; i++) sum += list[i].version;
 		if (geometry.index !== null) sum += geometry.index.version;
@@ -198,10 +207,12 @@ class WebGLBindingStates {
 		gl.bindBuffer(gl.ARRAY_BUFFER, data.buffer);
 		gl.enableVertexAttribArray(location);
 		const integer = data.type === gl.INT || data.type === gl.UNSIGNED_INT || attribute.gpuType === 1013;
+		let stride = 0, offset = 0;
+		if (attribute.isInterleavedBufferAttribute === true) { stride = attribute.data.stride * data.bytesPerElement; offset = attribute.offset * data.bytesPerElement; }
 		if (integer && data.type !== gl.FLOAT && !attribute.normalized) {
-			gl.vertexAttribIPointer(location, attribute.itemSize, data.type, 0, 0);
+			gl.vertexAttribIPointer(location, attribute.itemSize, data.type, stride, offset);
 		} else {
-			gl.vertexAttribPointer(location, attribute.itemSize, data.type, attribute.normalized, 0, 0);
+			gl.vertexAttribPointer(location, attribute.itemSize, data.type, attribute.normalized, stride, offset);
 		}
 	}
 

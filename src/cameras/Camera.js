@@ -16,6 +16,7 @@ class Camera extends Object3D {
 	constructor() {
 		super();
 		this.isCamera = true;
+		this._countsWorld = false; // see epochs.js
 		this.type = 'Camera';
 		this.matrixWorldInverse = new Matrix4();
 		this.projectionMatrix = new Matrix4();

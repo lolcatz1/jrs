@@ -15,13 +15,12 @@ three.js r186, through the built-in programs and the existing render-target code
   environment comes from the scene). `envMap` on these materials is sampled through
   `cube_uv_reflection_fragment` with `CUBEUV_TEXEL_WIDTH` / `CUBEUV_TEXEL_HEIGHT` / `CUBEUV_MAX_MIP`
   generated exactly as three's `generateCubeUVSize` does.
-* The built-in Standard shader is now three.js r186's physical model: the DFG lookup table (the 16x16
-  RG16F `DataTexture` copied from three's `DFGLUTData.js`), `computeMultiscattering`, multi-scattering
-  compensation of direct specular, the Fresnel-weighted direct diffuse, the single / multi-scatter
-  split of the indirect terms, three's geometric-roughness derivative (taken on the view-space normal,
-  which is the one place jrs's world-space lighting converts a vector), and `computeSpecularOcclusion`
-  with `aoMap`. This also made the existing Standard-material benchmark scenes pixel-identical to
-  three (`shared-static` / `shared-animated` went from 0.347 mean / 8 max to 0 / 0).
+* The r186 physical model (DFG lookup table, multi-scattering compensation, Fresnel-weighted direct
+  diffuse, view-space geometric roughness) was ported here and, independently, by the parity-fuzzer
+  branch; after the merge the integration branch's version is the base and this branch adds on top of
+  it the environment terms of `RE_IndirectSpecular_Physical` (radiance and irradiance through the
+  single / multi-scatter split, dielectric and metallic paths mixed by metalness) and
+  `computeSpecularOcclusion` with `aoMap`.
 * `MeshBasicMaterial` / `MeshLambertMaterial` / `MeshPhongMaterial`: `envMap` with `combine`
   Multiply / Mix / Add, `reflectivity`, `refractionRatio`, `envMapRotation`, `specularMap` as the
   reflection strength, and the mapping modes `CubeReflectionMapping`, `CubeRefractionMapping`,
@@ -68,9 +67,9 @@ three.js r186, through the built-in programs and the existing render-target code
   record (block grows from 128 to 192 bytes; the record stride was 256 already), so the
   multi-material batches from the integration branch keep working; materials sampling different
   environment textures are kept in separate batches (one env sampler per draw).
-* Texture units: `envMap` on 15, the DFG table on 7 (shared with `specularMap` / `bumpMap`, which a
-  Standard material never uses), the vertex-only matrix texture moved to 18 above the bone / morph
-  textures (16 / 17). Shadow-casting spot lights stay capped at 3 (12-14), as before.
+* Texture units: `envMap` on 15, the DFG table on 7 (the integration branch already keeps it there),
+  the vertex-only matrix texture moved to 18 above the bone / morph textures (16 / 17). Shadow-casting
+  spot lights stay capped at 3 (12-14); point-shadow cube maps keep using the free units of 8-14.
 * Conversion renders (PMREM, equirect -> cube) can run while a frame is in flight (a material seen
   for the first time during program resolution); `_beginNestedRender` / `_endNestedRender` park the
   frame's lights, render-order ranks, dense-id counters, trace state and render target around them.
@@ -160,10 +159,10 @@ All other scenarios keep their pixel diffs or improve (`shared-static` 0.347 / 8
 
 ## Risks
 
-* The program cache key: the integration branch's numeric key already exceeded 2^53 for high material
-  types (morph-target bits lost for points / sprites); with the env-map bits every Standard program
-  overflowed, so every env-map variant resolved to the first compiled program. The key is now two
-  words joined into a string (built only when a material's program is re-resolved).
+* The program cache key: the integration branch interns the base key and packs the remaining fields
+  under it; the env-map fields (type, mode, blending, CubeUV size) are packed there too. An earlier
+  version of this branch had appended them to a key that was already past 2^53, which silently merged
+  every env-map variant into the first compiled program.
 * Nested conversion renders inside a frame are new ground: they park and restore the frame state,
   but a conversion triggered from inside a user `onBeforeRender` callback (i.e. inside `_drawList`)
   is not supported (`_inDrawList` defers it to the next frame).

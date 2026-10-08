@@ -24,6 +24,7 @@
     "test": "node --test",
     "bench": "node bench/run.mjs",
     "bench:serve": "node bench/serve.mjs",
+    "fuzz": "node bench/fuzz.mjs",
     "build": "node build.mjs"
   },
   "keywords": [
