@@ -2765,6 +2765,11 @@ var Matrix4 = class _Matrix4 {
     te[15] = 1;
     return this;
   }
+  /** True for the identity matrix (exact comparison). */
+  isIdentity() {
+    const e = this.elements;
+    return e[0] === 1 && e[5] === 1 && e[10] === 1 && e[15] === 1 && e[1] === 0 && e[2] === 0 && e[3] === 0 && e[4] === 0 && e[6] === 0 && e[7] === 0 && e[8] === 0 && e[9] === 0 && e[11] === 0 && e[12] === 0 && e[13] === 0 && e[14] === 0;
+  }
   equals(m) {
     const te = this.elements, me = m.elements;
     for (let i = 0; i < 16; i++) if (te[i] !== me[i]) return false;
@@ -3330,7 +3335,7 @@ function notifyRemove(node, child) {
 var _object3DId = 0;
 var _v14 = /* @__PURE__ */ new Vector3();
 var _q1 = /* @__PURE__ */ new Quaternion();
-var _m12 = /* @__PURE__ */ new Matrix4();
+var _m12 = /* @__PURE__ */ new Matrix4(new Float64Array(16));
 var _target = /* @__PURE__ */ new Vector3();
 var _position = /* @__PURE__ */ new Vector3();
 var _scale = /* @__PURE__ */ new Vector3();
@@ -3511,7 +3516,8 @@ var Object3D = class _Object3D extends EventDispatcher {
     else _target.set(x, y, z);
     const parent = this.parent;
     this.updateWorldMatrix(true, false);
-    _position.setFromMatrixPosition(this._matrixWorld);
+    if (this.matrixAutoUpdate === true && (parent === null || parent.isScene === true && parent._matrixWorld.isIdentity())) _position.copy(this.position);
+    else _position.setFromMatrixPosition(this._matrixWorld);
     if (this.isCamera || this.isLight) _m12.lookAt(_position, _target, this.up);
     else _m12.lookAt(_target, _position, this.up);
     this.quaternion.setFromRotationMatrix(_m12);
@@ -6472,6 +6478,9 @@ var _quaternion4 = /* @__PURE__ */ new Quaternion();
 var _scale2 = /* @__PURE__ */ new Vector3();
 var _one2 = /* @__PURE__ */ new Vector3(1, 1, 1);
 var _m64 = /* @__PURE__ */ new Matrix4(new Float64Array(16));
+function isIdentity(e) {
+  return e[0] === 1 && e[5] === 1 && e[10] === 1 && e[15] === 1 && e[1] === 0 && e[2] === 0 && e[3] === 0 && e[4] === 0 && e[6] === 0 && e[7] === 0 && e[8] === 0 && e[9] === 0 && e[11] === 0 && e[12] === 0 && e[13] === 0 && e[14] === 0;
+}
 var Camera = class extends Object3D {
   constructor() {
     super();
@@ -6503,16 +6512,28 @@ var Camera = class extends Object3D {
   /** View matrix excludes world scale (glTF conformance), like three.js. */
   _updateInverse() {
     if (this._inverseVersion === this._worldVersion) return;
-    if (this.parent === null && this.matrixAutoUpdate === true) {
+    const parent = this.parent;
+    if (this.matrixAutoUpdate === true && (parent === null || parent.isScene === true && isIdentity(parent.matrixWorld.elements))) {
       _m64.compose(this.position, this.quaternion, _one2).invert();
-      this.matrixWorldInverse.copy(_m64);
     } else {
       this.matrixWorld.decompose(_position2, _quaternion4, _scale2);
       if (_scale2.x === 1 && _scale2.y === 1 && _scale2.z === 1) _m64.copy(this.matrixWorld).invert();
       else _m64.compose(_position2, _quaternion4, _one2).invert();
-      this.matrixWorldInverse.copy(_m64);
     }
+    this.matrixWorldInverse.copy(_m64);
+    if (this._viewInverse64 === void 0) this._viewInverse64 = new Float64Array(16);
+    this._viewInverse64.set(_m64.elements);
     this._inverseVersion = this._worldVersion;
+  }
+  /**
+   * The view matrix in double precision when it still matches matrixWorldInverse (an app that writes
+   * matrixWorldInverse itself gets the float32 elements it wrote).
+   */
+  _viewElements64() {
+    const v64 = this._viewInverse64, e = this.matrixWorldInverse.elements;
+    if (v64 === void 0) return e;
+    for (let i = 0; i < 16; i++) if (Math.fround(v64[i]) !== e[i]) return e;
+    return v64;
   }
   updateMatrixWorld(force) {
     super.updateMatrixWorld(force);
@@ -18438,6 +18459,7 @@ ${MATERIAL_BLOCK}
 ${LIGHTS_BLOCK}
 #endif
 uniform mat4 modelMatrix;
+uniform mat4 modelViewMatrix; // per-object draws: built on the CPU in double precision (three.js's order of operations)
 uniform mat3 normalMatrix;
 in vec3 position;
 #ifdef USE_NORMAL
@@ -18599,7 +18621,11 @@ void main() {
 	${ShaderChunk.skinning_vertex}
 	#ifdef IS_SPRITE
 		// billboard: sprite plane in view space
+		#ifdef USE_OBJECT_TEXTURE
 		vec4 mvPosition = viewMatrix * model * vec4( 0.0, 0.0, 0.0, 1.0 );
+		#else
+		vec4 mvPosition = modelViewMatrix * vec4( 0.0, 0.0, 0.0, 1.0 );
+		#endif
 		vec2 scale = vec2( length( model[ 0 ].xyz ), length( model[ 1 ].xyz ) );
 		#ifdef INSTANCE_MATERIAL
 		if ( instB.y < 0.5 && projectionMatrix[ 2 ][ 3 ] == - 1.0 ) scale *= - mvPosition.z;
@@ -18624,11 +18650,20 @@ void main() {
 		vec4 worldPosition = vec4( model[ 3 ].xyz + camRight * rotated.x + camUp * rotated.y, 1.0 );
 	#else
 		vec4 worldPosition = model * vec4( transformed, 1.0 );
-		#if defined( IS_LINE ) || defined( IS_POINTS )
-		// like three.js: one modelView matrix applied to the vertex (fewer roundings than view * (model * position))
-		vec4 mvPosition = ( viewMatrix * model ) * vec4( transformed, 1.0 );
+		#if defined( USE_OBJECT_TEXTURE )
+			#if defined( IS_LINE ) || defined( IS_POINTS )
+			// batched lines / points: one modelView matrix applied to the vertex (fewer roundings than view * (model * position))
+			vec4 mvPosition = ( viewMatrix * model ) * vec4( transformed, 1.0 );
+			#else
+			vec4 mvPosition = viewMatrix * worldPosition;
+			#endif
+		#elif defined( USE_INSTANCING )
+		// three.js's order: projectionMatrix * ( modelViewMatrix * ( instanceMatrix * position ) ), modelViewMatrix
+		// rounded once from a double-precision product; same float32 operations -> same clip position
+		vec4 mvPosition = modelViewMatrix * ( instanceMatrix * vec4( transformed, 1.0 ) );
 		#else
-		vec4 mvPosition = viewMatrix * worldPosition;
+		// per-object draws (meshes, lines, points): the CPU double-precision modelViewMatrix
+		vec4 mvPosition = modelViewMatrix * vec4( transformed, 1.0 );
 		#endif
 	#endif
 	#ifndef SHADOW_LEAN
@@ -19186,12 +19221,14 @@ void main() {
 	#ifdef SHADOW_PASS
 	// three.js's shadow depth material alpha-tests map.a * alphaMap.g alone: no opacity, no vertex colours
 	vec4 diffuseColor = vec4( 1.0 );
+	#elif defined( IS_DEPTH )
+	vec4 diffuseColor = vec4( 1.0, 1.0, 1.0, diffuse.a ); // MeshDepthMaterial: the opacity, no vertex colours (three's depth shader)
 	#elif defined( INSTANCE_MATERIAL )
 	vec4 diffuseColor = vInstA;
 	#else
 	vec4 diffuseColor = vec4( diffuse.rgb, diffuse.a );
 	#endif
-	#if ( defined( USE_COLOR ) || defined( USE_INSTANCING_COLOR ) ) && !defined( SHADOW_PASS )
+	#if ( defined( USE_COLOR ) || defined( USE_INSTANCING_COLOR ) ) && !defined( SHADOW_PASS ) && !defined( IS_DEPTH )
 	diffuseColor *= vColor;
 	#endif
 	#ifdef USE_MAP
@@ -19210,7 +19247,9 @@ void main() {
 		#endif
 	#endif
 	#ifdef USE_ALPHATEST
-		#ifdef INSTANCE_MATERIAL
+		#ifdef ALPHATEST_HALF
+		if ( diffuseColor.a < 0.5 ) discard;
+		#elif defined( INSTANCE_MATERIAL )
 		if ( diffuseColor.a < vInstB.w ) discard;
 		#else
 		if ( diffuseColor.a < emissive.a ) discard;
@@ -19624,6 +19663,7 @@ function buildBuiltinShader(p) {
   }
   if (p.fog) d("USE_FOG");
   if (p.alphaTest) d("USE_ALPHATEST");
+  if (p.alphaTestHalf) d("ALPHATEST_HALF");
   if (p.sizeAttenuation) d("SIZE_ATTENUATION");
   if (p.dashed) d("IS_DASHED");
   if (p.instanceMaterial) d("INSTANCE_MATERIAL");
@@ -20133,9 +20173,11 @@ var WebGLPrograms = class {
     const isLit = materialType === MATERIAL_LAMBERT || materialType === MATERIAL_PHONG || materialType === MATERIAL_STANDARD;
     const hasUv = attributes.uv !== void 0;
     const hasUv1 = attributes.uv1 !== void 0;
-    const leanShadow = variant.shadowPass === true && !(material.alphaTest > 0);
+    const shadowPass = variant.shadowPass === true;
+    const shadowAlpha = shadowPass && (!!material.map || !!material.alphaMap) && (material.alphaTest > 0 || material.alphaToCoverage === true);
+    const leanShadow = shadowPass && !shadowAlpha;
     const opaque = variant.shadowPass !== true && material.transparent === false && material.blending === NormalBlending && material.alphaToCoverage !== true;
-    const vertexColors = !leanShadow && material.vertexColors === true && attributes.color !== void 0;
+    const vertexColors = !shadowPass && materialType !== MATERIAL_DEPTH && materialType !== MATERIAL_NORMAL && material.vertexColors === true && attributes.color !== void 0;
     const fog = scene.fog != null && material.fog === true && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH;
     const map = !leanShadow && !!material.map;
     const alphaMap = !leanShadow && !!material.alphaMap;
@@ -20221,7 +20263,8 @@ var WebGLPrograms = class {
     p.envWorldPos = hasEnvMap && (materialType === MATERIAL_LAMBERT || materialType === MATERIAL_PHONG || normalMap);
     p.fog = fog;
     p.fogExp2 = fog && scene.fog.isFogExp2 === true;
-    p.alphaTest = material.alphaTest > 0;
+    p.alphaTest = shadowPass ? shadowAlpha : material.alphaTest > 0 && materialType !== MATERIAL_NORMAL;
+    p.alphaTestHalf = shadowAlpha && material.alphaToCoverage === true;
     p.sizeAttenuation = !instanceMaterial && (materialType === MATERIAL_POINTS || materialType === MATERIAL_SPRITE) && material.sizeAttenuation === true;
     p.premultipliedAlpha = material.premultipliedAlpha === true;
     p.dithering = material.dithering === true;
@@ -20283,6 +20326,7 @@ var WebGLPrograms = class {
     key = key * 8 + numPointShadows;
     key = key * 2 + (pointShadowBasic ? 1 : 0);
     key = key * 2 + (p.materialArray ? 1 : 0);
+    key = key * 2 + (p.alphaTestHalf ? 1 : 0);
     key = key * 2 + (skinning ? 1 : 0);
     key = key * 2 + (p.morphTargets ? 1 : 0);
     key = key * 2 + (p.morphNormals ? 1 : 0);
@@ -23572,6 +23616,8 @@ var WebGLRenderer = class {
     this._colorSpaceIds = /* @__PURE__ */ new Map([["srgb-linear", 0], ["srgb", 1]]);
     this._lastLightsVersion = -1;
     this._samplerStamp = 0;
+    this._viewStamp = 0;
+    this._view64 = null;
     this._programCounter = 0;
     this._currentScene = null;
     this._currentSide = -1;
@@ -25765,6 +25811,8 @@ var WebGLRenderer = class {
     if (n === 0) return;
     this._currentScene = scene;
     this._listShadowPass = shadowPass;
+    this._viewStamp++;
+    this._view64 = camera._viewElements64 !== void 0 ? camera._viewElements64() : camera.matrixWorldInverse.elements;
     if (this._traceSeq !== null) this._traceList = shadowPass ? "s" : keys === list.transparentSorted ? "t" : "o";
     const batcher = this.batcher;
     const autoBatch = this.autoBatch, minimum = this.autoBatchMinimum;
@@ -26188,6 +26236,17 @@ var WebGLRenderer = class {
     if (material.isShaderMaterial) {
       this._uploadObjectUniformsForShaderMaterial(program, object, camera);
     } else {
+      const mvu = program.modelViewMatrixUniform;
+      if (mvu !== null && (mvu._lastObject !== object || mvu._lastVersion !== object._worldVersion || mvu._lastView !== this._viewStamp)) {
+        mvu._lastObject = object;
+        mvu._lastVersion = object._worldVersion;
+        mvu._lastView = this._viewStamp;
+        multiplyViewWorld(_mv2, this._view64, s, o + 16);
+        if (!cacheArray(mvu, _mv2, 16)) {
+          gl.uniformMatrix4fv(mvu.location, false, _mv2);
+          if (this._traceUniforms !== null) this._trace(mvu);
+        }
+      }
       const nu = program.normalMatrixUniform;
       if (nu !== null) {
         if (object._normalVersion !== object._worldVersion) {
@@ -26506,6 +26565,20 @@ var UV_BASE = 36;
 var MAP_KEYS = ["map", "alphaMap", "normalMap", "emissiveMap", "roughnessMap", "metalnessMap", "aoMap", "specularMap"];
 var BATCH_SIG_SIZE = MAP_KEYS.length + 34;
 var IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+var _mv2 = new Float32Array(16);
+function multiplyViewWorld(out, a, b, bo) {
+  const a11 = a[0], a12 = a[4], a13 = a[8], a14 = a[12];
+  const a21 = a[1], a22 = a[5], a23 = a[9], a24 = a[13];
+  const a31 = a[2], a32 = a[6], a33 = a[10], a34 = a[14];
+  const a41 = a[3], a42 = a[7], a43 = a[11], a44 = a[15];
+  for (let c = 0; c < 4; c++) {
+    const b1 = b[bo + c * 4], b2 = b[bo + c * 4 + 1], b3 = b[bo + c * 4 + 2], b4 = b[bo + c * 4 + 3];
+    out[c * 4] = a11 * b1 + a12 * b2 + a13 * b3 + a14 * b4;
+    out[c * 4 + 1] = a21 * b1 + a22 * b2 + a23 * b3 + a24 * b4;
+    out[c * 4 + 2] = a31 * b1 + a32 * b2 + a33 * b3 + a34 * b4;
+    out[c * 4 + 3] = a41 * b1 + a42 * b2 + a43 * b3 + a44 * b4;
+  }
+}
 function probeMaterialArray(gl) {
   const block = "struct R { vec4 a; vec4 b; };\nlayout(std140) uniform Materials { R materials[ 4 ]; };\n";
   const vsSrc = "#version 300 es\nprecision highp float;\n" + block + "flat out int v;\nvoid main() { v = gl_VertexID & 3; gl_Position = materials[ v ].a; }\n";
