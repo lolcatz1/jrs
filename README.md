@@ -58,7 +58,7 @@ over 60 frames after 10 warm-up frames, 320x240 (median frame time, so single ga
 |---|---:|---:|---:|---:|---|---|---|
 | shared-static: one geometry + one material, static | 10,000 | 12.6 ms | 3.6 ms | **3.5x** | 90 → 5 ms | 10000 → 1 | 0.347 / 8 |
 | shared-animated: same, every object rotating | 10,000 | 15.9 ms | 6.1 ms | **2.6x** | 54 → 2120 ms | 10000 → 1 | 0.346 / 9 |
-| many-materials: 3 geometries x 200 Phong materials, point + hemisphere light | 5,000 | 8.6 ms | 4.3 ms | **2.0x** | 77 → 1128 ms | 5000 → 600 | 0 / 0 |
+| many-materials: 3 geometries x 200 Phong materials, point + hemisphere light (batches span materials) | 5,000 | 9.8 ms | 3.5 ms | **2.8x** | 53 → 5 ms | 5000 → 3 | 0 / 0 |
 | unique-geometries: a distinct geometry per mesh (multi-draw over the mega-buffer) | 2,000 | 3.4 ms | 1.9 ms | **1.8x** | 7 → 6 ms | 2000 → 1 | 0 / 0 |
 | hierarchy-animated: 200 chains of 40 nested objects, roots rotating | 8,000 | 14.0 ms | 4.3 ms | **3.3x** | 27 → 1173 ms | 8000 → 1 | 0 / 0 |
 | instanced-100k: one InstancedMesh, 100 000 instances | 100,000 | 0.1 ms | 0.0 ms | n/a (both < 0.1 ms) | 0 → 1 ms | 1 → 1 | 0 / 0 |
