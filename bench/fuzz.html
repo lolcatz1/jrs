@@ -1,0 +1,110 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>jrs vs three.js differential fuzzer</title>
+<style>body{font-family:system-ui;background:#111;color:#ddd;margin:16px} canvas{background:#000;display:inline-block;margin:4px} pre{white-space:pre-wrap}</style>
+</head>
+<body>
+<div id="canvases"></div>
+<pre id="log"></pre>
+<script type="module">
+import * as JRS from '/src/index.js';
+import * as THREE from '/node_modules/three/build/three.module.js';
+import { buildFuzzScene, defaultFeatures, FEATURES, DEFAULT_OFF } from '/bench/fuzz-scene.js';
+import { comparePixels, withinTolerance, TOLERANCE } from '/bench/pixel-compare.js';
+
+const libs = { jrs: JRS, three: THREE };
+const log = (s) => { document.getElementById('log').textContent += s + '\n'; };
+window.FEATURES = FEATURES; window.DEFAULT_OFF = DEFAULT_OFF; window.TOLERANCE = TOLERANCE;
+
+/** Renders `frames` frames of the seeded scene with one library; returns per-frame RGBA pixels. */
+function renderWithLib(libName, seed, features, opts) {
+	const T = libs[libName];
+	const width = opts.width, height = opts.height;
+	const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
+	document.getElementById('canvases').appendChild(canvas);
+	const out = { lib: libName, pixels: [], error: null, glError: 0, drawCalls: [], buildMs: 0, renderMs: 0 };
+	let renderer = null;
+	try {
+		renderer = new T.WebGLRenderer({ canvas, antialias: false, preserveDrawingBuffer: true, stencil: true, alpha: false, premultipliedAlpha: true });
+		renderer.setPixelRatio(1);
+		renderer.setSize(width, height, false);
+		const t0 = performance.now();
+		const built = buildFuzzScene(T, seed, features, { width, height, frames: opts.frames });
+		out.buildMs = performance.now() - t0;
+		out.notes = built.notes;
+		built.setup(renderer);
+		const gl = renderer.getContext();
+		const t1 = performance.now();
+		for (let f = 0; f < opts.frames; f++) {
+			built.frame(renderer, f);
+			const px = new Uint8Array(width * height * 4);
+			gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, px);
+			out.pixels.push(px);
+			out.drawCalls.push(renderer.info.render.calls);
+		}
+		out.renderMs = performance.now() - t1;
+		out.glError = gl.getError();
+		built.dispose(renderer);
+	} catch (e) {
+		out.error = (e && e.stack) || String(e);
+	}
+	try { if (renderer) { renderer.dispose(); renderer.forceContextLoss(); } } catch (e) { /* ignore */ }
+	canvas.remove();
+	return out;
+}
+
+function toPng(px, width, height) {
+	const c = document.createElement('canvas'); c.width = width; c.height = height;
+	const ctx = c.getContext('2d');
+	const img = ctx.createImageData(width, height);
+	// readPixels is bottom-up; flip
+	for (let y = 0; y < height; y++) img.data.set(px.subarray((height - 1 - y) * width * 4, (height - y) * width * 4), y * width * 4);
+	ctx.putImageData(img, 0, 0);
+	return c.toDataURL('image/png');
+}
+function diffPng(a, b, width, height) {
+	const d = new Uint8Array(a.length);
+	for (let i = 0; i < a.length; i += 4) {
+		const m = Math.max(Math.abs(a[i] - b[i]), Math.abs(a[i + 1] - b[i + 1]), Math.abs(a[i + 2] - b[i + 2]));
+		const v = Math.min(255, m * 4);
+		d[i] = m > 32 ? 255 : v; d[i + 1] = m > 32 ? 0 : v; d[i + 2] = m > 32 ? 0 : v; d[i + 3] = 255;
+	}
+	return toPng(d, width, height);
+}
+
+/**
+ * Builds the same seeded scene with both libraries, renders `frames` frames each, compares every
+ * frame. Returns per-frame stats plus images of the first failing frame (or of the last frame
+ * when `opts.images` is set). `opts.libs` can be ['three','three'] for a determinism self-check.
+ */
+window.runFuzz = async function (seed, opts = {}) {
+	const width = opts.width || 320, height = opts.height || 240, frames = opts.frames || 6;
+	const features = Object.assign(defaultFeatures(), opts.features || {});
+	const [la, lb] = opts.libs || ['three', 'jrs'];
+	const A = renderWithLib(la, seed, features, { width, height, frames });
+	const B = renderWithLib(lb, seed, features, { width, height, frames });
+	const result = { seed, libs: [la, lb], notes: A.notes || B.notes || [], frames: [], firstBad: -1, errors: {}, glErrors: {}, drawCalls: { [la]: A.drawCalls, [lb]: B.drawCalls }, buildMs: { [la]: +A.buildMs.toFixed(1), [lb]: +B.buildMs.toFixed(1) }, renderMs: { [la]: +A.renderMs.toFixed(1), [lb]: +B.renderMs.toFixed(1) } };
+	if (A.error) result.errors[la] = A.error;
+	if (B.error) result.errors[lb] = B.error;
+	if (A.glError) result.glErrors[la] = A.glError;
+	if (B.glError) result.glErrors[lb] = B.glError;
+	if (A.error || B.error) { result.firstBad = 0; result.failure = 'exception'; return result; }
+	for (let f = 0; f < frames; f++) {
+		const r = comparePixels(A.pixels[f], B.pixels[f], width, height);
+		r.frame = f;
+		r.pass = withinTolerance(r);
+		result.frames.push(r);
+		if (!r.pass && result.firstBad < 0) {
+			result.firstBad = f; result.failure = 'pixels';
+			result.images = { [la]: toPng(A.pixels[f], width, height), [lb]: toPng(B.pixels[f], width, height), diff: diffPng(A.pixels[f], B.pixels[f], width, height) };
+			if (!opts.allFrames) break;
+		}
+	}
+	if (!result.images && opts.images) {
+		const f = frames - 1;
+		result.images = { [la]: toPng(A.pixels[f], width, height), [lb]: toPng(B.pixels[f], width, height), diff: diffPng(A.pixels[f], B.pixels[f], width, height) };
+	}
+	return result;
+};
+window.ready = true;
+</script>
+</body></html>
