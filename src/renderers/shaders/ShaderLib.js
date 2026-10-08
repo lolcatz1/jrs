@@ -933,12 +933,15 @@ void main() {
 		vec2 pointUv = vec2( gl_PointCoord.x, 1.0 - gl_PointCoord.y );
 		#endif
 	#endif
-	#ifdef INSTANCE_MATERIAL
+	#ifdef SHADOW_PASS
+	// three.js's shadow depth material alpha-tests map.a * alphaMap.g alone: no opacity, no vertex colours
+	vec4 diffuseColor = vec4( 1.0 );
+	#elif defined( INSTANCE_MATERIAL )
 	vec4 diffuseColor = vInstA;
 	#else
 	vec4 diffuseColor = vec4( diffuse.rgb, diffuse.a );
 	#endif
-	#if defined( USE_COLOR ) || defined( USE_INSTANCING_COLOR )
+	#if ( defined( USE_COLOR ) || defined( USE_INSTANCING_COLOR ) ) && !defined( SHADOW_PASS )
 	diffuseColor *= vColor;
 	#endif
 	#ifdef USE_MAP
@@ -1213,7 +1216,7 @@ void main() {
 	#endif
 
 	#ifdef OPAQUE
-	diffuseColor.a = 1.0;
+	diffuseColor.a = 1.0; // three.js opaque_fragment: opaque normal-blended materials write alpha 1.0
 	#endif
 	fragColor = vec4( outgoingLight, diffuseColor.a );
 	#if TONE_MAPPING > 0 && defined( TONE_MAPPED )
@@ -1297,13 +1300,15 @@ export function buildBuiltinShader(p) {
 		case MATERIAL_PHONG: d('LIGHTING_PHONG'); d('USE_NORMAL'); break;
 		case MATERIAL_STANDARD: d('LIGHTING_STANDARD'); d('USE_NORMAL'); break;
 		case MATERIAL_NORMAL: d('IS_NORMAL_MATERIAL'); d('USE_NORMAL'); break;
-		case MATERIAL_DEPTH: case MATERIAL_SHADOW_DEPTH: d('IS_DEPTH'); break;
+		case MATERIAL_DEPTH: d('IS_DEPTH'); break;
+		case MATERIAL_SHADOW_DEPTH: d('IS_DEPTH'); d('SHADOW_PASS'); break;
 		case MATERIAL_POINTS: d('IS_POINTS'); break;
 		case MATERIAL_LINE: d('IS_LINE'); break;
 		case MATERIAL_SPRITE: d('IS_SPRITE'); break;
 	}
 	if (p.leanShadow) d('SHADOW_LEAN');
 	if (p.materialType === MATERIAL_DEPTH || p.materialType === MATERIAL_SHADOW_DEPTH) d('DEPTH_PACKING', p.depthPacking | 0);
+	if (p.opaque) d('OPAQUE');
 	if (p.map) d('USE_MAP');
 	if (p.alphaMap) d('USE_ALPHAMAP');
 	if (p.emissiveMap) d('USE_EMISSIVEMAP');
@@ -1346,9 +1351,7 @@ export function buildBuiltinShader(p) {
 	if (p.sizeAttenuation) d('SIZE_ATTENUATION');
 	if (p.dashed) d('IS_DASHED');
 	if (p.instanceMaterial) d('INSTANCE_MATERIAL');
-	if (p.opaque) d('OPAQUE');
 	if (p.premultipliedAlpha) d('PREMULTIPLIED_ALPHA');
-	if (p.opaque) d('OPAQUE');
 	if (p.dithering) d('DITHERING');
 	if (p.toneMapped) d('TONE_MAPPED');
 	if (p.sRGBOutput) d('SRGB_OUTPUT');
@@ -1541,7 +1544,7 @@ export function buildCustomShader(material, p) {
 			(toneMapping !== _NoToneMapping) ? ShaderChunk['tonemapping_pars_fragment'] : '',
 			(toneMapping !== _NoToneMapping) ? `vec3 toneMapping( vec3 color ) { return ${toneMappingFunctions[toneMapping] || 'Linear'}ToneMapping( color ); }` : '',
 			p.dithering ? '#define DITHERING' : '',
-			(material.transparent === false && material.blending === NormalBlending && material.alphaToCoverage === false) ? '#define OPAQUE' : '',
+			(material.transparent === false && material.blending === NormalBlending && material.alphaToCoverage !== true) ? '#define OPAQUE' : '', // three.js's condition
 			ShaderChunk['colorspace_pars_fragment'],
 			`vec4 linearToOutputTexel( vec4 value ) {\n	return ${colorSpaceFn}( vec4( value.rgb * ${encodingMatrix}, value.a ) );\n}`,
 			'\n'

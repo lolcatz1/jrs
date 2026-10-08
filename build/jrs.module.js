@@ -19183,12 +19183,15 @@ void main() {
 		vec2 pointUv = vec2( gl_PointCoord.x, 1.0 - gl_PointCoord.y );
 		#endif
 	#endif
-	#ifdef INSTANCE_MATERIAL
+	#ifdef SHADOW_PASS
+	// three.js's shadow depth material alpha-tests map.a * alphaMap.g alone: no opacity, no vertex colours
+	vec4 diffuseColor = vec4( 1.0 );
+	#elif defined( INSTANCE_MATERIAL )
 	vec4 diffuseColor = vInstA;
 	#else
 	vec4 diffuseColor = vec4( diffuse.rgb, diffuse.a );
 	#endif
-	#if defined( USE_COLOR ) || defined( USE_INSTANCING_COLOR )
+	#if ( defined( USE_COLOR ) || defined( USE_INSTANCING_COLOR ) ) && !defined( SHADOW_PASS )
 	diffuseColor *= vColor;
 	#endif
 	#ifdef USE_MAP
@@ -19463,7 +19466,7 @@ void main() {
 	#endif
 
 	#ifdef OPAQUE
-	diffuseColor.a = 1.0;
+	diffuseColor.a = 1.0; // three.js opaque_fragment: opaque normal-blended materials write alpha 1.0
 	#endif
 	fragColor = vec4( outgoingLight, diffuseColor.a );
 	#if TONE_MAPPING > 0 && defined( TONE_MAPPED )
@@ -19556,8 +19559,11 @@ function buildBuiltinShader(p) {
       d("USE_NORMAL");
       break;
     case MATERIAL_DEPTH:
+      d("IS_DEPTH");
+      break;
     case MATERIAL_SHADOW_DEPTH:
       d("IS_DEPTH");
+      d("SHADOW_PASS");
       break;
     case MATERIAL_POINTS:
       d("IS_POINTS");
@@ -19571,6 +19577,7 @@ function buildBuiltinShader(p) {
   }
   if (p.leanShadow) d("SHADOW_LEAN");
   if (p.materialType === MATERIAL_DEPTH || p.materialType === MATERIAL_SHADOW_DEPTH) d("DEPTH_PACKING", p.depthPacking | 0);
+  if (p.opaque) d("OPAQUE");
   if (p.map) d("USE_MAP");
   if (p.alphaMap) d("USE_ALPHAMAP");
   if (p.emissiveMap) d("USE_EMISSIVEMAP");
@@ -19620,9 +19627,7 @@ function buildBuiltinShader(p) {
   if (p.sizeAttenuation) d("SIZE_ATTENUATION");
   if (p.dashed) d("IS_DASHED");
   if (p.instanceMaterial) d("INSTANCE_MATERIAL");
-  if (p.opaque) d("OPAQUE");
   if (p.premultipliedAlpha) d("PREMULTIPLIED_ALPHA");
-  if (p.opaque) d("OPAQUE");
   if (p.dithering) d("DITHERING");
   if (p.toneMapped) d("TONE_MAPPED");
   if (p.sRGBOutput) d("SRGB_OUTPUT");
@@ -19815,7 +19820,8 @@ function buildCustomShader(material, p) {
       toneMapping !== NoToneMapping ? ShaderChunk["tonemapping_pars_fragment"] : "",
       toneMapping !== NoToneMapping ? `vec3 toneMapping( vec3 color ) { return ${toneMappingFunctions[toneMapping] || "Linear"}ToneMapping( color ); }` : "",
       p.dithering ? "#define DITHERING" : "",
-      material.transparent === false && material.blending === NormalBlending && material.alphaToCoverage === false ? "#define OPAQUE" : "",
+      material.transparent === false && material.blending === NormalBlending && material.alphaToCoverage !== true ? "#define OPAQUE" : "",
+      // three.js's condition
       ShaderChunk["colorspace_pars_fragment"],
       `vec4 linearToOutputTexel( vec4 value ) {
 	return ${colorSpaceFn}( vec4( value.rgb * ${encodingMatrix}, value.a ) );
@@ -20128,6 +20134,7 @@ var WebGLPrograms = class {
     const hasUv = attributes.uv !== void 0;
     const hasUv1 = attributes.uv1 !== void 0;
     const leanShadow = variant.shadowPass === true && !(material.alphaTest > 0);
+    const opaque = variant.shadowPass !== true && material.transparent === false && material.blending === NormalBlending && material.alphaToCoverage !== true;
     const vertexColors = !leanShadow && material.vertexColors === true && attributes.color !== void 0;
     const fog = scene.fog != null && material.fog === true && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH;
     const map = !leanShadow && !!material.map;
@@ -20234,7 +20241,7 @@ var WebGLPrograms = class {
     p.morphTextureStride = morphTextureStride;
     p.instanceMaterial = instanceMaterial;
     p.dashed = materialType === MATERIAL_LINE && material.isLineDashedMaterial === true;
-    p.opaque = material.transparent === false && material.blending === NormalBlending && material.alphaToCoverage === false;
+    p.opaque = opaque;
     p.depthPacking = materialType === MATERIAL_DEPTH && material.depthPacking !== void 0 ? material.depthPacking : 3200;
     let key = materialType;
     key = key * 2 + (map ? 1 : 0);
@@ -20290,7 +20297,6 @@ var WebGLPrograms = class {
     key = key * 2 + (p.envMapRefraction ? 1 : 0);
     key = key * 4 + (p.combine & 3);
     key = key * 16 + (envMapCubeUV ? (Math.log2(p.envMapCubeUVHeight) | 0) & 15 : 0);
-    key = key * 2 + (p.opaque ? 1 : 0);
     key = key * 4 + (p.depthPacking - 3200);
     p.key = uvKey === 0 ? key : key + ":" + uvKey;
     return p;
@@ -22533,6 +22539,7 @@ var WebGLShadowMap = class {
     for (let i = 0; i < lights.numSpotShadows; i++) shadowLights.push(lights.spot[i]);
     for (let i = 0; i < lights.numPointShadows; i++) shadowLights.push(lights.point[i]);
     if (shadowLights.length === 0) return;
+    renderer.state.setClearColor(1, 1, 1, 1);
     const state = renderer.state;
     let previousTarget = null, previousFace = 0;
     let stateReady = false;
@@ -24271,10 +24278,9 @@ var WebGLRenderer = class {
       if (this._currentRenderTarget === null) ColorManagement.fromWorkingColorSpace(_color2, this._outputColorSpace);
       this.state.setClearColor(_color2.r, _color2.g, _color2.b, 1);
       if (this.autoClear || this.autoClearColor) this.clear(true, this.autoClearDepth, this.autoClearStencil);
-      this._applyClearColor();
-    } else if (this.autoClear) {
-      this._applyClearColor();
-      this.clear(this.autoClearColor, this.autoClearDepth, this.autoClearStencil);
+    } else {
+      if (background === null) this._applyClearColor();
+      if (this.autoClear) this.clear(this.autoClearColor, this.autoClearDepth, this.autoClearStencil);
     }
     if (backgroundTexture !== null) this.background.render(scene, camera, backgroundTexture);
     if (scene.isScene === true) scene.onBeforeRender(this, scene, camera, this._currentRenderTarget);

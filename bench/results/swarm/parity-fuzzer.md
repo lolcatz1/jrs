@@ -91,6 +91,13 @@ same order for both libraries. Per seed, with the default feature set:
   (MeshNormal / MeshBasic / MeshDepth / MeshLambert) when the feature triggers (25% of seeds).
 * **Point-light shadows** (`pointShadows`, with `shadows`): 40% of point lights cast, with random map
   size, near/far, bias, normal bias and radius.
+* **Environment maps** (`envMaps`, on by default, half the seeds): a procedural equirectangular
+  `DataTexture` (sky/ground gradient, horizon band, sun blob, stripes; 32x16 or 64x32, half sRGB) in
+  two copies (reflection and refraction mapping): 60% `scene.environment` (with `environmentIntensity`,
+  `environmentRotation` sometimes; PMREM for MeshStandard, irradiance for Lambert / Phong), 40% a
+  textured `scene.background` (`backgroundBlurriness`, `backgroundIntensity`, `backgroundRotation`),
+  and half the built-in materials get `envMap` with `combine` (Multiply / Mix / Add), `reflectivity`,
+  `refractionRatio`, `envMapIntensity` (Standard) and `envMapRotation`.
 * **Mutations (per frame, on by default):** on random frames after the first, 1-3 of: hide/show or
   remove a mesh, add a mesh (pool geometry + order-insensitive material, optionally under a group),
   change a material's colour / opacity / `transparent` (with `needsUpdate`) / `flatShading` (with
@@ -115,6 +122,11 @@ default feature set, `--continue`.
 | Baseline, before any fix | 1-5 | 5/5 failing (means up to 88 levels, GL errors, a jrs exception) |
 | Final code, full feature set | 1-200 | 182 pass, 18 residual (every one mean ≤ 0.16, ≤ 230 pixels over 33; table below) |
 | Self-check (`--selfcheck`, each library vs itself) | 1-10 | identical frames for both libraries (deterministic) |
+| Tip 6858f51, point shadows + mutations on (generator before `envMaps`) | 401-500 | 87 pass, 13 failing (run cut short at the summary, every seed rendered): 413 (0.847, 1032 px, logged under Open), 434 (0.439, 120 px: fix 21 below takes it to 0.036) and 11 of the small kinds (mean ≤ 0.064, 10-86 px over 33; 404, 415, 421, 433, 441, 459, 465, 467, 477, 480, 495). Reproduce with `--disable=envMaps` now that the generator has the feature |
+| `--only=envMaps,standard,lambert,phong,basic,lights,background` (tip d38333a) | 1-12 | 12/12 identical (PMREM environment, refraction, textured backgrounds, blur/intensity/rotation) |
+| envMaps with shadows, maps, transparency, side, fog, tone mapping, instancing, hierarchy, camera, flat shading, alphaTest, mutations | 1-40 | 38 pass; seed 1 was a generator false positive (map swap left `alphaMap` on the old texture: the perMapTransform limitation), seed 12 found fix 21 (0.192 → 0.004) |
+| Tip d38333a, full default set with `envMaps` (before fixes 22, 23) | 1-100 | 89 pass; 19, 53, 65, 87, 90 (means 50-96: fix 22), 65 / 75 / 94 (fix 23), 12, 14, 97 (Open) |
+| Tip d38333a + fixes 21-23 (final code of this cycle) | 1-100 | **97 pass**; residuals 12 (0.125), 14 (0.06), 97 (0.062), see Open |
 
 Feature-isolated batches with the final code (30 seeds each, `--only=basic,<feature>` plus
 `lambert,lights` where lighting is needed): fog, transparency, side, wireframe+drawRange, stencil,
@@ -156,6 +168,7 @@ Merge log (the branch keeps absorbing the integration tip; each row is one merge
 | 2c03d79 | 87e7aaf | 117/117, 27/27, ok, ok | all scenes 0 / 0 (shared-animated 0 / 1) | 88 pass, 12 known residuals | none |
 | 646caba | ad397c3 | 130/130, 33/33, ok, ok | all 12 scenes 0 mean (max 0; shared-animated 1 px, skinned-crowd 3 px ≤ 2) | 89 pass with the new mutation feature on; the 11 residuals are a subset of the known set (seed 78 now passes) | two real regressions/bugs, fixed in 8716722 (fixes 18, 19): material-array batches left their record window bound for the next plain batch of the same material (frame 0 of about 1 in 15 scenes with shared materials), and multi-draw ignored a drawRange set after the record was built (only reachable with the new per-frame mutations) |
 | 6858f51 | fc9e2b7 | 139/139, 34/34, ok, ok | all 17 scenes 0 mean (max ≤ 2 on ≤ 5 px; the three new point-shadow scenes 0 / 0, 0 / 0, 1 on 5 px) | 87 pass (point shadows + mutations on, so seeds no longer map to the earlier set); 11 residuals of the known kinds plus seed 2 (0.467) and seed 14 (0.05), both logged under Open | one compile failure (fix 20, d8f1052); point-light shadows added to the generator and pixel-identical |
+| d38333a (ShaderMaterial batching, envmaps/PMREM/CubeCamera/textured backgrounds, flat scene update, draw-list build, page VAOs) | fast-forward (this branch was already merged into the tip) | 152/152, 44/44, ok, ok | all 18 scenes 0 mean (max ≤ 2 on ≤ 5 px; the new pbr-envmap scene 0 / 0; instanced-100k 0 / 0 when its compare page loads: on this container that page times out at `page.goto` about every other run, on the untouched tip as well, so the row has to be re-run alone) | first run (envMaps on) 89 pass, 11 failing: the 5 ortho-background seeds (fix 22), 65 / 75 / 94 (fix 23), 12 / 14 / 97 (Open) → after fixes 21-23: **97 pass**, residuals 12 (0.125), 14 (0.06), 97 (0.062), all logged under Open | no merge regression: every parity fix is in place (fix 19's drawRange check now lives at push time as `ITEM_MULTIDRAWABLE`); the generator gained `envMaps` for the new environment code (identical on every seed tried); fix 21 (shadow-pass alpha test, 0c1706c) is a pre-existing mismatch the new subset exposed |
 
 ## Mismatches found and what was done
 
@@ -249,23 +262,59 @@ each with the reasoning.
     linked no program and those objects vanished (7 of 30 shadow seeds, means up to 180). The helpers now
     live in one block shared by both samplers. Point-light shadows themselves match three.js on every seed
     tried (new `pointShadows` feature, on by default).
+21. **Alpha-tested shadow casters tested opacity × vertex colour × map alpha** (`ShaderLib`, 0c1706c):
+    the shadow depth program started from `diffuse.a` (the material opacity) and multiplied by `vColor`
+    before `alphaTest`; three.js's shadow depth material tests `map.a * alphaMap.g` alone. A transparent
+    caster with `alphaTest` (opacity 0.48, test 0.5) therefore cast almost no shadow in jrs (seed 12 of
+    the envMaps subset, mean 0.192 on the lit floor; seed 434 of 401-500, 0.439 → 0.036). The shadow
+    program now defines `SHADOW_PASS` and starts its alpha at 1.0; `MeshDepthMaterial` in the colour
+    pass still uses opacity.
+22. **Clear colour re-applied every frame; three.js's is sticky** (`WebGLRenderer`, `WebGLShadowMap`,
+    8df22ee): three.js sets the GL clear colour only for a null background (its clear colour) or
+    a colour background (that colour, which then stays set); a texture background clears with whatever
+    is current, and `WebGLShadowMap` sets white (1,1,1,1) before rendering shadow maps. Where a textured
+    background does not cover the frame (the background cube box seen through an orthographic camera),
+    three.js shows white after a shadow pass and jrs showed its own clear colour: seeds 19, 53, 65, 87,
+    90 of the first envMaps run, means 50-96 (the largest mismatches of the night). jrs now mirrors the
+    three.js state sequence exactly.
+23. **Opaque materials wrote `map.a * opacity` as alpha; three.js writes 1.0** (`ShaderLib`,
+    `WebGLPrograms`, 8df22ee): three.js's `OPAQUE` define (`transparent === false`, NormalBlending,
+    no alphaToCoverage) forces alpha 1.0 in every built-in mesh / line / points / sprite program and in
+    the ShaderMaterial prefix (jrs keyed the prefix define on `transparent` alone). The framebuffer alpha
+    only shows through blend factors that read the destination alpha (`DstAlpha`, `OneMinusDstAlpha`),
+    which turned out to be the whole "custom-blend composite of 3+ objects" residual class: seeds 2
+    (0.467), 413 (0.847) and 93 (0.098) of the earlier generator and 65 (0.79 after fix 22), 75, 94 of
+    the current one are identical now. `opaque` is a program key bit; material-array batches share it
+    because their group signature already has transparent + blending.
 
 ### Open (found, not fixed tonight)
 
-* **Shared transparent material between an InstancedMesh with instance colours and a grouped mesh**
-  (seed 93, `node bench/fuzz.mjs --seed=93`): mean 0.098, ~150 pixels. Each object alone is
-  identical; the pair differs whichever draw order is forced and with `forceSinglePass`. Something in
-  the per-material state (uniform block or texture/VAO binding) differs between the instanced and the
-  non-instanced program of the same material; not located.
+* ~~Shared transparent material between an InstancedMesh and a grouped mesh (seed 93, 0.098)~~,
+  ~~seed 2 (0.467, transparent BackSide custom-blend spheres over a lit floor)~~ and ~~seed 413 of
+  401-500 (0.847)~~: all three were the destination-alpha blend class, fixed by fix 23 (identical now;
+  reproduce the old scenes with `--disable=envMaps`).
 * **Render-target-textured surfaces in a few scenes** (seeds 23, 27, 28, 142, 160, 192): small clusters
   where three.js shows exactly 0 and jrs about 0.004 linear (15/255 encoded), or similar; the plain
   linear/sRGB round trip is identical in a direct test, so it depends on something else in those
   scenes (fog, tone mapping, camera view offset are common to several of them); mean ≤ 0.10.
 * **Seed 145** (see the table): ShaderMaterials ~12% darker after a frame rendered with an
   `overrideMaterial`; not located.
-* **Seed 2 (post point-shadow generator, mean 0.467, 498 px)**: a lit floor under several transparent
-  BackSide `MeshPhongMaterial` spheres with CustomBlending, `depthWrite: false`, two groups per sphere;
-  every object alone matches, no single removal fixes it (3+ objects composite differently); not located.
+* **Seed 97 (envMaps generator, 0.062 at frame 0 rising to 0.155 at frame 5)**: a bright spot on a
+  `MeshStandardMaterial` floor under `scene.environment` (rotated PMREM), with 4 shadow lights, that moves
+  with the animation; the floor alone is identical, `--noshadow` and `--singlepass` change nothing, the
+  floor + the grouped transparent object over it is identical as a pair, and no single removal clears it.
+  The same seed also has the render-target-textured class (a `map(sRGB)(RT)` Lambert alone, 0.04).
+* **Seed 14 (envMaps generator, 0.06 at frame 0 / 0.099 at frame 1)**: `scene.environment` + blurred
+  textured background + refraction env maps + a render target; small clusters, not isolated yet.
+  When seeds 1-13 ran before it on the same page, jrs also reports GL error 1282 (INVALID_OPERATION)
+  for this seed (`--start=12`, `--start=13` and the seed alone do not reproduce it;
+  `bench/fuzz-glerr.mjs 14 jrs` finds no erroring call alone): something a previous renderer on the page
+  leaves behind in a module-level object. Open.
+* **Seed 12 (envMaps generator, 0.125)**: the render-target-textured class, now down to a per-object
+  case: a flat DoubleSide `MeshPhongMaterial` stencil writer with the (linear) render target as both
+  `map` and `specularMap` is about 10% brighter in jrs alone (0.024, 53 px); the other RT-textured
+  objects of the seed show the same. Locatable with a direct test (Phong + RT map + specularMap).
+* **Seed 145 of the earlier generator** (`--seed=145 --disable=envMaps`): still 0.165 after fixes 21-23.
 * **Seed 14 (0.05)**: `MeshPhongMaterial` wireframe lines textured with a render target sample about
   25% darker in jrs; wireframe batches with Phong/maps otherwise show only the line-endpoint edge class.
 * Line primitives (wireframe) flip single endpoint pixels more often than triangle edges do; the 8-pixel
@@ -324,7 +373,15 @@ npm run fuzz -- --seeds=200 --continue          # ~10 minutes on the cloud conta
   own identical inline copy for `--compare` so other workers' edits to that page do not conflict.
 * `node bench/run.mjs --compare` occasionally dies with `page.goto: Timeout 30000ms exceeded` on a
   fresh page (seen three times tonight, always recovered by re-running alone); it is a load/flake of
-  the bench harness, not a renderer failure: every scenario passes when run on its own.
+  the bench harness, not a renderer failure: every scenario passes when run on its own. Since the
+  fourth merge the full run dies this way right after `instanced-100k` most of the time (the compare
+  page never loads; the same on the untouched tip); `node bench/run.mjs <scene> --compare` per scene
+  is reliable, and `instanced-100k` alone passes about every other attempt (0 / 0 when it does).
+* After a merge, check that every parity fix is still in `src/` with
+  `for m in vogelDiskSample "takes the '<name>0' slot" "_currentProgram !== program" "ITEM_MULTIDRAWABLE" RE_Direct_Standard setShadowPassMaterial "sRGBOutput = currentRenderTarget === null" isTwoPass ndcDepth dfgLUT FLIP_SIDED "setColorMask(true)" "_sideVariant()" "USE_COLOR' : '', // three.js defines" SHADOW_PASS; do printf "%-45s %s\n" "$m" "$(grep -rF -- "$m" src | wc -l)"; done`
+  (every count must be > 0); a fix can legitimately move (fix 19 became the push-time
+  `ITEM_MULTIDRAWABLE` flag in the draw-list rewrite), so a zero means "find where it went", not
+  necessarily "lost".
 * `build/jrs.module.js` was not regenerated on this branch (every worker touching `src/` would
   conflict on it): run `npm run build` once after the merge.
 * The README benchmark note "Standard-material scenes differ by a few levels because jrs does not

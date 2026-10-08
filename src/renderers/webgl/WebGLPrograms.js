@@ -289,6 +289,8 @@ class WebGLPrograms {
 		// Shadow pass without alpha test is depth only: the program needs neither uvs, colours nor textures,
 		// so those features are dropped from the key and every such caster shares one lean program.
 		const leanShadow = variant.shadowPass === true && !(material.alphaTest > 0);
+		// three.js's OPAQUE define: an opaque, normal-blended material writes alpha 1.0 whatever its map / opacity
+		const opaque = variant.shadowPass !== true && material.transparent === false && material.blending === NormalBlending && material.alphaToCoverage !== true;
 		const vertexColors = !leanShadow && material.vertexColors === true && attributes.color !== undefined;
 		const fog = scene.fog != null && material.fog === true && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH;
 		const map = !leanShadow && !!material.map;
@@ -400,7 +402,7 @@ class WebGLPrograms {
 		p.morphTextureStride = morphTextureStride;
 		p.instanceMaterial = instanceMaterial;
 		p.dashed = materialType === MATERIAL_LINE && material.isLineDashedMaterial === true;
-		p.opaque = material.transparent === false && material.blending === NormalBlending && material.alphaToCoverage === false;
+		p.opaque = opaque;
 		p.depthPacking = materialType === MATERIAL_DEPTH && material.depthPacking !== undefined ? material.depthPacking : 3200;
 		let key = materialType;
 		key = key * 2 + (map ? 1 : 0); key = key * 2 + (alphaMap ? 1 : 0); key = key * 2 + (emissiveMap ? 1 : 0); key = key * 2 + (normalMap ? 1 : 0);
@@ -422,7 +424,7 @@ class WebGLPrograms {
 		key = key * 2 + (instanceMaterial ? 1 : 0); key = key * 2 + (p.dashed ? 1 : 0); key = key * 2 + (p.opaque ? 1 : 0);
 		key = key * 2 + (hasEnvMap ? 1 : 0); key = key * 2 + (envMapCubeUV ? 1 : 0); key = key * 2 + (p.envMapRefraction ? 1 : 0);
 		key = key * 4 + (p.combine & 3); key = key * 16 + (envMapCubeUV ? (Math.log2(p.envMapCubeUVHeight) | 0) & 15 : 0);
-		key = key * 2 + (p.opaque ? 1 : 0); key = key * 4 + (p.depthPacking - 3200);
+		key = key * 4 + (p.depthPacking - 3200);
 		p.key = uvKey === 0 ? key : key + ':' + uvKey; // materials without maps keep a plain numeric key
 		return p;
 	}
