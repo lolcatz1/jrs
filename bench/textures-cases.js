@@ -301,12 +301,12 @@ export function textureCases(env) {
 		scene.add(new T.Mesh(new T.SphereGeometry(1, 16, 12), new T.MeshBasicMaterial({ color: 0xffffff, envMap: tex })));
 		return shot(side, scene, camera);
 	}, { gap: 'environment maps / image-based lighting are not implemented (ARCHITECTURE.md "intentionally not there"); material.envMap is ignored' });
-	C('colorspace', 'envMap on MeshStandardMaterial (CubeTexture)', (T, side) => {
+	C('colorspace', 'envMap (CubeTexture) on MeshPhongMaterial with reflectivity', (T, side) => {
 		const faces = [[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 0], [0, 255, 255], [255, 0, 255]].map((c) => new T.DataTexture(new Uint8Array([c[0], c[1], c[2], 255]), 1, 1, T.RGBAFormat, T.UnsignedByteType));
 		const tex = new T.CubeTexture(faces); tex.colorSpace = T.SRGBColorSpace; tex.needsUpdate = true;
 		const scene = new T.Scene(); scene.background = new T.Color(0x336699);
 		const camera = new T.PerspectiveCamera(50, 1, 0.1, 100); camera.position.z = 4;
-		scene.add(new T.Mesh(new T.SphereGeometry(1, 16, 12), new T.MeshStandardMaterial({ color: 0xffffff, roughness: 0.2, metalness: 1, envMap: tex })));
+		scene.add(new T.Mesh(new T.SphereGeometry(1, 16, 12), new T.MeshPhongMaterial({ color: 0x202020, envMap: tex, reflectivity: 0.9, combine: T.MixOperation })));
 		return shot(side, scene, camera);
 	}, { gap: 'environment maps / image-based lighting are not implemented; material.envMap is ignored' });
 

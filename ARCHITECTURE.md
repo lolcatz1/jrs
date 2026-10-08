@@ -292,6 +292,33 @@ The animation system (`src/animation/`) is the three.js r186 code, which already
 per-frame allocation; `AnimationMixer.update` writes into bone `position` / `quaternion` / `scale`
 and the change-detected `updateMatrix` picks it up.
 
+## 12. Textures (`src/renderers/webgl/WebGLTextures.js`)
+
+The texture half of the renderer follows three.js r186's `WebGLTextures` so that the same texture setup yields the same GL
+objects, GL errors and pixels (`node bench/textures.mjs` renders ~340 texture cases with both libraries and compares pixels,
+GL errors, warnings and GL call sequences).
+
+* **Format tables** (`WebGLUtils.convert`, `glInternalFormat`, `glInternalDepthFormat`): same results as three, including the
+  compressed formats (S3TC / ETC / ASTC / BPTC / RGTC, sRGB variants), the sized-format rules (an RGB data texture is as invalid as
+  it is in three, because `texStorage2D` rejects unsized formats) and `internalFormat` overrides.
+* **Shared GL textures**: textures that share a `Source` and every parameter that is baked into the GL object (wrap, filters,
+  anisotropy, formats, flipY, premultiplyAlpha, alignment, colour space) share one `WebGLTexture`, uploaded once; changing one of those
+  parameters and calling `needsUpdate` moves a texture to another GL object and frees the old one when nobody uses it any more.
+  `info.memory.textures` counts GL objects.
+* **Upload paths per class**, as in three: storage with `texStorage2D/3D` then `texSubImage*` (images, canvases, data, array and 3D
+  textures with `layerUpdates`, `updateRanges`), `compressedTexSubImage2D/3D` per mipmap for compressed textures (no mipmap
+  generation), per-face cube uploads, user `mipmaps[]` chains, `FramebufferTexture` allocation, `VideoTexture` (mutable storage,
+  `texSubImage2D` when the frame size is unchanged instead of redefining the level) and images above `MAX_TEXTURE_SIZE` resized on a canvas.
+* **Large data textures** (a `DataTexture` with at least 256 KB of client data and no user mipmaps, and the bone texture) are defined with
+  `texImage2D` instead of `texStorage2D` + `texSubImage2D`: in Chromium the former takes the mapped-memory path, the latter goes
+  through the command-buffer transfer ring and can stall (see `bench/results/swarm/stall-hunter.md`; 4096x4096 RGBA8 here: ~50 ms vs ~7 ms
+  per upload). `TEXTURE_MAX_LEVEL = 0` keeps such a texture complete with its base level when it does not generate mipmaps. Small textures use
+  three's storage path so invalid format combinations fail identically.
+* A texture that has nothing to upload yet (no image, version 0) is bound as nothing and samples black, like in three (older jrs bound a white
+  placeholder). Render targets are written in the working colour space: tone mapping and sRGB encoding only apply when drawing to the canvas.
+* `renderer.copyTextureToTexture` (2D, 2D array, 3D, compressed, render target and depth sources), `initTexture`, `initRenderTarget` and
+  `copyFramebufferToTexture(texture, position, level)` are the r186 methods.
+
 ## What is intentionally not there (yet)
 
 * Environment maps / image-based lighting, `MeshPhysicalMaterial`'s extra layers

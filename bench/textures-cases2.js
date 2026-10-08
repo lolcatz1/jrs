@@ -757,7 +757,7 @@ export function moreCases(env, C, has, h) {
 			scene.add(new T.AmbientLight(0xffffff, 0.8)); const dl = new T.DirectionalLight(0xffffff, 2); dl.position.set(1, 2, 3); scene.add(dl);
 			scene.add(new T.Mesh(new T.PlaneGeometry(2, 2), new T.MeshStandardMaterial({ color: 0xcccccc, roughness: r, metalness: m })));
 			return shot(side, scene, camera);
-		}, m > 0 ? { tolerance: 5, gap: 'lighting model, not textures: jrs MeshStandardMaterial lacks three.js r186 multiscattering GGX (BRDF_GGX_Multiscatter / DFGApprox), so metals differ' } : { tolerance: 5 });
+		});
 	}
 	for (const r of [0.1, 0.4, 0.9]) {
 		add('maps', `baseline: MeshStandardMaterial roughness=${r} on a sphere (geometry roughness from the normal derivatives), no textures`, (T, side) => {
@@ -766,7 +766,7 @@ export function moreCases(env, C, has, h) {
 			scene.add(new T.AmbientLight(0xffffff, 0.4)); const dl = new T.DirectionalLight(0xffffff, 2.5); dl.position.set(1, 2, 3); scene.add(dl);
 			scene.add(new T.Mesh(new T.SphereGeometry(1, 24, 16), new T.MeshStandardMaterial({ color: 0xcc8844, roughness: r, metalness: 0 })));
 			return shot(side, scene, camera);
-		}, { tolerance: 3, gap: 'lighting model, not textures: jrs derives geometryRoughness from dFdx/dFdy of normal.z only (three.js uses the max of all components of the non-perturbed normal) and lacks multiscattering GGX' });
+		});
 	}
 	for (const [label, rgb] of [['identity (flat)', [128, 128, 255]], ['uniform tilt +x', [200, 128, 230]], ['uniform tilt +y', [128, 200, 230]], ['strong tilt', [220, 90, 150]]]) {
 		add('maps', `normalMap ${label}, constant over the plane (MeshStandardMaterial, roughness 0.7, flat quad)`, (T, side) => {
@@ -776,7 +776,7 @@ export function moreCases(env, C, has, h) {
 			scene.add(new T.AmbientLight(0xffffff, 0.3)); const dl = new T.DirectionalLight(0xffffff, 2); dl.position.set(1, 2, 3); scene.add(dl);
 			scene.add(new T.Mesh(new T.PlaneGeometry(2, 2), new T.MeshStandardMaterial({ color: 0xcccccc, roughness: 0.7, metalness: 0, normalMap: tex })));
 			return shot(side, scene, camera);
-		}, { tolerance: 5 });
+		}, { tolerance: 2 });
 	}
 	for (const key of ['alphaMap', 'aoMap', 'normalMap']) {
 		add('maps', `${key} on a lit MeshStandardMaterial (data texture, colorSpace none)`, (T, side) => {
@@ -789,7 +789,7 @@ export function moreCases(env, C, has, h) {
 			const g = new T.PlaneGeometry(2, 2); g.setAttribute('uv1', g.attributes.uv.clone());
 			scene.add(new T.Mesh(g, m));
 			return shot(side, scene, camera);
-		}, { tolerance: 5 });
+		}, { tolerance: 2 });
 	}
 	add('maps', 'roughnessMap on MeshStandardMaterial (metalness 0)', (T, side) => {
 		const d = rgbaPattern(8, 8); for (let i = 0; i < 64; i++) d[i * 4 + 1] = 40 + (d[i * 4 + 1] * 0.8) | 0; // roughness 0.16..1 down the map
@@ -798,7 +798,7 @@ export function moreCases(env, C, has, h) {
 		scene.add(new T.AmbientLight(0xffffff, 0.8)); const dl = new T.DirectionalLight(0xffffff, 2); dl.position.set(1, 2, 3); scene.add(dl);
 		scene.add(new T.Mesh(new T.PlaneGeometry(2, 2), new T.MeshStandardMaterial({ color: 0xcccccc, roughness: 1, metalness: 0, roughnessMap: tex })));
 		return shot(side, scene, camera);
-	}, { tolerance: 5 });
+	}, { tolerance: 2 });
 	// metalnessMap: jrs's lighting model differs from three.js for metals (see the baseline cases), so verify the texture path by
 	// self-consistency: a map holding a constant blue channel must equal the uniform metalness factor within each library
 	add('maps', 'metalnessMap (blue channel) equals the same uniform metalness within the library', (T, side) => {
@@ -835,17 +835,19 @@ export function moreCases(env, C, has, h) {
 		scene.add(new T.AmbientLight(0xffffff, 0.3)); const dl = new T.DirectionalLight(0xffffff, 2); dl.position.set(0, 0, 3); scene.add(dl);
 		scene.add(new T.Mesh(new T.PlaneGeometry(2, 2), new T.MeshPhongMaterial({ color: 0x404040, specular: 0xffffff, shininess: 30, specularMap: tex })));
 		return shot(side, scene, camera);
-	}, { tolerance: 5 });
-	for (const key of ['lightMap', 'bumpMap', 'displacementMap', 'metalnessMap+envMap']) {
-		if (key.includes('+')) continue;
+	}, { tolerance: 2 });
+	for (const key of ['lightMap', 'bumpMap', 'displacementMap']) {
 		add('maps', `${key} on a lit material`, (T, side) => {
 			const tex = new T.DataTexture(rgbaPattern(8, 8), 8, 8, T.RGBAFormat, T.UnsignedByteType); tex.needsUpdate = true;
-			const { scene, camera } = plain(T);
+			const scene = new T.Scene(); scene.background = new T.Color(0x336699);
+			const camera = new T.PerspectiveCamera(45, 1, 0.1, 100); camera.position.set(0, 1.2, 3); camera.lookAt(0, 0, 0);
 			scene.add(new T.AmbientLight(0xffffff, 0.8)); const dl = new T.DirectionalLight(0xffffff, 2); dl.position.set(1, 2, 3); scene.add(dl);
-			const g = new T.PlaneGeometry(2, 2, 8, 8); g.setAttribute('uv1', g.attributes.uv.clone());
-			scene.add(new T.Mesh(g, new T.MeshStandardMaterial({ color: 0xcccccc, roughness: 0.6, [key]: tex, ...(key === 'displacementMap' ? { displacementScale: 0.3 } : {}) })));
+			const g = new T.PlaneGeometry(2, 2, 16, 16); g.setAttribute('uv1', g.attributes.uv.clone());
+			const m = new T.Mesh(g, new T.MeshStandardMaterial({ color: 0xcccccc, roughness: 0.6, [key]: tex, ...(key === 'displacementMap' ? { displacementScale: 0.6 } : {}), ...(key === 'bumpMap' ? { bumpScale: 4 } : {}) }));
+			m.rotation.x = -1.0;
+			scene.add(m);
 			return shot(side, scene, camera);
-		}, { gap: `${key} is not implemented by jrs's built-in shader (map keys: map, alphaMap, normalMap, emissiveMap, roughnessMap, metalnessMap, aoMap, specularMap)`, tolerance: 3 });
+		}, { gap: `${key} is not implemented by jrs's built-in shader (map keys: map, alphaMap, normalMap, emissiveMap, roughnessMap, metalnessMap, aoMap, specularMap)`, tolerance: 2 });
 	}
 	add('maps', 'map.channel = 1 (uses the uv1 attribute)', (T, side) => {
 		const tex = new T.DataTexture(rgbaPattern(8, 8), 8, 8, T.RGBAFormat, T.UnsignedByteType); tex.channel = 1; tex.magFilter = T.NearestFilter; tex.needsUpdate = true;
