@@ -97,7 +97,9 @@ function phaseOf(lib, mod, fn) {
 			default: return null;
 		}
 	}
-	// three.js r186: mod is the enclosing top-level declaration in three.module.js
+	// three.js r186: mod is the enclosing top-level declaration in three.module.js / three.core.js
+	if (/^setValue|^setValueV|^setValueT|^setValueM|^arraysEqual|^copyArray|^flatten$|^allocTexUnits|^getUniformSetter|^PureArrayUniform|^SingleUniform|^StructuredUniform/.test(mod) || /^setValue/.test(fn)) return 'uniform upload';
+	if (/^painterSort|^reversePainterSort/.test(mod)) return 'sort';
 	switch (mod) {
 		case 'Object3D': return /^(updateMatrixWorld|updateWorldMatrix|updateMatrix)$/.test(fn) ? 'scene graph update' : null;
 		case 'WebGLShadowMap': return fn === 'render' ? 'shadow pass' : null;
@@ -275,7 +277,7 @@ function analyzeCpuProfile(profile, lib, frames, glMethodSet) {
 	const stallFrames = new Set(); for (let f = 0; f < frameUs.length; f++) if (frameUs[f] > stallLimit) stallFrames.add(f);
 	const steadyFrames = frameUs.length - stallFrames.size;
 	const stallDetail = new Map(); // frame -> {us, byLeaf}
-	const self = new Map(), incl = new Map(), phaseTime = new Map(), phaseGL = new Map(), glByCall = new Map(), glCallers = new Map();
+	const self = new Map(), incl = new Map(), phaseTime = new Map(), phaseGL = new Map(), glByCall = new Map(), glCallers = new Map(), unclassified = new Map();
 	let total = 0, glTotal = 0, allTotal = 0, markerUs = 0;
 	// time of a sample = the delta to the NEXT sample (V8 convention)
 	for (let i = 0; i < samples.length; i++) {
@@ -303,7 +305,8 @@ function analyzeCpuProfile(profile, lib, frames, glMethodSet) {
 			if (phase === null && fi.phase !== null) phase = fi.phase;
 			if (fi.phase === 'shadow pass') inShadow = true;
 		}
-		if (phase === null) phase = leaf.native ? 'other JS' : 'other JS';
+		if (leaf.phase === null && !leaf.isGL && leaf.fn !== '(garbage collector)') { const k = leaf.key + ' -> ' + (phase || 'other JS'); unclassified.set(k, (unclassified.get(k) || 0) + dt); }
+		if (phase === null) phase = 'other JS';
 		if (inShadow && phase !== 'shadow pass') phase = 'shadow pass';
 		phaseTime.set(phase, (phaseTime.get(phase) || 0) + dt);
 		if (isGLSample) {
@@ -321,7 +324,7 @@ function analyzeCpuProfile(profile, lib, frames, glMethodSet) {
 		medianSampledFrameMs: +(medianFrameUs / 1000).toFixed(3), allSampledMsPerFrame: +(allTotal / 1000 / Math.max(1, frameUs.length)).toFixed(3), markerMsPerFrame: +(markerUs / 1000 / Math.max(1, frameUs.length)).toFixed(3),
 		sampledMsPerFrame: perFrame(total), glNativeMsPerFrame: perFrame(glTotal), samples: samples.length,
 		phases: PHASES.filter((p) => phaseTime.has(p)).map((p) => ({ phase: p, msPerFrame: perFrame(phaseTime.get(p)), pct: +(100 * phaseTime.get(p) / total).toFixed(1), glMsPerFrame: perFrame(phaseGL.get(p) || 0) })),
-		topSelf: top(self, 40), topInclusive: top(incl, 30), glByCall: top(glByCall, 25), glCallers: top(glCallers, 25),
+		topSelf: top(self, 40), topInclusive: top(incl, 30), glByCall: top(glByCall, 25), glCallers: top(glCallers, 25), unclassifiedLeaves: top(unclassified, 15),
 	};
 }
 
