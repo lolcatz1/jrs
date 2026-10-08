@@ -81,8 +81,7 @@ class WebGLBatcher {
 		}
 		if (this.texCount === 0) return;
 		if (this.textureHash === this.texHash && this.textureCount === this.texCount) return;
-		gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
-		gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+		state.setUnpack(false, false, 4);
 		gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, MATRIX_TEXTURE_WIDTH, rows, 0, gl.RGBA, gl.FLOAT, this.texData, 0);
 		this.textureRows = rows; this.textureHash = this.texHash; this.textureCount = this.texCount;
 	}

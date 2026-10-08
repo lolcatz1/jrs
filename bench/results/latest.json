@@ -1,5 +1,5 @@
 {
-  "date": "2026-10-08T08:39:16.629Z",
+  "date": "2026-10-08T09:00:10.085Z",
   "frames": 60,
   "renderer": "headless Chromium / SwiftShader (software WebGL2)",
   "results": [
@@ -532,6 +532,71 @@
       "compare": {
         "meanAbsDiff": 0,
         "maxDiff": 0,
+        "fractionOver32": 0
+      }
+    },
+    {
+      "scenario": "skinned-crowd",
+      "n": 200,
+      "three": {
+        "lib": "three",
+        "scenario": "skinned-crowd",
+        "n": 200,
+        "frames": 60,
+        "buildMs": 81.5,
+        "avgMs": 4.688,
+        "medianMs": 4.3,
+        "bestMs": 3.3,
+        "worstMs": 12.9,
+        "wallAvgMs": 4.695,
+        "drawCalls": 200,
+        "triangles": 164000,
+        "programs": 1,
+        "glCalls": {
+          "uniform": 808,
+          "bindTexture": 200,
+          "useProgram": 0,
+          "bindVertexArray": 0,
+          "draw": 200,
+          "bindBuffer": 0,
+          "bufferData": 0,
+          "state": 1,
+          "total": 2209
+        },
+        "glError": 0
+      },
+      "jrs": {
+        "lib": "jrs",
+        "scenario": "skinned-crowd",
+        "n": 200,
+        "frames": 60,
+        "buildMs": 73,
+        "avgMs": 3.773,
+        "medianMs": 3.4,
+        "bestMs": 2.8,
+        "worstMs": 6.3,
+        "wallAvgMs": 3.782,
+        "drawCalls": 200,
+        "triangles": 164000,
+        "programs": 1,
+        "glCalls": {
+          "uniform": 800,
+          "bindTexture": 200,
+          "useProgram": 0,
+          "bindVertexArray": 2,
+          "draw": 200,
+          "bindBuffer": 8,
+          "bufferData": 0,
+          "state": 3,
+          "total": 1413
+        },
+        "glError": 0
+      },
+      "speedup": 1.26,
+      "wallSpeedup": 1.24,
+      "compare": {
+        "meanAbsDiff": 0,
+        "maxDiff": 2,
         "fractionOver32": 0
       }
     },

@@ -21,6 +21,7 @@ import { WebGLLights } from './webgl/WebGLLights.js';
 import { WebGLBindingStates } from './webgl/WebGLBindingStates.js';
 import { WebGLBatcher } from './webgl/WebGLBatcher.js';
 import { WebGLMegaBuffers } from './webgl/WebGLMegaBuffers.js';
+import { WebGLMorphtargets } from './webgl/WebGLMorphtargets.js';
 import { computeNormalMatrix } from '../core/TransformSlab.js';
 import { WebGLInfo } from './webgl/WebGLInfo.js';
 import { WebGLShadowMap } from './webgl/WebGLShadowMap.js';
@@ -35,6 +36,8 @@ const _emptyScene = { fog: null, environment: null, background: null, overrideMa
 // variant bits for program selection
 const V_INSTANCING = 1, V_INSTANCING_COLOR = 2, V_RECEIVE_SHADOW = 4, V_SHADOW_PASS = 8;
 const V_HAS_UV = 16, V_HAS_UV1 = 32, V_HAS_COLOR = 64, V_COLOR_ALPHA = 128, V_MULTIDRAW = 256, V_OBJTEX = 512;
+// skinning / morph targets are per-object GPU state: their own program variants, never batched
+const V_SKINNING = 1024, V_MORPH_POSITION = 2048, V_MORPH_NORMAL = 4096, V_MORPH_COLOR = 8192, V_MORPH_COUNT_SHIFT = 14; // morph target count in bits 14..21
 
 const defaultOnBeforeRender = Object3D.prototype.onBeforeRender;
 const defaultOnAfterRender = Object3D.prototype.onAfterRender;
@@ -140,6 +143,7 @@ class WebGLRenderer {
 		this.megaBuffers = this.multiDrawExt !== null ? new WebGLMegaBuffers(gl, this.state, this.info) : null;
 		this._mdCounts = new Int32Array(1024); this._mdOffsets = new Int32Array(1024); this._mdN = 0;
 		this._mdUsedThisFrame = false;
+		this.morphtargets = new WebGLMorphtargets(this.textures.maxTextureSize);
 		this.shadowMap = new WebGLShadowMap(this);
 		this.properties = { get: (obj) => this._materialProps(obj) };
 		this.info.programs = this.programs.programs;
@@ -345,7 +349,7 @@ class WebGLRenderer {
 		scene.traverse((o) => {
 			if ((o.isMesh || o.isLine || o.isPoints || o.isSprite) && o.material) {
 				const mats = Array.isArray(o.material) ? o.material : [o.material];
-				for (const m of mats) this._getProgram(m, o, targetScene, o.isInstancedMesh ? V_INSTANCING : 0);
+				for (const m of mats) this._getProgram(m, o, targetScene, this._variantFor(o, o.geometry, m, false));
 			}
 		});
 		return new Set();
@@ -513,7 +517,8 @@ class WebGLRenderer {
 	/** World-space bounding sphere test against `frustum`, with the sphere cached in slab memory per world version. */
 	_cullTest(object, geometry, frustum) {
 		let bs;
-		if (object.isInstancedMesh) {
+		if (object.boundingSphere !== undefined) {
+			// InstancedMesh and SkinnedMesh carry their own sphere (three.js Frustum.intersectsObject rule)
 			if (object.boundingSphere === null) object.computeBoundingSphere();
 			bs = object.boundingSphere;
 		} else {
@@ -593,6 +598,11 @@ class WebGLRenderer {
 			if (override !== null && override !== undefined && material.allowOverride === true) material = override;
 		}
 		const variant = this._variantFor(object, geometry, material, shadowPass);
+		if (object.isSkinnedMesh === true) {
+			// bone matrices once per render call (the skeleton itself skips the work when no bone moved)
+			const skeleton = object.skeleton;
+			if (skeleton !== undefined && skeleton.frame !== this._frameId) { skeleton.update(); skeleton.frame = this._frameId; }
+		}
 		this._noteRenderOrder(object.renderOrder);
 		// compact per-frame ids for materials and geometries (dense -> good key packing)
 		const frame = this._frameId;
@@ -628,6 +638,17 @@ class WebGLRenderer {
 		}
 		let a = geometry._attrBits;
 		if (material.vertexColors !== true) a &= ~(V_HAS_COLOR | V_COLOR_ALPHA);
+		if (object.isSkinnedMesh === true) v |= V_SKINNING;
+		if (object.morphTargetInfluences !== undefined) {
+			const ma = geometry.morphAttributes;
+			const first = ma.position || ma.normal || ma.color;
+			if (first !== undefined) {
+				if (ma.position !== undefined) v |= V_MORPH_POSITION;
+				if (ma.normal !== undefined) v |= V_MORPH_NORMAL;
+				if (ma.color !== undefined) v |= V_MORPH_COLOR;
+				v |= Math.min(first.length, 255) << V_MORPH_COUNT_SHIFT;
+			}
+		}
 		return v | a;
 	}
 
@@ -1025,6 +1046,8 @@ class WebGLRenderer {
 			}
 		}
 		if (program.spriteCenterLocation !== null) gl.uniform2f(program.spriteCenterLocation, object.center.x, object.center.y);
+		if (object.isSkinnedMesh === true) this._uploadSkinning(program, object);
+		if (object.morphTargetInfluences !== undefined && program.morphInfluencesUniform !== null) this._uploadMorphTargets(program, object, geometry);
 		// geometry
 		const mode = object.isInstancedMesh ? 1 : 0;
 		const record = this.bindingStates.bind(geometry, mode, object, null, program);
@@ -1033,6 +1056,41 @@ class WebGLRenderer {
 		else if (geometry.isInstancedBufferGeometry) { instanceCount = Math.min(geometry.instanceCount, record.maxInstancedCount); instanced = true; }
 		this._draw(record, geometry, group, this._drawMode(object, material), instanceCount, instanced);
 		if (object.onAfterRender !== defaultOnAfterRender) object.onAfterRender(this, scene, camera, geometry, material, group);
+	}
+
+	/** bindMatrix / bindMatrixInverse (re-sent only when the mesh's bind version changed) and the skeleton's bone texture. */
+	_uploadSkinning(program, object) {
+		const gl = this._gl;
+		const bm = program.bindMatrixUniform, bmi = program.bindMatrixInverseUniform;
+		if (bm !== null && !cacheArray(bm, object.bindMatrix.elements, 16)) { gl.uniformMatrix4fv(bm.location, false, object.bindMatrix.elements); if (this._traceUniforms !== null) this._trace(bm); }
+		if (bmi !== null && !cacheArray(bmi, object.bindMatrixInverse.elements, 16)) { gl.uniformMatrix4fv(bmi.location, false, object.bindMatrixInverse.elements); if (this._traceUniforms !== null) this._trace(bmi); }
+		const bt = program.boneTextureUniform;
+		const skeleton = object.skeleton;
+		if (bt !== null && skeleton !== undefined) {
+			if (skeleton.boneTexture === null) skeleton.computeBoneTexture();
+			bt.boundStamp = this._samplerStamp;
+			this.textures.setTexture2D(skeleton.boneTexture, bt.unit);
+		}
+	}
+	/** Morph target influences, base influence and the geometry's morph texture (three.js r186 texture layout). */
+	_uploadMorphTargets(program, object, geometry) {
+		const gl = this._gl;
+		const influences = object.morphTargetInfluences;
+		let sum = 0;
+		for (let i = 0, l = influences.length; i < l; i++) sum += influences[i];
+		const base = geometry.morphTargetsRelative ? 1 : 1 - sum;
+		const bu = program.morphBaseInfluenceUniform;
+		if (bu !== null && bu.cache !== base) { bu.cache = base; gl.uniform1f(bu.location, base); if (this._traceUniforms !== null) this._trace(bu); }
+		const iu = program.morphInfluencesUniform;
+		if (!cacheArray(iu, influences, influences.length)) { gl.uniform1fv(iu.location, influences); if (this._traceUniforms !== null) this._trace(iu); }
+		const tu = program.morphTextureUniform;
+		if (tu !== null) {
+			const entry = this.morphtargets.get(geometry);
+			tu.boundStamp = this._samplerStamp;
+			this.textures.setTexture2DArray(entry.texture, tu.unit);
+			const su = program.morphTextureSizeUniform;
+			if (su !== null && !cacheVec(su, entry.width, entry.height, 0, 0)) { gl.uniform2i(su.location, entry.width, entry.height); if (this._traceUniforms !== null) this._trace(su); }
+		}
 	}
 
 	/** One instanced draw for `instanceCount` objects sharing geometry and material; matrices come from the matrix texture at `drawBase`. */

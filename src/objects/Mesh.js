@@ -118,8 +118,10 @@ class Mesh extends Object3D {
 		const useMorph = this.morphTargetInfluences !== undefined && geometry.morphAttributes.position !== undefined;
 		// Lazily build the BVH for anything larger than a handful of triangles.
 		const triCount = index !== null ? index.count / 3 : position.count / 3;
-		if (geometry.boundsTree === null && triCount > 64 && useMorph === false) geometry.computeBoundsTree();
-		const bvh = useMorph ? null : geometry.boundsTree;
+		// deformed meshes (morph targets, skinning) cannot use the static BVH
+		const deformed = useMorph || this.isSkinnedMesh === true;
+		if (geometry.boundsTree === null && triCount > 64 && deformed === false) geometry.computeBoundsTree();
+		const bvh = deformed ? null : geometry.boundsTree;
 
 		const start = drawRange.start, end = Math.min(index !== null ? index.count : position.count, drawRange.start + drawRange.count);
 
