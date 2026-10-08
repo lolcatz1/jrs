@@ -19,11 +19,16 @@ render-target tone-mapping and OPAQUE fixes as fixes 1-2 here, so those hunks to
 text. One merge slip (a lost `#endif` between the per-map varyings and `vHighPrecisionZW`) broke every
 program and was caught by conformance / the fuzzer before the push; see the merge-fix commit.
 
-> Interim state (commit a9e6d0c): fix 5 below (this branch's per-map uv transforms) has been removed from the
-> code again at the integrator's request, because `swarm/per-map-transform` implements the same feature with a
-> different material-record layout and is being merged into the integration branch first. The description of
-> fix 5 is kept for the record; once the integration's implementation is merged here, seed 93 and the
-> `perMapTransform` seeds will be re-checked against it and this note replaced.
+> Final state (merge `693b994` of the integration tip `a178964`): the integration branch meanwhile merged
+> `swarm/per-map-transform` and the parity-fuzzer's fixes 21-24, which implement the same things as fixes 1, 2, 3
+> and 5 below (OPAQUE alpha, no tone mapping into render targets, the shadow pass alpha-testing map.a *
+> alphaMap.g alone, one uv transform per map). At the integrator's request this branch's versions were dropped
+> in favour of the integration's text (fix 5's 16-vec4 block, varyings and sync code are gone; the integration
+> keeps a 20-vec4 record). What stays from this branch: fix 4 (the CPU double-precision modelViewMatrix and the
+> camera / lookAt precision), the lean depth program for casters without a map to test, `ALPHATEST_HALF` for
+> alphaToCoverage casters, no vertex colours / alphaTest for MeshDepth and MeshNormal materials, and the
+> fuzzer generator changes. The descriptions below are kept as the record of how each cause was found; seed 93
+> and the `perMapTransform` seeds pass against the integration's per-map layout (see Validation).
 
 ## Root causes fixed (one commit each, seeds in the message)
 
@@ -273,6 +278,17 @@ Note for the integrator: `origin/swarm/per-map-transform` implements the same fe
 parallel; whichever lands second needs a merge of the material-record layout (this branch: 16 vec4
 `mapUv[16]` after the env-map fields, synced by `syncMapUv` in `_syncMaterialBlock`, read through
 `applyMapUv` and one varying per map).
+
+After the final merge (`693b994`, integration tip `a178964` with the integration's per-map transforms and
+fixes 21-24): `npm test` 179 / 179, `node bench/conformance.mjs` 45 / 45, smoke and addons pass, `node bench/lps.mjs` all cases
+within tolerance, `node bench/flat-check.mjs` 328 frame pairs pixel-identical (the same two "list never reused"
+failures as the integration tip), seeds 23 27 93 145 160 pass (93 and the `perMapTransform` feature, on by
+default in the generator now, against the integration's per-map layout), `node bench/fuzz.mjs --seeds=100
+--continue`: 99 pass, only seed 14 (the tip's own residual: env map + render target). `node bench/run.mjs
+--compare --frames=60`: all 23 scenes at or below the tip's mean / max diff (skinned-crowd 2 -> 1, morph-crowd
+1 -> 0; four scenes have no comparison row in the tip's file, 0 / 0 here); shared-animated's jrs median looked
+slow in that run (11.5 ms) and was A/B'd against the tip on this container: tip 6.9 / 6.4 ms, branch 7.3 /
+6.9 ms (hierarchy-animated 4.9 / 4.7 vs 4.3 / 5.0): noise.
 
 `bench/results/latest.json` is left as the integration tip's file (the numbers from this container
 would only record the slower machine); `build/` is not committed.
