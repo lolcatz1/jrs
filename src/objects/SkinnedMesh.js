@@ -155,4 +155,8 @@ class SkinnedMesh extends Mesh {
 	}
 }
 
+// flat scene update: the pass replaces this class's updateMatrixWorld and refreshes the bind matrix inverse after a recompute
+SkinnedMesh.prototype._flatUMW = SkinnedMesh.prototype.updateMatrixWorld;
+SkinnedMesh.prototype._flatPostUpdate = SkinnedMesh.prototype._updateBindMatrixInverse;
+
 export { SkinnedMesh };

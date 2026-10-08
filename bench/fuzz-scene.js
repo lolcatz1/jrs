@@ -28,6 +28,7 @@ export const FEATURES = {
 	fog: 'Fog / FogExp2',
 	lights: 'ambient/hemisphere/directional/point/spot lights',
 	shadows: 'shadow maps for directional and spot lights',
+	pointShadows: 'point-light shadows (cube shadow maps; with shadows)',
 	instancing: 'InstancedMesh with animated matrices and instance colours',
 	hierarchy: 'nested groups with animated transforms',
 	cameraMoves: 'camera orbit, fov/zoom changes, orthographic camera',
@@ -137,6 +138,14 @@ export function buildFuzzScene(T, seed, features = defaultFeatures(), opts = {})
 		for (let i = 0; i < nPoint; i++) {
 			const l = new T.PointLight(new T.Color().setHSL(rng(), rng.range(0, 0.7), rng.range(0.5, 1)), rng.range(20, 250), rng.pick([0, 0, 15, 30]), rng.pick([2, 2, 1]));
 			l.position.set(rng.range(-6, 6), rng.range(-2, 8), rng.range(-6, 6));
+			if (wantShadows && features.pointShadows && rng.chance(0.4)) {
+				l.castShadow = true;
+				l.shadow.mapSize.set(rng.pick([256, 512]), rng.pick([256, 512]));
+				l.shadow.camera.near = 0.5; l.shadow.camera.far = rng.pick([20, 40]);
+				l.shadow.bias = rng.pick([0, -0.001, 0.002]); l.shadow.normalBias = rng.pick([0, 0.02]);
+				l.shadow.radius = rng.pick([1, 1, 2, 4]);
+				shadowLights.push(l);
+			}
 			scene.add(l);
 		}
 		for (let i = 0; i < nSpot; i++) {

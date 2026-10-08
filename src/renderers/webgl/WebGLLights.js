@@ -60,7 +60,7 @@ class WebGLLights {
 			this.spot.sort(shadowCastingFirst);
 			this.point.sort(shadowCastingFirst);
 			this.numDirShadows = Math.min(this.dirShadows.length, MAX_DIR_LIGHTS);
-			this.numSpotShadows = Math.min(this.spotShadows.length, MAX_SPOT_LIGHTS - 1); // texture unit 15 is shared with the multi-draw matrix texture
+			this.numSpotShadows = Math.min(this.spotShadows.length, MAX_SPOT_LIGHTS - 1); // texture units 12-14; unit 15 holds the environment map
 			// cube maps take the shadow texture units (8-14) the directional and spot maps leave free
 			let n = pointShadowsEnabled ? Math.min(this.pointShadows.length, MAX_POINT_SHADOWS) : 0;
 			while (n > 0 && pointShadowUnit(n - 1, this.numDirShadows, this.numSpotShadows) < 0) n--;

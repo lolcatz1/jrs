@@ -2,7 +2,8 @@ import {
 	MATERIAL_BASIC, MATERIAL_LAMBERT, MATERIAL_PHONG, MATERIAL_STANDARD, MATERIAL_NORMAL, MATERIAL_DEPTH, MATERIAL_LINE, MATERIAL_POINTS,
 	MATERIAL_SPRITE, MATERIAL_SHADER, MATERIAL_SHADOW_DEPTH, TEXTURE_UNITS, pointShadowUnit, buildBuiltinShader, buildCustomShader
 } from '../shaders/ShaderLib.js';
-import { DoubleSide, BackSide, NoToneMapping, SRGBColorSpace, BasicShadowMap, NormalBlending } from '../../constants.js';
+import { DoubleSide, BackSide, NoToneMapping, SRGBColorSpace, BasicShadowMap, CubeUVReflectionMapping, CubeRefractionMapping, NormalBlending } from '../../constants.js';
+import { OBJ_ELIGIBLE, OBJ_USES_MODEL } from '../shaders/ShaderMaterialBatching.js';
 
 export const BLOCK_FRAME = 0;
 export const BLOCK_LIGHTS = 1;
@@ -150,6 +151,7 @@ class WebGLProgram {
 		// samplers sequentially. Every active sampler gets its own unit(s) whether or not a
 		// texture is ever assigned to it, so a program is always valid to draw with.
 		const isCustom = parameters.materialType === MATERIAL_SHADER;
+		const reserveMatrixUnit = isCustom && this.uniforms.objectMatrices !== undefined; // batched variant: unit 15 belongs to the matrix texture
 		this.samplerUniforms = [];
 		let nextUnit = 0;
 		gl.useProgram(program); // leaves this program current in GL: the renderer syncs its state cache (justLinked)
@@ -174,7 +176,14 @@ class WebGLProgram {
 			if (!isCustom && (TEXTURE_UNITS[name] !== undefined || TEXTURE_UNITS[name + '0'] !== undefined)) {
 				// a sampler array of size 1 (one shadow-casting light) is still an array: it takes the '<name>0' slot
 				unit = TEXTURE_UNITS[name] !== undefined ? TEXTURE_UNITS[name] : TEXTURE_UNITS[name + '0'];
+			} else if (isCustom && name === 'objectMatrices') {
+				// batched variant of a custom program: the matrix texture keeps its fixed unit (bound by the renderer, never by the material)
+				unit = TEXTURE_UNITS.objectMatrices;
+				u.unit = unit;
+				gl.uniform1i(u.location, unit);
+				continue;
 			} else {
+				if (reserveMatrixUnit && nextUnit <= TEXTURE_UNITS.objectMatrices && nextUnit + u.size > TEXTURE_UNITS.objectMatrices) nextUnit = TEXTURE_UNITS.objectMatrices + 1;
 				unit = nextUnit; nextUnit += u.size;
 			}
 			u.unit = unit;
@@ -187,6 +196,12 @@ class WebGLProgram {
 			}
 			this.samplerUniforms.push(u);
 		}
+		/**
+		 * Automatic instancing (ShaderMaterialBatching.js): 0 when this program's object uniforms cannot be fed
+		 * from the matrix texture, else the usage mask (which of modelMatrix / modelViewMatrix / normalMatrix
+		 * the vertex shader reads) with OBJ_ELIGIBLE set. Built-in programs always qualify.
+		 */
+		this.objTexMode = OBJ_ELIGIBLE | OBJ_USES_MODEL;
 		this.materialVersion = -1; // last material version whose non-block uniforms were set (ShaderMaterial)
 		this.materialId = -1;
 	}
@@ -251,7 +266,8 @@ class WebGLPrograms {
 	}
 
 	/** Compute the integer key + parameters for a built-in material. */
-	getParameters(material, object, scene, lights, variant) {
+	/** `envMap` is the texture the material will actually sample (resolved by the renderer from material.envMap / scene.environment), or null. */
+	getParameters(material, object, scene, lights, variant, envMap = null) {
 		const renderer = this.renderer;
 		const materialType = variant.shadowPass ? MATERIAL_SHADOW_DEPTH : materialTypeOf(material);
 		const geometry = object.geometry;
@@ -267,7 +283,7 @@ class WebGLPrograms {
 		const leanShadow = shadowPass && !shadowAlpha;
 		// three's depth and normal shaders have no vertex-colour chunk
 		const vertexColors = !shadowPass && materialType !== MATERIAL_DEPTH && materialType !== MATERIAL_NORMAL && material.vertexColors === true && attributes.color !== undefined;
-		const fog = scene.fog !== null && material.fog === true && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH;
+		const fog = scene.fog != null && material.fog === true && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH;
 		const map = !leanShadow && !!material.map;
 		const alphaMap = !leanShadow && !!material.alphaMap;
 		const emissiveMap = isLit && !!material.emissiveMap;
@@ -275,7 +291,12 @@ class WebGLPrograms {
 		const roughnessMap = materialType === MATERIAL_STANDARD && !!material.roughnessMap;
 		const metalnessMap = materialType === MATERIAL_STANDARD && !!material.metalnessMap;
 		const aoMap = (isLit || materialType === MATERIAL_BASIC) && !!material.aoMap;
-		const specularMap = materialType === MATERIAL_PHONG && !!material.specularMap;
+		if (variant.shadowPass || !(isLit || materialType === MATERIAL_BASIC || materialType === MATERIAL_SHADER)) envMap = null;
+		if (materialType === MATERIAL_STANDARD && envMap !== null && envMap.mapping !== CubeUVReflectionMapping) envMap = null; // Standard samples the PMREM layout only
+		const hasEnvMap = envMap !== null;
+		const envMapCubeUV = hasEnvMap && envMap.mapping === CubeUVReflectionMapping;
+		// specularMap modulates Phong's specular term and the env-map reflection of Basic / Lambert
+		const specularMap = (materialType === MATERIAL_PHONG || (hasEnvMap && (materialType === MATERIAL_BASIC || materialType === MATERIAL_LAMBERT))) && !!material.specularMap;
 		const useUv = hasUv && (map || alphaMap || emissiveMap || normalMap || roughnessMap || metalnessMap || aoMap || specularMap) && materialType !== MATERIAL_POINTS;
 		const useUv1 = hasUv1 && aoMap;
 		const receiveShadow = variant.receiveShadow && isLit && renderer.shadowMap.enabled;
@@ -284,10 +305,9 @@ class WebGLPrograms {
 		const numPointShadows = receiveShadow ? lights.numPointShadows : 0;
 		const pointShadowBasic = numPointShadows > 0 && renderer.shadowMap.type === BasicShadowMap;
 		const currentRenderTarget = renderer.getRenderTarget();
-		// three.js tone-maps only when rendering to the canvas (or an XR target); a render target gets the linear value
-		const toneMapping = (material.toneMapped && renderer.toneMapping !== NoToneMapping && (currentRenderTarget === null || currentRenderTarget.isXRRenderTarget === true) && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH && materialType !== MATERIAL_NORMAL) ? renderer.toneMapping : NoToneMapping;
-		// three.js: shaders encode to the output colour space only when rendering to the canvas; a render target
+		// three.js: tone mapping and the output colour space encoding only apply when rendering to the canvas; a render target
 		// is written in the working (linear) space (an sRGB render target encodes in hardware)
+		const toneMapping = (material.toneMapped && currentRenderTarget === null && renderer.toneMapping !== NoToneMapping && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH && materialType !== MATERIAL_NORMAL) ? renderer.toneMapping : NoToneMapping;
 		const sRGBOutput = currentRenderTarget === null && renderer.outputColorSpace === SRGBColorSpace && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH && materialType !== MATERIAL_NORMAL;
 		// skinning and morph targets are object / geometry features (same rule as three.js: the program follows the object)
 		const skinning = object.isSkinnedMesh === true;
@@ -315,6 +335,12 @@ class WebGLPrograms {
 			doubleSided: !leanShadow && variant.side === DoubleSide,
 			flipSided: !leanShadow && variant.side === BackSide,
 			leanShadow,
+			envMap: hasEnvMap,
+			envMapCubeUV,
+			envMapRefraction: hasEnvMap && envMap.mapping === CubeRefractionMapping,
+			envMapCubeUVHeight: envMapCubeUV ? envMap.image.height : 0,
+			combine: hasEnvMap && material.combine !== undefined ? material.combine : 0,
+			envWorldPos: hasEnvMap && (materialType === MATERIAL_LAMBERT || materialType === MATERIAL_PHONG || normalMap),
 			fog, fogExp2: fog && scene.fog.isFogExp2 === true,
 			alphaTest: shadowPass ? shadowAlpha : (material.alphaTest > 0 && materialType !== MATERIAL_NORMAL), // three's normal shader has no alphatest chunk
 			alphaTestHalf: shadowAlpha && material.alphaToCoverage === true, // three approximates alphaToCoverage casters with alphaTest 0.5
@@ -324,6 +350,7 @@ class WebGLPrograms {
 			// later DST_ALPHA blend sees 1; depth materials write `opacity` instead and never take the define
 			opaque: material.transparent === false && material.blending === NormalBlending && material.alphaToCoverage === false && materialType !== MATERIAL_DEPTH && materialType !== MATERIAL_SHADOW_DEPTH,
 			dithering: material.dithering === true,
+			depthPacking: materialType === MATERIAL_DEPTH && material.depthPacking !== undefined ? material.depthPacking : 3200,
 			vertexUv1s: hasUv1,
 			toneMapped: toneMapping !== NoToneMapping,
 			toneMapping,
@@ -349,9 +376,12 @@ class WebGLPrograms {
 		if (baseId === undefined) { baseId = this._baseKeyIds.size; this._baseKeyIds.set(key, baseId); }
 		key = baseId;
 		key = key * 8 + numPointShadows; key = key * 2 + (pointShadowBasic ? 1 : 0);
-		key = key * 2 + (p.materialArray ? 1 : 0); key = key * 2 + (p.opaque ? 1 : 0); key = key * 2 + (p.alphaTestHalf ? 1 : 0);
+		key = key * 2 + (p.materialArray ? 1 : 0); key = key * 2 + (p.alphaTestHalf ? 1 : 0);
 		key = key * 2 + (skinning ? 1 : 0); key = key * 2 + (p.morphTargets ? 1 : 0); key = key * 2 + (p.morphNormals ? 1 : 0); key = key * 2 + (p.morphColors ? 1 : 0);
 		key = key * 4 + morphTextureStride; key = key * 256 + morphTargetsCount;
+		key = key * 2 + (hasEnvMap ? 1 : 0); key = key * 2 + (envMapCubeUV ? 1 : 0); key = key * 2 + (p.envMapRefraction ? 1 : 0);
+		key = key * 4 + (p.combine & 3); key = key * 16 + (envMapCubeUV ? (Math.log2(p.envMapCubeUVHeight) | 0) & 15 : 0);
+		key = key * 2 + (p.opaque ? 1 : 0); key = key * 4 + (p.depthPacking - 3200);
 		p.key = key;
 		return p;
 	}
@@ -368,6 +398,7 @@ class WebGLPrograms {
 		if (program === undefined) {
 			const src = parameters.materialType === MATERIAL_SHADER ? buildCustomShader(material, parameters) : buildBuiltinShader(parameters);
 			program = new WebGLProgram(this.gl, parameters, src.vertexShader, src.fragmentShader);
+			if (src.objTexMode !== undefined) program.objTexMode = src.objTexMode;
 			// the constructor binds the new program to set sampler units; tell the state cache
 			this.renderer.state.currentProgram = program.program;
 			this.cache.set(key, program);

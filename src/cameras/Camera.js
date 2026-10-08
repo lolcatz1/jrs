@@ -83,4 +83,8 @@ class Camera extends Object3D {
 	clone() { return new this.constructor().copy(this); }
 }
 
+// flat scene update: the pass replaces this class's updateMatrixWorld and runs _updateInverse after a recompute
+Camera.prototype._flatUMW = Camera.prototype.updateMatrixWorld;
+Camera.prototype._flatPostUpdate = Camera.prototype._updateInverse;
+
 export { Camera };

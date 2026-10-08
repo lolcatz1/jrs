@@ -18,7 +18,7 @@ class MeshLambertMaterial extends Material {
 		this.normalMap = null; this.normalMapType = TangentSpaceNormalMap; this.normalScale = new Vector2(1, 1);
 		this.displacementMap = null; this.displacementScale = 1; this.displacementBias = 0;
 		this.specularMap = null; this.alphaMap = null;
-		this.envMap = null; this.envMapRotation = new Euler();
+		this.envMap = null; this.envMapRotation = new Euler(); this.envMapIntensity = 1.0;
 		this.combine = MultiplyOperation; this.reflectivity = 1; this.refractionRatio = 0.98;
 		this.wireframe = false; this.wireframeLinewidth = 1; this.wireframeLinecap = 'round'; this.wireframeLinejoin = 'round';
 		this.flatShading = false;
@@ -35,7 +35,7 @@ class MeshLambertMaterial extends Material {
 		this.normalMap = source.normalMap; this.normalMapType = source.normalMapType; this.normalScale.copy(source.normalScale);
 		this.displacementMap = source.displacementMap; this.displacementScale = source.displacementScale; this.displacementBias = source.displacementBias;
 		this.specularMap = source.specularMap; this.alphaMap = source.alphaMap;
-		this.envMap = source.envMap; this.envMapRotation.copy(source.envMapRotation);
+		this.envMap = source.envMap; this.envMapRotation.copy(source.envMapRotation); this.envMapIntensity = source.envMapIntensity;
 		this.combine = source.combine; this.reflectivity = source.reflectivity; this.refractionRatio = source.refractionRatio;
 		this.wireframe = source.wireframe; this.wireframeLinewidth = source.wireframeLinewidth;
 		this.flatShading = source.flatShading;
