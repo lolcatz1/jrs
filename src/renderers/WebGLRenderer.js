@@ -540,10 +540,17 @@ class WebGLRenderer {
 				if (!object.frustumCulled || this._cullTest(object, geometry, _frustum)) {
 					let z = 0;
 					if (sortObjects) {
-						// three.js sorts by the NDC depth of the object's world position (not the bounding sphere centre:
-						// a geometry that is not centred on its origin would sort differently and blend differently)
+						// three.js sorts by the NDC depth of the world-space bounding sphere centre (the instance-aware
+						// sphere for InstancedMesh); _cullTest caches that centre in the slab when culling is on
 						const s = object._slabData, o = object._slabOffset;
-						z = ndcDepth(s[o + 28], s[o + 29], s[o + 30]);
+						if (object.frustumCulled) z = ndcDepth(s[o + 41], s[o + 42], s[o + 43]);
+						else {
+							let bs;
+							if (object.isInstancedMesh) { if (object.boundingSphere === null) object.computeBoundingSphere(); bs = object.boundingSphere; }
+							else { if (geometry.boundingSphere === null) geometry.computeBoundingSphere(); bs = geometry.boundingSphere; }
+							_vector3.copy(bs.center).applyMatrix4(object.matrixWorld);
+							z = ndcDepth(_vector3.x, _vector3.y, _vector3.z);
+						}
 					}
 					if (Array.isArray(material)) {
 						const groups = geometry.groups;
