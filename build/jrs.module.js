@@ -18366,11 +18366,9 @@ struct MaterialRecord {
 	vec4 mSpecular;
 	vec4 mParams;
 	vec4 mParams2;
-	vec4 mUvTransform0;
-	vec4 mUvTransform1;
-	vec4 mUvTransform2;
 	vec4 mEnvParams;
 	mat3 mEnvMapRotation;
+	vec4 mUvT[ 11 ];
 	#if MATERIAL_PAD > 0
 	vec4 mPad[ MATERIAL_PAD ];
 	#endif
@@ -18383,11 +18381,9 @@ layout(std140) uniform Materials {
 #define specular materials[ matIdx ].mSpecular
 #define matParams materials[ matIdx ].mParams
 #define matParams2 materials[ matIdx ].mParams2
-#define uvTransform0 materials[ matIdx ].mUvTransform0
-#define uvTransform1 materials[ matIdx ].mUvTransform1
-#define uvTransform2 materials[ matIdx ].mUvTransform2
 #define envParams materials[ matIdx ].mEnvParams
 #define envMapRotation materials[ matIdx ].mEnvMapRotation
+#define uvT materials[ matIdx ].mUvT
 #else
 layout(std140) uniform Material {
 	vec4 diffuse;        // rgb, a = opacity
@@ -18395,19 +18391,21 @@ layout(std140) uniform Material {
 	vec4 specular;       // rgb, a = shininess
 	vec4 matParams;      // roughness, metalness, aoMapIntensity, emissiveIntensity
 	vec4 matParams2;     // normalScale.xy, pointSize, bumpScale
-	vec4 uvTransform0;   // mat3 columns, padded
-	vec4 uvTransform1;
-	vec4 uvTransform2;
 	vec4 envParams;      // envMapIntensity, reflectivity, refractionRatio, ior
 	mat3 envMapRotation; // three vec4 columns
+	vec4 uvT[ 11 ];      // per-map uv transforms: 6 floats each (m0 m1 m3 m4 m6 m7 of the 3x3 affine matrix), 7 slots
 };
 #endif
 #define envMapIntensity envParams.x
 #define reflectivity envParams.y
 #define refractionRatio envParams.z
+// slot of each map: 0 map, 1 alphaMap, 2 emissiveMap, 3 normalMap, 4 aoMap, 5 roughnessMap / specularMap (never on
+// one material type), 6 metalnessMap. UV_TRANSFORM( slot ) rebuilds the texture matrix three.js calls <map>Transform.
+#define UVT_F( k ) uvT[ ( k ) >> 2 ][ ( k ) & 3 ]
+#define UV_TRANSFORM( s ) mat3( UVT_F( ( s ) * 6 ), UVT_F( ( s ) * 6 + 1 ), 0.0, UVT_F( ( s ) * 6 + 2 ), UVT_F( ( s ) * 6 + 3 ), 0.0, UVT_F( ( s ) * 6 + 4 ), UVT_F( ( s ) * 6 + 5 ), 1.0 )
 `
 );
-var MATERIAL_BLOCK_SIZE = 16 * 12;
+var MATERIAL_BLOCK_SIZE = 16 * 20;
 var common = (
   /* glsl */
   `
@@ -18511,11 +18509,32 @@ out vec3 vWorldPosition;
 #ifdef USE_NORMAL
 out vec3 vNormal;
 #endif
-#ifdef USE_UV
-out vec2 vUv;
+#ifdef USE_POINTS_UV
+out vec2 vPointUv;
 #endif
-#ifdef USE_UV1
-out vec2 vUv1;
+#ifdef USE_MAP_UV
+out vec2 vMapUv;
+#endif
+#ifdef USE_ALPHAMAP_UV
+out vec2 vAlphaMapUv;
+#endif
+#ifdef USE_EMISSIVEMAP_UV
+out vec2 vEmissiveMapUv;
+#endif
+#ifdef USE_NORMALMAP_UV
+out vec2 vNormalMapUv;
+#endif
+#ifdef USE_AOMAP_UV
+out vec2 vAoMapUv;
+#endif
+#ifdef USE_ROUGHNESSMAP_UV
+out vec2 vRoughnessMapUv;
+#endif
+#ifdef USE_METALNESSMAP_UV
+out vec2 vMetalnessMapUv;
+#endif
+#ifdef USE_SPECULARMAP_UV
+out vec2 vSpecularMapUv;
 #endif
 #ifdef IS_DEPTH
 out vec2 vHighPrecisionZW;
@@ -18644,11 +18663,38 @@ void main() {
 		#endif
 	}
 	#endif
-	#ifdef USE_UV
-	vUv = ( mat3( uvTransform0.xyz, uvTransform1.xyz, uvTransform2.xyz ) * vec3( uv, 1.0 ) ).xy;
+	// one transform and one uv channel per map, as three.js's uv_vertex (MAP_UV is uv, uv1 or vec2( 0.0 ) for a missing attribute)
+	#ifdef USE_POINTS_UV
+	// points: the uv attribute through the map's transform (identity without a map), three.js's points vertex shader
+		#ifdef USE_MAP
+		vPointUv = ( UV_TRANSFORM( 0 ) * vec3( uv, 1.0 ) ).xy;
+		#else
+		vPointUv = uv;
+		#endif
 	#endif
-	#ifdef USE_UV1
-	vUv1 = uv1;
+	#ifdef USE_MAP_UV
+	vMapUv = ( UV_TRANSFORM( 0 ) * vec3( MAP_UV, 1.0 ) ).xy;
+	#endif
+	#ifdef USE_ALPHAMAP_UV
+	vAlphaMapUv = ( UV_TRANSFORM( 1 ) * vec3( ALPHAMAP_UV, 1.0 ) ).xy;
+	#endif
+	#ifdef USE_EMISSIVEMAP_UV
+	vEmissiveMapUv = ( UV_TRANSFORM( 2 ) * vec3( EMISSIVEMAP_UV, 1.0 ) ).xy;
+	#endif
+	#ifdef USE_NORMALMAP_UV
+	vNormalMapUv = ( UV_TRANSFORM( 3 ) * vec3( NORMALMAP_UV, 1.0 ) ).xy;
+	#endif
+	#ifdef USE_AOMAP_UV
+	vAoMapUv = ( UV_TRANSFORM( 4 ) * vec3( AOMAP_UV, 1.0 ) ).xy;
+	#endif
+	#ifdef USE_ROUGHNESSMAP_UV
+	vRoughnessMapUv = ( UV_TRANSFORM( 5 ) * vec3( ROUGHNESSMAP_UV, 1.0 ) ).xy;
+	#endif
+	#ifdef USE_METALNESSMAP_UV
+	vMetalnessMapUv = ( UV_TRANSFORM( 6 ) * vec3( METALNESSMAP_UV, 1.0 ) ).xy;
+	#endif
+	#ifdef USE_SPECULARMAP_UV
+	vSpecularMapUv = ( UV_TRANSFORM( 5 ) * vec3( SPECULARMAP_UV, 1.0 ) ).xy;
 	#endif
 	#if defined( USE_COLOR ) || defined( USE_INSTANCING_COLOR )
 	vColor = vec4( 1.0 );
@@ -18748,11 +18794,32 @@ in vec3 vWorldPosition;
 #ifdef USE_NORMAL
 in vec3 vNormal;
 #endif
-#ifdef USE_UV
-in vec2 vUv;
+#ifdef USE_POINTS_UV
+in vec2 vPointUv;
 #endif
-#ifdef USE_UV1
-in vec2 vUv1;
+#ifdef USE_MAP_UV
+in vec2 vMapUv;
+#endif
+#ifdef USE_ALPHAMAP_UV
+in vec2 vAlphaMapUv;
+#endif
+#ifdef USE_EMISSIVEMAP_UV
+in vec2 vEmissiveMapUv;
+#endif
+#ifdef USE_NORMALMAP_UV
+in vec2 vNormalMapUv;
+#endif
+#ifdef USE_AOMAP_UV
+in vec2 vAoMapUv;
+#endif
+#ifdef USE_ROUGHNESSMAP_UV
+in vec2 vRoughnessMapUv;
+#endif
+#ifdef USE_METALNESSMAP_UV
+in vec2 vMetalnessMapUv;
+#endif
+#ifdef USE_SPECULARMAP_UV
+in vec2 vSpecularMapUv;
 #endif
 #ifdef IS_DEPTH
 in vec2 vHighPrecisionZW;
@@ -18934,8 +19001,8 @@ float getPointShadow( samplerCube shadowMap, vec4 params, vec4 info, vec3 lightT
 vec3 perturbNormal2Arb( vec3 eye_pos, vec3 surf_norm, vec3 mapN, float faceDirection ) {
 	vec3 q0 = dFdx( eye_pos.xyz );
 	vec3 q1 = dFdy( eye_pos.xyz );
-	vec2 st0 = dFdx( vUv.st );
-	vec2 st1 = dFdy( vUv.st );
+	vec2 st0 = dFdx( vNormalMapUv.st );
+	vec2 st1 = dFdy( vNormalMapUv.st );
 	vec3 N = surf_norm;
 	vec3 q1perp = cross( q1, N );
 	vec3 q0perp = cross( N, q0 );
@@ -19107,10 +19174,13 @@ void main() {
 		#endif
 	#endif
 	#ifdef IS_POINTS
-		#ifdef USE_UV
-		vec2 pointUv = vUv;
+		#ifdef USE_POINTS_UV
+		vec2 pointUv = vPointUv;
+		#elif defined( USE_MAP )
+		// three.js: the map's uvTransform, shared by the point sprite's map and alphaMap
+		vec2 pointUv = ( UV_TRANSFORM( 0 ) * vec3( gl_PointCoord.x, 1.0 - gl_PointCoord.y, 1.0 ) ).xy;
 		#else
-		vec2 pointUv = ( mat3( uvTransform0.xyz, uvTransform1.xyz, uvTransform2.xyz ) * vec3( gl_PointCoord.x, 1.0 - gl_PointCoord.y, 1.0 ) ).xy;
+		vec2 pointUv = vec2( gl_PointCoord.x, 1.0 - gl_PointCoord.y );
 		#endif
 	#endif
 	#ifdef INSTANCE_MATERIAL
@@ -19125,7 +19195,7 @@ void main() {
 		#ifdef IS_POINTS
 		vec4 sampledDiffuseColor = texture( map, pointUv );
 		#else
-		vec4 sampledDiffuseColor = texture( map, vUv );
+		vec4 sampledDiffuseColor = texture( map, vMapUv );
 		#endif
 	diffuseColor *= sampledDiffuseColor;
 	#endif
@@ -19133,7 +19203,7 @@ void main() {
 		#ifdef IS_POINTS
 		diffuseColor.a *= texture( alphaMap, pointUv ).g;
 		#else
-		diffuseColor.a *= texture( alphaMap, vUv ).g;
+		diffuseColor.a *= texture( alphaMap, vAlphaMapUv ).g;
 		#endif
 	#endif
 	#ifdef USE_ALPHATEST
@@ -19173,9 +19243,15 @@ void main() {
 		#endif
 		vec3 nonPerturbedNormal = normal;
 		#ifdef USE_NORMALMAP
-		vec3 mapN = texture( normalMap, vUv ).xyz * 2.0 - 1.0;
+		vec3 mapN = texture( normalMap, vNormalMapUv ).xyz * 2.0 - 1.0;
 		mapN.xy *= matParams2.xy;
+		#ifdef DOUBLE_SIDED
 		normal = perturbNormal2Arb( vWorldPosition - cameraPosition.xyz, normal, mapN, faceDirection );
+		#elif defined( FLIP_SIDED )
+		normal = perturbNormal2Arb( vWorldPosition - cameraPosition.xyz, normal, mapN, - 1.0 ); // back-side materials: the normal is flipped, the frame must follow
+		#else
+		normal = perturbNormal2Arb( vWorldPosition - cameraPosition.xyz, normal, mapN, 1.0 );
+		#endif
 		#endif
 	#endif
 
@@ -19190,7 +19266,7 @@ void main() {
 	vec3 outgoingLight = vec3( 0.0 );
 	float specularStrength = 1.0;
 	#ifdef USE_SPECULARMAP
-	specularStrength = texture( specularMap, vUv ).r;
+	specularStrength = texture( specularMap, vSpecularMapUv ).r;
 	#endif
 
 	#if defined( LIGHTING_LAMBERT ) || defined( LIGHTING_PHONG ) || defined( LIGHTING_STANDARD )
@@ -19199,10 +19275,10 @@ void main() {
 		float roughnessFactor = matParams.x;
 		float metalnessFactor = matParams.y;
 		#ifdef USE_ROUGHNESSMAP
-		roughnessFactor *= texture( roughnessMap, vUv ).g;
+		roughnessFactor *= texture( roughnessMap, vRoughnessMapUv ).g;
 		#endif
 		#ifdef USE_METALNESSMAP
-		metalnessFactor *= texture( metalnessMap, vUv ).b;
+		metalnessFactor *= texture( metalnessMap, vMetalnessMapUv ).b;
 		#endif
 		#if defined( LIGHTING_STANDARD )
 		vec3 diffuseBase = diffuseColor.rgb * ( 1.0 - metalnessFactor );
@@ -19329,11 +19405,7 @@ void main() {
 		vec3 indirectDiffuse = indirectIrradiance * BRDF_Lambert( diffuseBase );
 		#endif
 		#ifdef USE_AOMAP
-			#ifdef USE_UV1
-			float ambientOcclusion = ( texture( aoMap, vUv1 ).r - 1.0 ) * matParams.z + 1.0;
-			#else
-			float ambientOcclusion = ( texture( aoMap, vUv ).r - 1.0 ) * matParams.z + 1.0;
-			#endif
+			float ambientOcclusion = ( texture( aoMap, vAoMapUv ).r - 1.0 ) * matParams.z + 1.0;
 		indirectDiffuse *= ambientOcclusion;
 			#if defined( USE_ENVMAP ) && defined( LIGHTING_STANDARD )
 			float dotNV = clamp( dot( normal, viewDir ), 0.0, 1.0 );
@@ -19342,7 +19414,7 @@ void main() {
 		#endif
 		vec3 totalEmissive = emissive.rgb * matParams.w;
 		#ifdef USE_EMISSIVEMAP
-		totalEmissive *= texture( emissiveMap, vUv ).rgb;
+		totalEmissive *= texture( emissiveMap, vEmissiveMapUv ).rgb;
 		#endif
 		#if defined( LIGHTING_STANDARD )
 		vec3 totalDiffuse = directDiffuse + indirectDiffuse;
@@ -19355,11 +19427,7 @@ void main() {
 		// unlit
 		outgoingLight = diffuseColor.rgb;
 		#ifdef USE_AOMAP
-			#ifdef USE_UV1
-			float ambientOcclusion = ( texture( aoMap, vUv1 ).r - 1.0 ) * matParams.z + 1.0;
-			#else
-			float ambientOcclusion = ( texture( aoMap, vUv ).r - 1.0 ) * matParams.z + 1.0;
-			#endif
+			float ambientOcclusion = ( texture( aoMap, vAoMapUv ).r - 1.0 ) * matParams.z + 1.0;
 		outgoingLight *= ambientOcclusion;
 		#endif
 	#endif
@@ -19444,6 +19512,7 @@ function shadowFactorFunctions(numDir, numSpot, numPoint) {
   }
   return s;
 }
+var UV_MAP_NAMES = [["map", "MAP"], ["alphaMap", "ALPHAMAP"], ["emissiveMap", "EMISSIVEMAP"], ["normalMap", "NORMALMAP"], ["aoMap", "AOMAP"], ["roughnessMap", "ROUGHNESSMAP"], ["metalnessMap", "METALNESSMAP"], ["specularMap", "SPECULARMAP"]];
 var spriteUniform = "uniform vec2 uSpriteCenter;\n";
 var ENVMAP_BLENDING = { 0: "ENVMAP_BLENDING_MULTIPLY", 1: "ENVMAP_BLENDING_MIX", 2: "ENVMAP_BLENDING_ADD" };
 function envMapDefines(p, vertex) {
@@ -19512,6 +19581,14 @@ function buildBuiltinShader(p) {
   if (p.specularMap) d("USE_SPECULARMAP");
   if (p.useUv) d("USE_UV");
   if (p.useUv1) d("USE_UV1");
+  if (p.pointsUv) d("USE_POINTS_UV");
+  for (let i = 0; i < UV_MAP_NAMES.length; i++) {
+    const src = p[UV_MAP_NAMES[i][0] + "Uv"];
+    if (src < 0 || p.materialType === MATERIAL_POINTS) continue;
+    const N = UV_MAP_NAMES[i][1];
+    d("USE_" + N + "_UV");
+    d(N + "_UV", src === 0 ? "uv" : src === 1 ? "uv1" : "vec2( 0.0 )");
+  }
   if (p.vertexColors) d("USE_COLOR");
   if (p.vertexAlphas) d("USE_COLOR_ALPHA");
   if (p.instancing) d("USE_INSTANCING");
@@ -20025,6 +20102,12 @@ function materialTypeOf(material) {
   if (material.isShaderMaterial) return MATERIAL_SHADER;
   return MATERIAL_BASIC;
 }
+function uvSource(texture, hasUv, hasUv1) {
+  const channel = texture.channel;
+  if (channel === 0) return hasUv ? 0 : 2;
+  if (channel === 1) return hasUv1 ? 1 : 2;
+  return 2;
+}
 var WebGLPrograms = class {
   constructor(gl, renderer) {
     this.gl = gl;
@@ -20059,8 +20142,19 @@ var WebGLPrograms = class {
     const hasEnvMap = envMap !== null;
     const envMapCubeUV = hasEnvMap && envMap.mapping === CubeUVReflectionMapping;
     const specularMap = (materialType === MATERIAL_PHONG || hasEnvMap && (materialType === MATERIAL_BASIC || materialType === MATERIAL_LAMBERT)) && !!material.specularMap;
-    const useUv = hasUv && (map || alphaMap || emissiveMap || normalMap || roughnessMap || metalnessMap || aoMap || specularMap);
-    const useUv1 = hasUv1 && aoMap;
+    const pointsType = materialType === MATERIAL_POINTS;
+    const mapUv = map ? pointsType ? hasUv ? 0 : 2 : uvSource(material.map, hasUv, hasUv1) : -1;
+    const alphaMapUv = alphaMap ? pointsType ? hasUv ? 0 : 2 : uvSource(material.alphaMap, hasUv, hasUv1) : -1;
+    const emissiveMapUv = emissiveMap ? uvSource(material.emissiveMap, hasUv, hasUv1) : -1;
+    const normalMapUv = normalMap ? uvSource(material.normalMap, hasUv, hasUv1) : -1;
+    const roughnessMapUv = roughnessMap ? uvSource(material.roughnessMap, hasUv, hasUv1) : -1;
+    const metalnessMapUv = metalnessMap ? uvSource(material.metalnessMap, hasUv, hasUv1) : -1;
+    const aoMapUv = aoMap ? uvSource(material.aoMap, hasUv, hasUv1) : -1;
+    const specularMapUv = specularMap ? uvSource(material.specularMap, hasUv, hasUv1) : -1;
+    const uvKey = ((((((mapUv + 1) * 4 + alphaMapUv + 1) * 4 + emissiveMapUv + 1) * 4 + normalMapUv + 1) * 4 + roughnessMapUv + 1) * 4 + metalnessMapUv + 1) * 16 + (aoMapUv + 1) * 4 + specularMapUv + 1;
+    const pointsUv = pointsType && hasUv && (map || alphaMap);
+    const useUv = pointsUv || !pointsType && (mapUv === 0 || alphaMapUv === 0 || emissiveMapUv === 0 || normalMapUv === 0 || roughnessMapUv === 0 || metalnessMapUv === 0 || aoMapUv === 0 || specularMapUv === 0);
+    const useUv1 = !pointsType && (mapUv === 1 || alphaMapUv === 1 || emissiveMapUv === 1 || normalMapUv === 1 || roughnessMapUv === 1 || metalnessMapUv === 1 || aoMapUv === 1 || specularMapUv === 1);
     const receiveShadow = variant.receiveShadow && isLit && renderer.shadowMap.enabled;
     const numDirShadows = receiveShadow ? lights.numDirShadows : 0;
     const numSpotShadows = receiveShadow ? lights.numSpotShadows : 0;
@@ -20090,6 +20184,15 @@ var WebGLPrograms = class {
     p.specularMap = specularMap;
     p.useUv = useUv;
     p.useUv1 = useUv1;
+    p.pointsUv = pointsUv;
+    p.mapUv = mapUv;
+    p.alphaMapUv = alphaMapUv;
+    p.emissiveMapUv = emissiveMapUv;
+    p.normalMapUv = normalMapUv;
+    p.roughnessMapUv = roughnessMapUv;
+    p.metalnessMapUv = metalnessMapUv;
+    p.aoMapUv = aoMapUv;
+    p.specularMapUv = specularMapUv;
     p.vertexColors = vertexColors;
     p.vertexAlphas = vertexColors && attributes.color.itemSize === 4;
     p.instancing = variant.instancing;
@@ -20189,7 +20292,7 @@ var WebGLPrograms = class {
     key = key * 16 + (envMapCubeUV ? (Math.log2(p.envMapCubeUVHeight) | 0) & 15 : 0);
     key = key * 2 + (p.opaque ? 1 : 0);
     key = key * 4 + (p.depthPacking - 3200);
-    p.key = key;
+    p.key = uvKey === 0 ? key : key + ":" + uvKey;
     return p;
   }
   acquireProgram(parameters, material) {
@@ -23583,9 +23686,17 @@ var WebGLRenderer = class {
     this._lightsBuffer = gl.createBuffer();
     gl.bindBuffer(gl.UNIFORM_BUFFER, this._lightsBuffer);
     gl.bufferData(gl.UNIFORM_BUFFER, LIGHTS_BLOCK_SIZE, gl.DYNAMIC_DRAW);
-    this._materialStride = Math.max(MATERIAL_BLOCK_SIZE, this.state.uboAlignment);
-    this._materialWindow = Math.max(1, Math.min(256, Math.floor(gl.getParameter(gl.MAX_UNIFORM_BLOCK_SIZE) / this._materialStride)));
-    this._materialPad = (this._materialStride - MATERIAL_BLOCK_SIZE) / 16;
+    const align = this.state.uboAlignment;
+    this._materialStride = Math.ceil(MATERIAL_BLOCK_SIZE / align) * align;
+    let g = align, h = MATERIAL_BLOCK_SIZE;
+    while (h !== 0) {
+      const t = g % h;
+      g = h;
+      h = t;
+    }
+    const unit = align / g;
+    this._materialWindow = Math.max(unit, Math.floor(Math.min(256, Math.floor(gl.getParameter(gl.MAX_UNIFORM_BLOCK_SIZE) / MATERIAL_BLOCK_SIZE)) / unit) * unit);
+    this._materialPad = 0;
     this._materialArrayOk = probeMaterialArray(gl);
     this._batchGroups = /* @__PURE__ */ new Map();
     this._lifetimeRegistry = typeof FinalizationRegistry !== "undefined" ? new FinalizationRegistry((held) => this._releaseHeld(held)) : null;
@@ -23594,6 +23705,9 @@ var WebGLRenderer = class {
     this._materialBuffer = gl.createBuffer();
     gl.bindBuffer(gl.UNIFORM_BUFFER, this._materialBuffer);
     gl.bufferData(gl.UNIFORM_BUFFER, this._materialStride * this._materialCapacity, gl.DYNAMIC_DRAW);
+    this._materialTight = gl.createBuffer();
+    gl.bindBuffer(gl.UNIFORM_BUFFER, this._materialTight);
+    gl.bufferData(gl.UNIFORM_BUFFER, MATERIAL_BLOCK_SIZE * this._materialCapacity, gl.DYNAMIC_DRAW);
     gl.bindBuffer(gl.UNIFORM_BUFFER, null);
     this._materialSlotsUsed = 0;
     this._materialFreeSlots = [];
@@ -23792,6 +23906,7 @@ var WebGLRenderer = class {
     gl.deleteBuffer(this._frameBuffer);
     gl.deleteBuffer(this._lightsBuffer);
     gl.deleteBuffer(this._materialBuffer);
+    gl.deleteBuffer(this._materialTight);
     this.renderLists.dispose();
     this.shadowMap.dispose();
     this._materialProperties = /* @__PURE__ */ new WeakMap();
@@ -25094,7 +25209,7 @@ var WebGLRenderer = class {
     let k = 0;
     for (let i = 0; i < MAP_KEYS.length; i++) {
       const t = material[MAP_KEYS[i]];
-      s[k++] = t ? t.id : -1;
+      s[k++] = t ? t.id * 4 + (t.channel > 3 ? 3 : t.channel) : -1;
     }
     s[k++] = material.side;
     s[k++] = material.shadowSide === null || material.shadowSide === void 0 ? -1 : material.shadowSide;
@@ -25392,8 +25507,16 @@ var WebGLRenderer = class {
         gl.bindBuffer(gl.COPY_READ_BUFFER, null);
         gl.deleteBuffer(this._materialBuffer);
         this._materialBuffer = newBuffer;
+        const newTight = gl.createBuffer();
+        gl.bindBuffer(gl.UNIFORM_BUFFER, newTight);
+        gl.bufferData(gl.UNIFORM_BUFFER, MATERIAL_BLOCK_SIZE * newCap, gl.DYNAMIC_DRAW);
+        gl.bindBuffer(gl.COPY_READ_BUFFER, this._materialTight);
+        gl.copyBufferSubData(gl.COPY_READ_BUFFER, gl.UNIFORM_BUFFER, 0, 0, MATERIAL_BLOCK_SIZE * this._materialCapacity);
+        gl.bindBuffer(gl.COPY_READ_BUFFER, null);
+        gl.deleteBuffer(this._materialTight);
+        this._materialTight = newTight;
         this._materialCapacity = newCap;
-        this.state.currentUniformBuffer = newBuffer;
+        this.state.currentUniformBuffer = newTight;
         this.state.currentUniformBindings[BLOCK_MATERIAL] = void 0;
       }
       slot = this._materialSlotsUsed++;
@@ -25461,74 +25584,67 @@ var WebGLRenderer = class {
       s[13] = material.dashSize;
       s[14] = material.dashSize + material.gapSize;
     }
-    const map = material.map || material.alphaMap || material.emissiveMap || material.normalMap || material.roughnessMap || material.metalnessMap || material.aoMap || material.specularMap;
-    if (map && map.isTexture) {
-      if (map.matrixAutoUpdate === true) map.updateMatrix();
-      const m = map.matrix.elements;
-      s[20] = m[0];
-      s[21] = m[1];
-      s[22] = m[2];
-      s[23] = 0;
-      s[24] = m[3];
-      s[25] = m[4];
-      s[26] = m[5];
-      s[27] = 0;
-      s[28] = m[6];
-      s[29] = m[7];
-      s[30] = m[8];
-      s[31] = 0;
-    } else {
-      s[20] = 1;
-      s[21] = 0;
-      s[22] = 0;
-      s[23] = 0;
-      s[24] = 0;
-      s[25] = 1;
-      s[26] = 0;
-      s[27] = 0;
-      s[28] = 0;
-      s[29] = 0;
-      s[30] = 1;
-      s[31] = 0;
+    let used = UV_BASE;
+    for (let slot = 0; slot < UV_SLOT_COUNT; slot++) {
+      const tex = slot === 5 && material.isMeshStandardMaterial !== true ? material.specularMap : material[UV_SLOT_KEYS[slot]];
+      const o = UV_BASE + slot * 6;
+      if (tex !== void 0 && tex !== null && tex.isTexture === true) {
+        if (tex.matrixAutoUpdate === true) tex.updateMatrix();
+        const m = tex.matrix.elements;
+        s[o] = m[0];
+        s[o + 1] = m[1];
+        s[o + 2] = m[3];
+        s[o + 3] = m[4];
+        s[o + 4] = m[6];
+        s[o + 5] = m[7];
+        used = o + 6;
+      } else {
+        s[o] = 0;
+        s[o + 1] = 0;
+        s[o + 2] = 0;
+        s[o + 3] = 0;
+        s[o + 4] = 0;
+        s[o + 5] = 0;
+      }
     }
-    s[32] = props.envMapIntensity;
-    s[33] = material.reflectivity !== void 0 ? material.reflectivity : 1;
-    s[34] = material.refractionRatio !== void 0 ? material.refractionRatio : 0.98;
-    s[35] = material.ior !== void 0 ? material.ior : 1.5;
+    s[20] = props.envMapIntensity;
+    s[21] = material.reflectivity !== void 0 ? material.reflectivity : 1;
+    s[22] = material.refractionRatio !== void 0 ? material.refractionRatio : 0.98;
+    s[23] = material.ior !== void 0 ? material.ior : 1.5;
     const envMap = props.envMap;
     if (envMap !== null) {
       _envRotation.setFromMatrix4(_envRotation4.makeRotationFromEuler(props.envMapRotation)).transpose();
       if (envMap.isCubeTexture && envMap.isRenderTargetTexture === false) _envRotation.premultiply(_envFlip);
       const e = _envRotation.elements;
-      s[36] = e[0];
-      s[37] = e[1];
-      s[38] = e[2];
-      s[39] = 0;
-      s[40] = e[3];
-      s[41] = e[4];
-      s[42] = e[5];
-      s[43] = 0;
-      s[44] = e[6];
-      s[45] = e[7];
-      s[46] = e[8];
-      s[47] = 0;
+      s[24] = e[0];
+      s[25] = e[1];
+      s[26] = e[2];
+      s[27] = 0;
+      s[28] = e[3];
+      s[29] = e[4];
+      s[30] = e[5];
+      s[31] = 0;
+      s[32] = e[6];
+      s[33] = e[7];
+      s[34] = e[8];
+      s[35] = 0;
     } else {
-      s[36] = 1;
-      s[37] = 0;
-      s[38] = 0;
-      s[39] = 0;
-      s[40] = 0;
-      s[41] = 1;
-      s[42] = 0;
-      s[43] = 0;
-      s[44] = 0;
-      s[45] = 0;
-      s[46] = 1;
-      s[47] = 0;
+      s[24] = 1;
+      s[25] = 0;
+      s[26] = 0;
+      s[27] = 0;
+      s[28] = 0;
+      s[29] = 1;
+      s[30] = 0;
+      s[31] = 0;
+      s[32] = 0;
+      s[33] = 0;
+      s[34] = 1;
+      s[35] = 0;
     }
     const b = props.blockData;
     let dirty = false;
-    for (let i = 0; i < 48; i++) {
+    for (let i = 0; i < used; i++) {
       if (b[i] !== s[i]) {
         dirty = true;
         break;
@@ -25536,9 +25652,11 @@ var WebGLRenderer = class {
     }
     const offset = props.blockSlot * this._materialStride;
     if (dirty) {
-      b.set(s);
+      for (let i = 0; i < used; i++) b[i] = s[i];
       this.state.bindUniformBuffer(this._materialBuffer);
-      gl.bufferSubData(gl.UNIFORM_BUFFER, offset, b);
+      gl.bufferSubData(gl.UNIFORM_BUFFER, offset, b, 0, used);
+      this.state.bindUniformBuffer(this._materialTight);
+      gl.bufferSubData(gl.UNIFORM_BUFFER, props.blockSlot * MATERIAL_BLOCK_SIZE, b, 0, used);
     }
     return offset;
   }
@@ -26015,8 +26133,9 @@ var WebGLRenderer = class {
         const props = this._materialProps(material);
         const offset = this._syncMaterialBlock(material, props);
         if (program.materialArray) {
-          const windowBytes = this._materialWindow * this._materialStride;
-          state.bindUniformBufferRange(BLOCK_MATERIAL, this._materialBuffer, Math.floor(offset / windowBytes) * windowBytes, windowBytes);
+          const windowBytes = this._materialWindow * MATERIAL_BLOCK_SIZE;
+          const page = Math.floor(offset / this._materialStride / this._materialWindow);
+          state.bindUniformBufferRange(BLOCK_MATERIAL, this._materialTight, page * windowBytes, windowBytes);
         } else {
           state.bindUniformBufferRange(BLOCK_MATERIAL, this._materialBuffer, offset, MATERIAL_BLOCK_SIZE);
         }
@@ -26375,6 +26494,9 @@ function shadowSideOf(material) {
   return material.side === FrontSide ? BackSide : material.side === BackSide ? FrontSide : DoubleSide;
 }
 var _wireGroup = { start: 0, count: 0, materialIndex: 0 };
+var UV_SLOT_KEYS = ["map", "alphaMap", "emissiveMap", "normalMap", "aoMap", "roughnessMap", "metalnessMap"];
+var UV_SLOT_COUNT = UV_SLOT_KEYS.length;
+var UV_BASE = 36;
 var MAP_KEYS = ["map", "alphaMap", "normalMap", "emissiveMap", "roughnessMap", "metalnessMap", "aoMap", "specularMap"];
 var BATCH_SIG_SIZE = MAP_KEYS.length + 34;
 var IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);

@@ -258,6 +258,14 @@ function materialTypeOf(material) {
  * Program cache keyed by an integer feature mask. Resolving a program for a
  * (material, object, scene) triple is a handful of bit ops and one Map get.
  */
+/** uv source of one map: 0 = `uv`, 1 = `uv1`, 2 = constant zero (attribute missing or channel not supported). */
+function uvSource(texture, hasUv, hasUv1) {
+	const channel = texture.channel;
+	if (channel === 0) return hasUv ? 0 : 2;
+	if (channel === 1) return hasUv1 ? 1 : 2;
+	return 2;
+}
+
 class WebGLPrograms {
 	constructor(gl, renderer) {
 		this.gl = gl;
@@ -296,8 +304,23 @@ class WebGLPrograms {
 		const envMapCubeUV = hasEnvMap && envMap.mapping === CubeUVReflectionMapping;
 		// specularMap modulates Phong's specular term and the env-map reflection of Basic / Lambert
 		const specularMap = (materialType === MATERIAL_PHONG || (hasEnvMap && (materialType === MATERIAL_BASIC || materialType === MATERIAL_LAMBERT))) && !!material.specularMap;
-		const useUv = hasUv && (map || alphaMap || emissiveMap || normalMap || roughnessMap || metalnessMap || aoMap || specularMap) ;
-		const useUv1 = hasUv1 && aoMap;
+		// Per map, like three.js's getChannel( texture.channel ): the attribute its uv comes from, 0 = uv, 1 = uv1, 2 = a
+		// constant (0, 0) when the geometry lacks the attribute (a disabled attribute reads as zero) or the channel is
+		// above 1 (not supported); -1 = no such map. Each present map gets its own transform and varying in the shader.
+		const pointsType = materialType === MATERIAL_POINTS;
+		// points always use the `uv` attribute (three.js: USE_POINTS_UV) with the map's transform, whatever texture.channel says
+		const mapUv = map ? (pointsType ? (hasUv ? 0 : 2) : uvSource(material.map, hasUv, hasUv1)) : -1;
+		const alphaMapUv = alphaMap ? (pointsType ? (hasUv ? 0 : 2) : uvSource(material.alphaMap, hasUv, hasUv1)) : -1;
+		const emissiveMapUv = emissiveMap ? uvSource(material.emissiveMap, hasUv, hasUv1) : -1;
+		const normalMapUv = normalMap ? uvSource(material.normalMap, hasUv, hasUv1) : -1;
+		const roughnessMapUv = roughnessMap ? uvSource(material.roughnessMap, hasUv, hasUv1) : -1;
+		const metalnessMapUv = metalnessMap ? uvSource(material.metalnessMap, hasUv, hasUv1) : -1;
+		const aoMapUv = aoMap ? uvSource(material.aoMap, hasUv, hasUv1) : -1;
+		const specularMapUv = specularMap ? uvSource(material.specularMap, hasUv, hasUv1) : -1;
+		const uvKey = ((((((mapUv + 1) * 4 + alphaMapUv + 1) * 4 + emissiveMapUv + 1) * 4 + normalMapUv + 1) * 4 + roughnessMapUv + 1) * 4 + metalnessMapUv + 1) * 16 + (aoMapUv + 1) * 4 + specularMapUv + 1;
+		const pointsUv = pointsType && hasUv && (map || alphaMap);
+		const useUv = pointsUv || !pointsType && (mapUv === 0 || alphaMapUv === 0 || emissiveMapUv === 0 || normalMapUv === 0 || roughnessMapUv === 0 || metalnessMapUv === 0 || aoMapUv === 0 || specularMapUv === 0);
+		const useUv1 = !pointsType && (mapUv === 1 || alphaMapUv === 1 || emissiveMapUv === 1 || normalMapUv === 1 || roughnessMapUv === 1 || metalnessMapUv === 1 || aoMapUv === 1 || specularMapUv === 1);
 		const receiveShadow = variant.receiveShadow && isLit && renderer.shadowMap.enabled;
 		const numDirShadows = receiveShadow ? lights.numDirShadows : 0;
 		const numSpotShadows = receiveShadow ? lights.numSpotShadows : 0;
@@ -333,6 +356,9 @@ class WebGLPrograms {
 		p.specularMap = specularMap;
 		p.useUv = useUv;
 		p.useUv1 = useUv1;
+		p.pointsUv = pointsUv;
+		p.mapUv = mapUv; p.alphaMapUv = alphaMapUv; p.emissiveMapUv = emissiveMapUv; p.normalMapUv = normalMapUv;
+		p.roughnessMapUv = roughnessMapUv; p.metalnessMapUv = metalnessMapUv; p.aoMapUv = aoMapUv; p.specularMapUv = specularMapUv;
 		p.vertexColors = vertexColors;
 		p.vertexAlphas = vertexColors && attributes.color.itemSize === 4;
 		p.instancing = variant.instancing;
@@ -397,7 +423,7 @@ class WebGLPrograms {
 		key = key * 2 + (hasEnvMap ? 1 : 0); key = key * 2 + (envMapCubeUV ? 1 : 0); key = key * 2 + (p.envMapRefraction ? 1 : 0);
 		key = key * 4 + (p.combine & 3); key = key * 16 + (envMapCubeUV ? (Math.log2(p.envMapCubeUVHeight) | 0) & 15 : 0);
 		key = key * 2 + (p.opaque ? 1 : 0); key = key * 4 + (p.depthPacking - 3200);
-		p.key = key;
+		p.key = uvKey === 0 ? key : key + ':' + uvKey; // materials without maps keep a plain numeric key
 		return p;
 	}
 

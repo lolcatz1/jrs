@@ -291,12 +291,18 @@ class WebGLRenderer {
 		this._lightsBuffer = gl.createBuffer();
 		gl.bindBuffer(gl.UNIFORM_BUFFER, this._lightsBuffer);
 		gl.bufferData(gl.UNIFORM_BUFFER, LIGHTS_BLOCK_SIZE, gl.DYNAMIC_DRAW);
-		this._materialStride = Math.max(MATERIAL_BLOCK_SIZE, this.state.uboAlignment);
-		// Material-index batching binds a window of `_materialWindow` consecutive material records as one
-		// block; the window must fit MAX_UNIFORM_BLOCK_SIZE (16 KB on some mobile GPUs -> 128 records of
-		// 128 B) and is capped so the shader's array stays small. Records are padded to the buffer stride.
-		this._materialWindow = Math.max(1, Math.min(256, Math.floor(gl.getParameter(gl.MAX_UNIFORM_BLOCK_SIZE) / this._materialStride)));
-		this._materialPad = (this._materialStride - MATERIAL_BLOCK_SIZE) / 16;
+		// Two copies of the material records. `_materialBuffer` has one record per `_materialStride` bytes (the block size
+		// rounded up to the UNIFORM_BUFFER_OFFSET_ALIGNMENT): a single material is bound as a range at slot * stride.
+		// `_materialTight` holds the same records back to back for material-index batching, which binds a window of
+		// `_materialWindow` consecutive records as an array: the window must fit MAX_UNIFORM_BLOCK_SIZE, is capped so the
+		// shader's array stays small, and holds a multiple of align / gcd( size, align ) records so that every window starts
+		// at an aligned offset. Both copies are written whenever a record changes.
+		const align = this.state.uboAlignment;
+		this._materialStride = Math.ceil(MATERIAL_BLOCK_SIZE / align) * align;
+		let g = align, h = MATERIAL_BLOCK_SIZE; while (h !== 0) { const t = g % h; g = h; h = t; }
+		const unit = align / g;
+		this._materialWindow = Math.max(unit, Math.floor(Math.min(256, Math.floor(gl.getParameter(gl.MAX_UNIFORM_BLOCK_SIZE) / MATERIAL_BLOCK_SIZE)) / unit) * unit);
+		this._materialPad = 0;
 		this._materialArrayOk = probeMaterialArray(gl);
 		this._batchGroups = new Map(); // signature key -> group, reference-counted by the materials using it (see _setBatchGroup)
 		// materials collected without dispose() give their batch group reference and material-buffer slot back
@@ -307,6 +313,9 @@ class WebGLRenderer {
 		this._materialBuffer = gl.createBuffer();
 		gl.bindBuffer(gl.UNIFORM_BUFFER, this._materialBuffer);
 		gl.bufferData(gl.UNIFORM_BUFFER, this._materialStride * this._materialCapacity, gl.DYNAMIC_DRAW);
+		this._materialTight = gl.createBuffer();
+		gl.bindBuffer(gl.UNIFORM_BUFFER, this._materialTight);
+		gl.bufferData(gl.UNIFORM_BUFFER, MATERIAL_BLOCK_SIZE * this._materialCapacity, gl.DYNAMIC_DRAW);
 		gl.bindBuffer(gl.UNIFORM_BUFFER, null);
 		this._materialSlotsUsed = 0;
 		this._materialFreeSlots = [];
@@ -417,7 +426,7 @@ class WebGLRenderer {
 		this.programs.dispose();
 		this.batcher.dispose();
 		if (this.megaBuffers !== null) this.megaBuffers.dispose();
-		gl.deleteBuffer(this._frameBuffer); gl.deleteBuffer(this._lightsBuffer); gl.deleteBuffer(this._materialBuffer);
+		gl.deleteBuffer(this._frameBuffer); gl.deleteBuffer(this._lightsBuffer); gl.deleteBuffer(this._materialBuffer); gl.deleteBuffer(this._materialTight);
 		this.renderLists.dispose();
 		this.shadowMap.dispose();
 		this._materialProperties = new WeakMap();
@@ -1500,7 +1509,7 @@ class WebGLRenderer {
 		if (props.blockSlot < 0) this._allocMaterialSlot(props, material);
 		const s = this._batchSigScratch;
 		let k = 0;
-		for (let i = 0; i < MAP_KEYS.length; i++) { const t = material[MAP_KEYS[i]]; s[k++] = t ? t.id : -1; }
+		for (let i = 0; i < MAP_KEYS.length; i++) { const t = material[MAP_KEYS[i]]; s[k++] = t ? t.id * 4 + (t.channel > 3 ? 3 : t.channel) : -1; } // the uv channel selects the program
 		s[k++] = material.side; s[k++] = material.shadowSide === null || material.shadowSide === undefined ? -1 : material.shadowSide;
 		s[k++] = material.transparent ? 1 : 0; s[k++] = material.blending; s[k++] = material.blendEquation; s[k++] = material.blendSrc; s[k++] = material.blendDst;
 		s[k++] = material.blendEquationAlpha === null ? -1 : material.blendEquationAlpha; s[k++] = material.blendSrcAlpha === null ? -1 : material.blendSrcAlpha; s[k++] = material.blendDstAlpha === null ? -1 : material.blendDstAlpha;
@@ -1706,8 +1715,16 @@ class WebGLRenderer {
 				gl.bindBuffer(gl.COPY_READ_BUFFER, null);
 				gl.deleteBuffer(this._materialBuffer);
 				this._materialBuffer = newBuffer;
+				const newTight = gl.createBuffer();
+				gl.bindBuffer(gl.UNIFORM_BUFFER, newTight);
+				gl.bufferData(gl.UNIFORM_BUFFER, MATERIAL_BLOCK_SIZE * newCap, gl.DYNAMIC_DRAW);
+				gl.bindBuffer(gl.COPY_READ_BUFFER, this._materialTight);
+				gl.copyBufferSubData(gl.COPY_READ_BUFFER, gl.UNIFORM_BUFFER, 0, 0, MATERIAL_BLOCK_SIZE * this._materialCapacity);
+				gl.bindBuffer(gl.COPY_READ_BUFFER, null);
+				gl.deleteBuffer(this._materialTight);
+				this._materialTight = newTight;
 				this._materialCapacity = newCap;
-				this.state.currentUniformBuffer = newBuffer;
+				this.state.currentUniformBuffer = newTight;
 				this.state.currentUniformBindings[BLOCK_MATERIAL] = undefined;
 			}
 			slot = this._materialSlotsUsed++;
@@ -1742,39 +1759,47 @@ class WebGLRenderer {
 		s[18] = material.size !== undefined ? material.size * this._pixelRatio : 1;
 		s[19] = material.isSpriteMaterial ? material.rotation : material.isPointsMaterial ? this._height * 0.5 : (material.bumpScale !== undefined ? material.bumpScale : 1);
 		if (material.isLineDashedMaterial === true) { s[12] = material.scale; s[13] = material.dashSize; s[14] = material.dashSize + material.gapSize; }
-		const map = material.map || material.alphaMap || material.emissiveMap || material.normalMap || material.roughnessMap || material.metalnessMap || material.aoMap || material.specularMap;
-		if (map && map.isTexture) {
-			if (map.matrixAutoUpdate === true) map.updateMatrix();
-			const m = map.matrix.elements;
-			s[20] = m[0]; s[21] = m[1]; s[22] = m[2]; s[23] = 0;
-			s[24] = m[3]; s[25] = m[4]; s[26] = m[5]; s[27] = 0;
-			s[28] = m[6]; s[29] = m[7]; s[30] = m[8]; s[31] = 0;
-		} else {
-			s[20] = 1; s[21] = 0; s[22] = 0; s[23] = 0; s[24] = 0; s[25] = 1; s[26] = 0; s[27] = 0; s[28] = 0; s[29] = 0; s[30] = 1; s[31] = 0;
+		// one uv transform per present map (three.js refreshTransformUniform: Texture.matrix, refreshed when matrixAutoUpdate),
+		// 6 floats each: the affine part (m0 m1 m3 m4 m6 m7) of the 3x3 matrix, at floats UV_BASE + 6 * slot, after the environment block
+		let used = UV_BASE;
+		for (let slot = 0; slot < UV_SLOT_COUNT; slot++) {
+			const tex = (slot === 5 && material.isMeshStandardMaterial !== true) ? material.specularMap : material[UV_SLOT_KEYS[slot]];
+			const o = UV_BASE + slot * 6;
+			if (tex !== undefined && tex !== null && tex.isTexture === true) {
+				if (tex.matrixAutoUpdate === true) tex.updateMatrix();
+				const m = tex.matrix.elements;
+				s[o] = m[0]; s[o + 1] = m[1]; s[o + 2] = m[3]; s[o + 3] = m[4]; s[o + 4] = m[6]; s[o + 5] = m[7];
+				used = o + 6;
+			} else {
+				s[o] = 0; s[o + 1] = 0; s[o + 2] = 0; s[o + 3] = 0; s[o + 4] = 0; s[o + 5] = 0;
+			}
 		}
 		// environment map: intensity / reflectivity / refractionRatio / ior and the rotation (as three.js: the
 		// inverse of the Euler rotation, with the px/nx flip of non-render-target cube textures)
-		s[32] = props.envMapIntensity;
-		s[33] = material.reflectivity !== undefined ? material.reflectivity : 1;
-		s[34] = material.refractionRatio !== undefined ? material.refractionRatio : 0.98;
-		s[35] = material.ior !== undefined ? material.ior : 1.5;
+		s[20] = props.envMapIntensity;
+		s[21] = material.reflectivity !== undefined ? material.reflectivity : 1;
+		s[22] = material.refractionRatio !== undefined ? material.refractionRatio : 0.98;
+		s[23] = material.ior !== undefined ? material.ior : 1.5;
 		const envMap = props.envMap;
 		if (envMap !== null) {
 			_envRotation.setFromMatrix4(_envRotation4.makeRotationFromEuler(props.envMapRotation)).transpose();
 			if (envMap.isCubeTexture && envMap.isRenderTargetTexture === false) _envRotation.premultiply(_envFlip);
 			const e = _envRotation.elements;
-			s[36] = e[0]; s[37] = e[1]; s[38] = e[2]; s[39] = 0; s[40] = e[3]; s[41] = e[4]; s[42] = e[5]; s[43] = 0; s[44] = e[6]; s[45] = e[7]; s[46] = e[8]; s[47] = 0;
+			s[24] = e[0]; s[25] = e[1]; s[26] = e[2]; s[27] = 0; s[28] = e[3]; s[29] = e[4]; s[30] = e[5]; s[31] = 0; s[32] = e[6]; s[33] = e[7]; s[34] = e[8]; s[35] = 0;
 		} else {
-			s[36] = 1; s[37] = 0; s[38] = 0; s[39] = 0; s[40] = 0; s[41] = 1; s[42] = 0; s[43] = 0; s[44] = 0; s[45] = 0; s[46] = 1; s[47] = 0;
+			s[24] = 1; s[25] = 0; s[26] = 0; s[27] = 0; s[28] = 0; s[29] = 1; s[30] = 0; s[31] = 0; s[32] = 0; s[33] = 0; s[34] = 1; s[35] = 0;
 		}
 		const b = props.blockData;
+		// b mirrors what the GPU holds (NaN where nothing was uploaded yet), so only the used prefix is compared and sent
 		let dirty = false;
-		for (let i = 0; i < 48; i++) { if (b[i] !== s[i]) { dirty = true; break; } }
+		for (let i = 0; i < used; i++) { if (b[i] !== s[i]) { dirty = true; break; } }
 		const offset = props.blockSlot * this._materialStride;
 		if (dirty) {
-			b.set(s);
+			for (let i = 0; i < used; i++) b[i] = s[i];
 			this.state.bindUniformBuffer(this._materialBuffer);
-			gl.bufferSubData(gl.UNIFORM_BUFFER, offset, b);
+			gl.bufferSubData(gl.UNIFORM_BUFFER, offset, b, 0, used);
+			this.state.bindUniformBuffer(this._materialTight);
+			gl.bufferSubData(gl.UNIFORM_BUFFER, props.blockSlot * MATERIAL_BLOCK_SIZE, b, 0, used);
 		}
 		return offset;
 	}
@@ -2200,8 +2225,9 @@ class WebGLRenderer {
 				const offset = this._syncMaterialBlock(material, props);
 				if (program.materialArray) {
 					// the whole window of records around this material's slot (the batch's other materials were refreshed while it was built)
-					const windowBytes = this._materialWindow * this._materialStride;
-					state.bindUniformBufferRange(BLOCK_MATERIAL, this._materialBuffer, Math.floor(offset / windowBytes) * windowBytes, windowBytes);
+					const windowBytes = this._materialWindow * MATERIAL_BLOCK_SIZE;
+					const page = Math.floor(offset / this._materialStride / this._materialWindow);
+					state.bindUniformBufferRange(BLOCK_MATERIAL, this._materialTight, page * windowBytes, windowBytes);
 				} else {
 					state.bindUniformBufferRange(BLOCK_MATERIAL, this._materialBuffer, offset, MATERIAL_BLOCK_SIZE);
 				}
@@ -2492,6 +2518,10 @@ function shadowSideOf(material) {
 }
 
 const _wireGroup = { start: 0, count: 0, materialIndex: 0 };
+// uv-transform slot of each map in the Material block (roughnessMap and specularMap share slot 5: never on one material type)
+const UV_SLOT_KEYS = ['map', 'alphaMap', 'emissiveMap', 'normalMap', 'aoMap', 'roughnessMap', 'metalnessMap'];
+const UV_SLOT_COUNT = UV_SLOT_KEYS.length;
+const UV_BASE = 36; // float index of the first uv transform in the Material block (5 vec4 + environment vec4 + mat3)
 const MAP_KEYS = ['map', 'alphaMap', 'normalMap', 'emissiveMap', 'roughnessMap', 'metalnessMap', 'aoMap', 'specularMap'];
 const BATCH_SIG_SIZE = MAP_KEYS.length + 34; // see _batchGroupOf
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
