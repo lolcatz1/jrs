@@ -2,14 +2,14 @@ import {
 	MATERIAL_BASIC, MATERIAL_LAMBERT, MATERIAL_PHONG, MATERIAL_STANDARD, MATERIAL_NORMAL, MATERIAL_DEPTH, MATERIAL_LINE, MATERIAL_POINTS,
 	MATERIAL_SPRITE, MATERIAL_SHADER, MATERIAL_SHADOW_DEPTH, TEXTURE_UNITS, buildBuiltinShader, buildCustomShader
 } from '../shaders/ShaderLib.js';
-import { DoubleSide, NoToneMapping, SRGBColorSpace } from '../../constants.js';
+import { DoubleSide, NoToneMapping, SRGBColorSpace, NormalBlending } from '../../constants.js';
 
 export const BLOCK_FRAME = 0;
 export const BLOCK_LIGHTS = 1;
 export const BLOCK_MATERIAL = 2;
 
 let _programId = 0;
-const FIXED_ATTRIBUTES = { position: 0, normal: 1, uv: 2, color: 3, uv1: 4, instanceColor: 5, instanceMatrix: 8 };
+const FIXED_ATTRIBUTES = { position: 0, normal: 1, uv: 2, color: 3, uv1: 4, instanceColor: 5, lineDistance: 6, instanceMatrix: 8 };
 
 /**
  * A compiled program plus everything the renderer needs to drive it without
@@ -33,6 +33,7 @@ class WebGLProgram {
 		gl.bindAttribLocation(program, 3, 'color');
 		gl.bindAttribLocation(program, 4, 'uv1');
 		gl.bindAttribLocation(program, 5, 'instanceColor');
+		gl.bindAttribLocation(program, 6, 'lineDistance');
 		gl.bindAttribLocation(program, 8, 'instanceMatrix');
 		gl.linkProgram(program);
 		if (gl.getProgramParameter(program, gl.LINK_STATUS) === false) {
@@ -203,7 +204,7 @@ class WebGLPrograms {
 		const metalnessMap = materialType === MATERIAL_STANDARD && !!material.metalnessMap;
 		const aoMap = (isLit || materialType === MATERIAL_BASIC) && !!material.aoMap;
 		const specularMap = materialType === MATERIAL_PHONG && !!material.specularMap;
-		const useUv = hasUv && (map || alphaMap || emissiveMap || normalMap || roughnessMap || metalnessMap || aoMap || specularMap) && materialType !== MATERIAL_POINTS;
+		const useUv = hasUv && (map || alphaMap || emissiveMap || normalMap || roughnessMap || metalnessMap || aoMap || specularMap);
 		const useUv1 = hasUv1 && aoMap;
 		const receiveShadow = variant.receiveShadow && isLit && renderer.shadowMap.enabled;
 		const numDirShadows = receiveShadow ? lights.numDirShadows : 0;
@@ -229,6 +230,8 @@ class WebGLPrograms {
 			alphaTest: material.alphaTest > 0,
 			sizeAttenuation: (materialType === MATERIAL_POINTS || materialType === MATERIAL_SPRITE) && material.sizeAttenuation === true,
 			premultipliedAlpha: material.premultipliedAlpha === true,
+			dashed: materialType === MATERIAL_LINE && material.isLineDashedMaterial === true,
+			opaque: material.transparent === false && material.blending === NormalBlending && material.alphaToCoverage === false,
 			dithering: material.dithering === true,
 			vertexUv1s: hasUv1,
 			toneMapped: toneMapping !== NoToneMapping,
@@ -244,6 +247,7 @@ class WebGLPrograms {
 		key = key * 2 + (fog ? 1 : 0); key = key * 2 + (p.alphaTest ? 1 : 0); key = key * 2 + (p.sizeAttenuation ? 1 : 0); key = key * 2 + (p.premultipliedAlpha ? 1 : 0);
 		key = key * 2 + (p.dithering ? 1 : 0); key = key * 2 + (hasUv1 ? 1 : 0); key = key * 8 + toneMapping; key = key * 2 + (sRGBOutput ? 1 : 0);
 		key = key * 8 + numDirShadows; key = key * 8 + numSpotShadows; key = key * 2 + (p.multiDraw ? 1 : 0); key = key * 2 + (p.objectTexture ? 1 : 0); key = key * 2 + (leanShadow ? 1 : 0);
+		key = key * 2 + (p.dashed ? 1 : 0); key = key * 2 + (p.opaque ? 1 : 0);
 		p.key = key;
 		return p;
 	}

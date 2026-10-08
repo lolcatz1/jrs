@@ -751,7 +751,8 @@ class WebGLRenderer {
 		const ns = material.normalScale;
 		if (ns !== undefined) { s[16] = ns.x; s[17] = ns.y; } else { s[16] = 1; s[17] = 1; }
 		s[18] = material.size !== undefined ? material.size * this._pixelRatio : 1;
-		s[19] = material.isSpriteMaterial ? material.rotation : (material.bumpScale !== undefined ? material.bumpScale : 1);
+		s[19] = material.isSpriteMaterial ? material.rotation : material.isPointsMaterial ? this._height * 0.5 : (material.bumpScale !== undefined ? material.bumpScale : 1);
+		if (material.isLineDashedMaterial === true) { s[12] = material.scale; s[13] = material.dashSize; s[14] = material.dashSize + material.gapSize; }
 		const map = material.map || material.alphaMap || material.emissiveMap || material.normalMap || material.roughnessMap || material.metalnessMap || material.aoMap || material.specularMap;
 		if (map && map.isTexture) {
 			if (map.matrixAutoUpdate === true) map.updateMatrix();

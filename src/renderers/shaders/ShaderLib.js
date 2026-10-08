@@ -132,6 +132,10 @@ in vec2 uv1;
 	in vec3 color;
 	#endif
 #endif
+#ifdef IS_DASHED
+in float lineDistance;
+out float vLineDistance;
+#endif
 #ifdef USE_INSTANCING
 in mat4 instanceMatrix;
 	#ifdef USE_INSTANCING_COLOR
@@ -185,6 +189,9 @@ out vec4 vSpotShadowCoord[ NUM_SPOT_SHADOWS ];
 #endif
 
 void main() {
+	#ifdef IS_DASHED
+	vLineDistance = matParams.x * lineDistance;
+	#endif
 	mat4 model = modelMatrix;
 	#ifdef USE_INSTANCING
 	model = model * instanceMatrix;
@@ -197,7 +204,7 @@ void main() {
 		vec4 mvPosition = viewMatrix * model * vec4( 0.0, 0.0, 0.0, 1.0 );
 		vec2 scale = vec2( length( model[ 0 ].xyz ), length( model[ 1 ].xyz ) );
 		#ifndef SIZE_ATTENUATION
-		if ( cameraPosition.w < 0.5 ) scale *= - mvPosition.z;
+		if ( projectionMatrix[ 2 ][ 3 ] == - 1.0 ) scale *= - mvPosition.z;
 		#endif
 		vec2 aligned = ( position.xy - ( uSpriteCenter - vec2( 0.5 ) ) ) * scale;
 		float c = cos( matParams2.w ), s = sin( matParams2.w );
@@ -249,7 +256,7 @@ void main() {
 	#ifdef IS_POINTS
 	gl_PointSize = matParams2.z;
 		#ifdef SIZE_ATTENUATION
-		if ( cameraPosition.w < 0.5 ) gl_PointSize *= ( viewport.w * 0.5 ) / ( - mvPosition.z );
+		if ( projectionMatrix[ 2 ][ 3 ] == - 1.0 ) gl_PointSize *= ( matParams2.w / - mvPosition.z );
 		#endif
 	#endif
 	#if NUM_DIR_SHADOWS > 0
@@ -298,6 +305,9 @@ in vec4 vColor;
 #endif
 #ifdef USE_FOG
 in float vFogDepth;
+#endif
+#ifdef IS_DASHED
+in float vLineDistance;
 #endif
 #ifdef USE_MAP
 uniform sampler2D map;
@@ -481,18 +491,23 @@ vec4 sRGBTransferOETF( in vec4 value ) {
 }
 
 void main() {
+	#ifdef IS_DASHED
+	if ( mod( vLineDistance, matParams.z ) > matParams.y ) discard;
+	#endif
 	#ifdef IS_POINTS
-	vec2 pointUv = gl_PointCoord;
+		#ifdef USE_UV
+		vec2 pointUv = vUv;
+		#else
+		vec2 pointUv = ( mat3( uvTransform0.xyz, uvTransform1.xyz, uvTransform2.xyz ) * vec3( gl_PointCoord.x, 1.0 - gl_PointCoord.y, 1.0 ) ).xy;
+		#endif
 	#endif
 	vec4 diffuseColor = vec4( diffuse.rgb, diffuse.a );
-	#ifdef IS_SPRITE
-	#endif
 	#if defined( USE_COLOR ) || defined( USE_INSTANCING_COLOR )
 	diffuseColor *= vColor;
 	#endif
 	#ifdef USE_MAP
 		#ifdef IS_POINTS
-		vec4 sampledDiffuseColor = texture( map, ( mat3( uvTransform0.xyz, uvTransform1.xyz, uvTransform2.xyz ) * vec3( pointUv, 1.0 ) ).xy );
+		vec4 sampledDiffuseColor = texture( map, pointUv );
 		#else
 		vec4 sampledDiffuseColor = texture( map, vUv );
 		#endif
@@ -666,6 +681,9 @@ void main() {
 		#endif
 	#endif
 
+	#ifdef OPAQUE
+	diffuseColor.a = 1.0;
+	#endif
 	fragColor = vec4( outgoingLight, diffuseColor.a );
 	#if TONE_MAPPING > 0 && defined( TONE_MAPPED )
 	fragColor.rgb = toneMapping( fragColor.rgb );
@@ -747,6 +765,8 @@ export function buildBuiltinShader(p) {
 	if (p.fog) d('USE_FOG');
 	if (p.alphaTest) d('USE_ALPHATEST');
 	if (p.sizeAttenuation) d('SIZE_ATTENUATION');
+	if (p.dashed) d('IS_DASHED');
+	if (p.opaque) d('OPAQUE');
 	if (p.premultipliedAlpha) d('PREMULTIPLIED_ALPHA');
 	if (p.dithering) d('DITHERING');
 	if (p.toneMapped) d('TONE_MAPPED');
