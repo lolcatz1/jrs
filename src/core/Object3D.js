@@ -38,6 +38,16 @@ const _childremovedEvent = { type: 'childremoved', child: null };
  * A monotonically increasing `_worldVersion` lets the renderer cache derived
  * data (normal matrix, world bounding sphere, instance buffers) per object.
  */
+/** A Bone add / remove drops the cached update plan of the rig it touches (the root bone above `parent`) and of `child` (which may become a root). */
+function invalidateRigs(parent, child) {
+	if (child._plan !== undefined) child._plan = null;
+	if (parent.isBone === true) {
+		let root = parent;
+		while (root.parent !== null && root.parent.isBone === true) root = root.parent;
+		root._plan = null;
+	}
+}
+
 class Object3D extends EventDispatcher {
 	constructor() {
 		super();
@@ -56,7 +66,8 @@ class Object3D extends EventDispatcher {
 		const scale = new Vector3(1, 1, 1);
 
 		function onRotationChange() { quaternion.setFromEuler(rotation, false); }
-		function onQuaternionChange() { rotation.setFromQuaternion(quaternion, undefined, false); }
+		function onQuaternionChange() { rotation._stale = true; }
+		rotation._source = quaternion;
 		rotation._onChange(onRotationChange);
 		quaternion._onChange(onQuaternionChange);
 
@@ -89,6 +100,7 @@ class Object3D extends EventDispatcher {
 		this._flipVersion = -1; this._frontFaceCW = false;
 		this._cullVersion = -1; this._cullSphere = null; // cull-cache doubles (radius, centre) live in the snapshot record at +10..+13
 		// cached frustum test result per pass (0 = camera, 1 = shadow): frustum version it was computed for, and the result
+		this._skipStamp = -1; // renderer: epochs.structure value at which this (pure bone) subtree was proven to draw nothing
 		this._cullFV0 = -1; this._cullVis0 = false; this._cullFV1 = -1; this._cullVis1 = false;
 
 		this.matrixAutoUpdate = Object3D.DEFAULT_MATRIX_AUTO_UPDATE;
@@ -120,7 +132,7 @@ class Object3D extends EventDispatcher {
 		if (this.matrixAutoUpdate) this.updateMatrix();
 		this._matrix.premultiply(matrix);
 		this._matrix.decompose(this.position, this.quaternion, this.scale);
-		this._snapData[this._snapOffset] = NaN; // force the next updateMatrix() to recompose from TRS, as three.js does
+		this._forceRecompose(); // the next updateMatrix() recomposes from TRS, as in three.js
 		this.matrixWorldNeedsUpdate = true;
 	}
 	applyQuaternion(q) { this.quaternion.premultiply(q); return this; }
@@ -168,6 +180,7 @@ class Object3D extends EventDispatcher {
 			object.parent = this;
 			this.children.push(object);
 			epochs.structure++;
+			if (object.isBone === true || this.isBone === true) invalidateRigs(this, object);
 			notifyAdd(this, object);
 			object.matrixWorldNeedsUpdate = true;
 			object.dispatchEvent(_addedEvent);
@@ -189,6 +202,7 @@ class Object3D extends EventDispatcher {
 			object.parent = null;
 			this.children.splice(index, 1);
 			epochs.structure++;
+			if (object.isBone === true || this.isBone === true) invalidateRigs(this, object);
 			notifyRemove(this, object);
 			object.dispatchEvent(_removedEvent);
 			_childremovedEvent.child = object;
@@ -211,6 +225,7 @@ class Object3D extends EventDispatcher {
 		object.parent = this;
 		this.children.push(object);
 		epochs.structure++;
+		if (object.isBone === true || this.isBone === true) invalidateRigs(this, object);
 		notifyAdd(this, object);
 		object.updateWorldMatrix(false, true);
 		object.dispatchEvent(_addedEvent);
@@ -259,6 +274,8 @@ class Object3D extends EventDispatcher {
 		const parent = this.parent;
 		if (parent !== null) { callback(parent); parent.traverseAncestors(callback); }
 	}
+
+	_forceRecompose() { this._snapData[this._snapOffset] = NaN; }
 
 	_snapshot() {
 		const p = this.position, q = this.quaternion, s = this.scale, d = this._snapData, o = this._snapOffset;

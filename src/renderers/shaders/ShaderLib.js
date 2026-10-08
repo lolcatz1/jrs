@@ -14,6 +14,15 @@ import {
  * have a fixed capacity and the active counts are read from the block.
  */
 
+// Built-in programs read bones from the renderer's shared bone atlas: three's chunk plus a per-draw `boneBase`
+// (first bone slot of the skeleton). ShaderMaterial programs keep the unmodified chunk and one texture per skeleton.
+const SKINNING_PARS_ATLAS = (() => {
+	const a = 'uniform highp sampler2D boneTexture;', b = 'int j = int( i ) * 4;';
+	const src = ShaderChunk.skinning_pars_vertex;
+	if (!src.includes(a) || !src.includes(b)) throw new Error('ShaderLib: skinning_pars_vertex chunk changed');
+	return src.replace(a, a + '\n\tuniform int boneBase;').replace(b, 'int j = ( int( i ) + boneBase ) * 4;');
+})();
+
 export const MAX_DIR_LIGHTS = 4;
 export const MAX_POINT_LIGHTS = 8;
 export const MAX_SPOT_LIGHTS = 4;
@@ -220,7 +229,7 @@ in mat4 instanceMatrix;
 in vec4 skinIndex;
 in vec4 skinWeight;
 #endif
-${ShaderChunk.skinning_pars_vertex}
+${SKINNING_PARS_ATLAS}
 ${ShaderChunk.morphtarget_pars_vertex}
 #ifdef USE_OBJECT_TEXTURE
 // Batched draws: each object's world matrix and normal matrix come from a per-frame matrix

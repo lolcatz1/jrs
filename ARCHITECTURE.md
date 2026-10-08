@@ -399,25 +399,51 @@ and morph textures live on fixed units 16 and 17 (above the 16 fragment units; W
 32 combined). Output is pixel-identical to three.js. `ShaderMaterial` gets the same defines and
 uniforms, so custom shaders that `#include <skinning_pars_vertex>` work unchanged.
 
-What differs is the CPU side:
+What differs is the CPU side. A skinned crowd is thousands of identical bones, and on a JS engine the cost of animating
+a bone is not arithmetic but memory: the object model (Bone -> Vector3 / Quaternion / Euler -> a HeapNumber per
+component, promoted in breadth-first GC order) costs ~10 cache misses per bone per frame. The pieces below keep the
+three.js API and take the bone out of the hot loops:
 
-* `Skeleton.update()` multiplies each bone's slab-resident world matrix with its inverse bind
-  matrix straight into the `boneMatrices` Float32Array (no `Matrix4` temporaries, no `toArray`),
-  and it remembers every bone's `_worldVersion`: when no bone moved the whole step, including
-  the texture upload, is skipped. Idle characters cost a few compares.
-* `SkinnedMesh.bindMatrixInverse` is recomputed only when the world matrix version changed, and
-  the renderer re-sends `bindMatrix` / `bindMatrixInverse` only when their values changed.
-* The bone texture is streamed with `texImage2D` (not `texSubImage2D` into immutable storage),
-  the upload path that does not stall Chromium's command buffer (§ stall-hunter report), and
-  its sampler parameters are set once. Unpack pixel-store state is cached in `WebGLState`.
-* The skeleton is updated once per `render()` call, from the render list build, so a mesh drawn
-  in the shadow pass and the main pass uploads its bones once.
-* Skinned and morphed meshes carry per-object GPU state (bone texture, influences) and are never
-  auto-batched; they go through the per-object path like `ShaderMaterial` meshes do.
-
-The animation system (`src/animation/`) is the three.js r186 code, which already runs without
-per-frame allocation; `AnimationMixer.update` writes into bone `position` / `quaternion` / `scale`
-and the change-detected `updateMatrix` picks it up.
+* **Slab-resident bone transform** (`src/core/SlabTransform.js`, `src/objects/Bone.js`). A Bone's position,
+  quaternion and scale live in its record of the transform slab's snapshot page (`Float64Array`, 16 doubles per object),
+  next to a write version, the `_worldVersion` / `_parentWorldVersion` and the `matrixAutoUpdate`-family flags.
+  `bone.position` / `quaternion` / `scale` / `rotation` are `Vector3` / `Quaternion` / `Euler` subclasses whose
+  components are accessors over the record (every write bumps the version), so `bone.position.x += 1`,
+  `quaternion.multiply(q)`, `rotation.y = a` and `matrix.decompose(...)` work as in three.js. `Bone.updateMatrix` is a
+  version compare. `rotation` follows the quaternion lazily (it is stale while the quaternion's own write version
+  differs), and plain `Object3D.rotation` does the same with a dirty flag instead of converting on every
+  quaternion write.
+* **Rig update plans** (`src/objects/RigPlan.js`). The root of a bone hierarchy (a Bone whose parent is not a Bone) caches
+  per bone the record and matrix slab it lives in and its parent's index, and `updateMatrixWorld` runs the same
+  computation as `Object3D.updateMatrixWorld` (recompose the local matrix when the TRS changed, multiply with the parent
+  when the local matrix, the parent's world version or `force` changed; affine 3x4 product) in one loop over those
+  arrays, without touching the Bone objects. Non-bone children are updated through their own `updateMatrixWorld`.
+  A plan is dropped (and rebuilt on the next update) by an add / remove / attach that involves a bone of its hierarchy, so spawning a character rebuilds only the rigs it touches; rigs with Bone subclasses
+  use the generic path.
+* **Animation writes the record directly.** `PropertyBinding` bound to a bone `quaternion` / `position` / `scale`
+  resolves the record at bind time and its setter stores the components and bumps the versions, no bone access, no
+  `matrixWorldNeedsUpdate`. `QuaternionLinearInterpolant` interpolates inside the generic `evaluate` frame (no boxed
+  doubles per track and frame) and memoises the slerp angle terms (`sqrt` / `atan2` of the keyframe dot product are
+  pure functions of data that does not change while the clip time stays inside one interval); `PropertyMixer`
+  buffers are carved from shared chunks.
+* **`Skeleton.update()`** runs from flat per-bone arrays too: it compares the bones' world versions in their records and
+  multiplies the world matrices (slab) with the inverse bind matrices, which are held in one `Float32Array` shared by
+  every skeleton using the same `boneInverses` array (each Matrix4's `elements` is a slice of it, so in-place edits
+  still take effect; replacing a matrix or the list is detected by identity). Skeletons that contain non-Bones
+  fall back to reading the objects. An unchanged skeleton costs a loop of integer compares.
+* **One bone atlas** (`src/renderers/webgl/WebGLBoneAtlas.js`). Every skeleton drawn with a built-in material owns a
+  stable range of bone slots in one RGBA32F texture; the shader adds the draw's `boneBase` uniform to the bone index
+  (`ShaderMaterial` programs keep three.js's unmodified chunk and one texture per skeleton). A frame uploads the
+  changed matrices with one `texImage2D` instead of one bind + upload per skeleton, and the texture stays bound
+  across draws. `skeleton.boneTexture` is created on demand if user code reads it.
+* Skinned and morphed meshes carry per-object GPU state and are never auto-batched; they sort by their own material
+  (not the batch group's shared id) so the material block is bound once per material instead of once per draw.
+* `SkinnedMesh.bindMatrixInverse` is recomputed only when the world matrix version changed, and the renderer
+  re-sends `bindMatrix` / `bindMatrixInverse` / `boneBase` only when their values changed. The skeleton is updated once
+  per `render()` call, from the render list build, so a mesh drawn in the shadow pass and the main pass uploads its
+  bones once. Subtrees made only of Bones are skipped by the render traversal.
+* The bone atlas is streamed with `texImage2D` (not `texSubImage2D` into immutable storage), the upload path that does
+  not stall Chromium's command buffer (§ stall-hunter report). Unpack pixel-store state is cached in `WebGLState`.
 
 ## 12. Environment maps and image-based lighting (`src/renderers/webgl/WebGLEnvironments.js`)
 

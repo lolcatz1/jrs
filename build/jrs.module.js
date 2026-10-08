@@ -633,6 +633,7 @@ var Quaternion = class {
     return this;
   }
   setFromEuler(euler, update = true) {
+    if (euler._stale) euler._flush();
     const x = euler._x, y = euler._y, z = euler._z, order = euler._order;
     const cos = Math.cos, sin = Math.sin;
     const c1 = cos(x / 2), c2 = cos(y / 2), c3 = cos(z / 2);
@@ -1256,6 +1257,7 @@ var Vector3 = class {
     return this.fromArray(m.elements, index * 3);
   }
   setFromEuler(e) {
+    if (e._stale) e._flush();
     this.x = e._x;
     this.y = e._y;
     this.z = e._z;
@@ -2797,25 +2799,41 @@ var Euler = class _Euler {
     this._y = y;
     this._z = z;
     this._order = order;
+    this._stale = false;
+    this._source = null;
+  }
+  /** Recomputes x / y / z from the driving quaternion if it changed since the last read. */
+  _flush() {
+    if (this._stale) {
+      this._stale = false;
+      this.setFromQuaternion(this._source, void 0, false);
+    }
+    return this;
   }
   get x() {
+    if (this._stale) this._flush();
     return this._x;
   }
   set x(v) {
+    if (this._stale) this._flush();
     this._x = v;
     this._onChangeCallback();
   }
   get y() {
+    if (this._stale) this._flush();
     return this._y;
   }
   set y(v) {
+    if (this._stale) this._flush();
     this._y = v;
     this._onChangeCallback();
   }
   get z() {
+    if (this._stale) this._flush();
     return this._z;
   }
   set z(v) {
+    if (this._stale) this._flush();
     this._z = v;
     this._onChangeCallback();
   }
@@ -2823,10 +2841,12 @@ var Euler = class _Euler {
     return this._order;
   }
   set order(v) {
+    if (this._stale) this._flush();
     this._order = v;
     this._onChangeCallback();
   }
   set(x, y, z, order = this._order) {
+    this._stale = false;
     this._x = x;
     this._y = y;
     this._z = z;
@@ -2835,9 +2855,12 @@ var Euler = class _Euler {
     return this;
   }
   clone() {
+    if (this._stale) this._flush();
     return new this.constructor(this._x, this._y, this._z, this._order);
   }
   copy(e) {
+    if (e._stale) e._flush();
+    this._stale = false;
     this._x = e._x;
     this._y = e._y;
     this._z = e._z;
@@ -2846,6 +2869,7 @@ var Euler = class _Euler {
     return this;
   }
   setFromRotationMatrix(m, order = this._order, update = true) {
+    this._stale = false;
     const te = m.elements;
     const m11 = te[0], m12 = te[4], m13 = te[8];
     const m21 = te[1], m22 = te[5], m23 = te[9];
@@ -2926,13 +2950,17 @@ var Euler = class _Euler {
     return this.set(v.x, v.y, v.z, order);
   }
   reorder(newOrder) {
+    if (this._stale) this._flush();
     _quaternion2.setFromEuler(this);
     return this.setFromQuaternion(_quaternion2, newOrder);
   }
   equals(e) {
+    if (this._stale) this._flush();
+    if (e._stale) e._flush();
     return e._x === this._x && e._y === this._y && e._z === this._z && e._order === this._order;
   }
   fromArray(array) {
+    this._stale = false;
     this._x = array[0];
     this._y = array[1];
     this._z = array[2];
@@ -2941,6 +2969,7 @@ var Euler = class _Euler {
     return this;
   }
   toArray(array = [], offset = 0) {
+    if (this._stale) this._flush();
     array[offset] = this._x;
     array[offset + 1] = this._y;
     array[offset + 2] = this._z;
@@ -2954,6 +2983,7 @@ var Euler = class _Euler {
   _onChangeCallback() {
   }
   *[Symbol.iterator]() {
+    if (this._stale) this._flush();
     yield this._x;
     yield this._y;
     yield this._z;
@@ -3025,7 +3055,7 @@ var Layers = class {
 var RECORD_SIZE = 48;
 var LOCAL_OFFSET = 0;
 var WORLD_OFFSET = 16;
-var SNAPSHOT_SIZE = 14;
+var SNAPSHOT_SIZE = 16;
 var PAGE_RECORDS = 1024;
 var Page = class {
   constructor() {
@@ -3312,6 +3342,14 @@ var _addedEvent = { type: "added" };
 var _removedEvent = { type: "removed" };
 var _childaddedEvent = { type: "childadded", child: null };
 var _childremovedEvent = { type: "childremoved", child: null };
+function invalidateRigs(parent, child) {
+  if (child._plan !== void 0) child._plan = null;
+  if (parent.isBone === true) {
+    let root = parent;
+    while (root.parent !== null && root.parent.isBone === true) root = root.parent;
+    root._plan = null;
+  }
+}
 var Object3D = class _Object3D extends EventDispatcher {
   constructor() {
     super();
@@ -3331,8 +3369,9 @@ var Object3D = class _Object3D extends EventDispatcher {
       quaternion.setFromEuler(rotation, false);
     }
     function onQuaternionChange() {
-      rotation.setFromQuaternion(quaternion, void 0, false);
+      rotation._stale = true;
     }
+    rotation._source = quaternion;
     rotation._onChange(onRotationChange);
     quaternion._onChange(onQuaternionChange);
     const slot = transformSlab.allocate(this);
@@ -3359,6 +3398,7 @@ var Object3D = class _Object3D extends EventDispatcher {
     this._frontFaceCW = false;
     this._cullVersion = -1;
     this._cullSphere = null;
+    this._skipStamp = -1;
     this._cullFV0 = -1;
     this._cullVis0 = false;
     this._cullFV1 = -1;
@@ -3406,7 +3446,7 @@ var Object3D = class _Object3D extends EventDispatcher {
     if (this.matrixAutoUpdate) this.updateMatrix();
     this._matrix.premultiply(matrix);
     this._matrix.decompose(this.position, this.quaternion, this.scale);
-    this._snapData[this._snapOffset] = NaN;
+    this._forceRecompose();
     this.matrixWorldNeedsUpdate = true;
   }
   applyQuaternion(q) {
@@ -3495,6 +3535,7 @@ var Object3D = class _Object3D extends EventDispatcher {
       object.parent = this;
       this.children.push(object);
       epochs.structure++;
+      if (object.isBone === true || this.isBone === true) invalidateRigs(this, object);
       notifyAdd(this, object);
       object.matrixWorldNeedsUpdate = true;
       object.dispatchEvent(_addedEvent);
@@ -3516,6 +3557,7 @@ var Object3D = class _Object3D extends EventDispatcher {
       object.parent = null;
       this.children.splice(index, 1);
       epochs.structure++;
+      if (object.isBone === true || this.isBone === true) invalidateRigs(this, object);
       notifyRemove(this, object);
       object.dispatchEvent(_removedEvent);
       _childremovedEvent.child = object;
@@ -3544,6 +3586,7 @@ var Object3D = class _Object3D extends EventDispatcher {
     object.parent = this;
     this.children.push(object);
     epochs.structure++;
+    if (object.isBone === true || this.isBone === true) invalidateRigs(this, object);
     notifyAdd(this, object);
     object.updateWorldMatrix(false, true);
     object.dispatchEvent(_addedEvent);
@@ -3610,6 +3653,9 @@ var Object3D = class _Object3D extends EventDispatcher {
       callback(parent);
       parent.traverseAncestors(callback);
     }
+  }
+  _forceRecompose() {
+    this._snapData[this._snapOffset] = NaN;
   }
   _snapshot() {
     const p = this.position, q = this.quaternion, s = this.scale, d = this._snapData, o = this._snapOffset;
@@ -5932,6 +5978,8 @@ var Material = class extends EventDispatcher {
     this._frameStamp = -1;
     this._frameRid = 0;
     this._batchGroup = null;
+    this._soloStamp = -1;
+    this._soloRid = 0;
     this._resolveStamp = -1;
     this._resolveVariant = -1;
     this._resolveProgram = null;
@@ -15903,6 +15951,122 @@ var Frustum = class {
   }
 };
 
+// src/textures/DataTexture.js
+var DataTexture = class extends Texture {
+  constructor(data = null, width = 1, height = 1, format, type, mapping, wrapS, wrapT, magFilter = NearestFilter, minFilter = NearestFilter, anisotropy, colorSpace) {
+    super(null, mapping, wrapS, wrapT, magFilter, minFilter, format, type, anisotropy, colorSpace);
+    this.isDataTexture = true;
+    this.image = { data, width, height };
+    this.generateMipmaps = false;
+    this.flipY = false;
+    this.unpackAlignment = 1;
+  }
+};
+
+// src/renderers/webgl/WebGLBoneAtlas.js
+var WIDTH = 1024;
+var ROW_STEP = 16;
+var WebGLBoneAtlas = class {
+  constructor() {
+    this.rows = ROW_STEP;
+    this.data = new Float32Array(WIDTH * this.rows * 4);
+    this.texture = new DataTexture(this.data, WIDTH, this.rows, RGBAFormat, FloatType);
+    this.texture._stream = true;
+    this.texture.needsUpdate = true;
+    this.top = 0;
+    this.freeRanges = [];
+    this.dirty = false;
+    this._registry = typeof FinalizationRegistry === "function" ? new FinalizationRegistry((r) => this._release(r.base, r.count)) : null;
+  }
+  /** Copies the skeleton's bone matrices into its slots if they changed (allocating the slots on first use). */
+  sync(skeleton) {
+    const count = skeleton.bones.length;
+    if (skeleton._atlas !== this || skeleton._atlasCount !== count) {
+      if (skeleton._atlas !== null) skeleton._atlas.release(skeleton);
+      if (count === 0) return;
+      skeleton._atlas = this;
+      skeleton._atlasCount = count;
+      skeleton._atlasBase = this._alloc(count);
+      skeleton._atlasVersion = -1;
+      if (this._registry !== null) this._registry.register(skeleton, { base: skeleton._atlasBase, count }, skeleton);
+    }
+    if (skeleton._atlasVersion !== skeleton._dataVersion) {
+      skeleton._atlasVersion = skeleton._dataVersion;
+      this.data.set(count * 16 === skeleton.boneMatrices.length ? skeleton.boneMatrices : skeleton.boneMatrices.subarray(0, count * 16), skeleton._atlasBase * 16);
+      this.dirty = true;
+    }
+  }
+  release(skeleton) {
+    if (skeleton._atlas !== this) return;
+    if (this._registry !== null) this._registry.unregister(skeleton);
+    this._release(skeleton._atlasBase, skeleton._atlasCount);
+    skeleton._atlas = null;
+    skeleton._atlasCount = 0;
+    skeleton._atlasBase = 0;
+    skeleton._atlasVersion = -1;
+  }
+  /** Flags the texture for upload if any range changed since the last call. */
+  flush() {
+    if (this.dirty) {
+      this.dirty = false;
+      this.texture.needsUpdate = true;
+    }
+    return this.texture;
+  }
+  dispose() {
+    this.texture.dispose();
+  }
+  _alloc(count) {
+    const free = this.freeRanges;
+    for (let i = 0; i < free.length; i += 2) {
+      if (free[i + 1] >= count) {
+        const base2 = free[i];
+        if (free[i + 1] === count) free.splice(i, 2);
+        else {
+          free[i] += count;
+          free[i + 1] -= count;
+        }
+        return base2;
+      }
+    }
+    const base = this.top;
+    this.top += count;
+    this._ensure(this.top);
+    return base;
+  }
+  _release(base, count) {
+    const free = this.freeRanges;
+    free.push(base, count);
+    if (base + count === this.top) this._trim();
+  }
+  /** Returns trailing free ranges to the bump pointer. */
+  _trim() {
+    const free = this.freeRanges;
+    for (let again = true; again; ) {
+      again = false;
+      for (let i = 0; i < free.length; i += 2) {
+        if (free[i] + free[i + 1] === this.top) {
+          this.top = free[i];
+          free.splice(i, 2);
+          again = true;
+          break;
+        }
+      }
+    }
+  }
+  _ensure(bones) {
+    const rowsNeeded = Math.ceil(bones * 4 / WIDTH);
+    if (rowsNeeded <= this.rows) return;
+    const rows = Math.ceil(rowsNeeded / ROW_STEP) * ROW_STEP;
+    const data = new Float32Array(WIDTH * rows * 4);
+    data.set(this.data);
+    this.data = data;
+    this.rows = rows;
+    this.texture.image = { data, width: WIDTH, height: rows };
+    this.dirty = true;
+  }
+};
+
 // src/renderers/webgl/WebGLState.js
 var WebGLState = class {
   constructor(gl) {
@@ -18016,6 +18180,12 @@ function rewriteVertexSource(source, isRaw) {
 }
 
 // src/renderers/shaders/ShaderLib.js
+var SKINNING_PARS_ATLAS = (() => {
+  const a = "uniform highp sampler2D boneTexture;", b = "int j = int( i ) * 4;";
+  const src = ShaderChunk.skinning_pars_vertex;
+  if (!src.includes(a) || !src.includes(b)) throw new Error("ShaderLib: skinning_pars_vertex chunk changed");
+  return src.replace(a, a + "\n	uniform int boneBase;").replace(b, "int j = ( int( i ) + boneBase ) * 4;");
+})();
 var MAX_DIR_LIGHTS = 4;
 var MAX_POINT_LIGHTS = 8;
 var MAX_SPOT_LIGHTS = 4;
@@ -18236,7 +18406,7 @@ in mat4 instanceMatrix;
 in vec4 skinIndex;
 in vec4 skinWeight;
 #endif
-${ShaderChunk.skinning_pars_vertex}
+${SKINNING_PARS_ATLAS}
 ${ShaderChunk.morphtarget_pars_vertex}
 #ifdef USE_OBJECT_TEXTURE
 // Batched draws: each object's world matrix and normal matrix come from a per-frame matrix
@@ -19637,6 +19807,7 @@ var WebGLProgram = class {
     this.bindMatrixUniform = this.uniforms.bindMatrix || null;
     this.bindMatrixInverseUniform = this.uniforms.bindMatrixInverse || null;
     this.boneTextureUniform = this.uniforms.boneTexture || null;
+    this.boneBaseUniform = this.uniforms.boneBase || null;
     this.morphBaseInfluenceUniform = this.uniforms.morphTargetBaseInfluence || null;
     this.morphInfluencesUniform = this.uniforms.morphTargetInfluences || null;
     this.morphTextureUniform = this.uniforms.morphTargetsTexture || null;
@@ -22447,18 +22618,6 @@ var WebGLShadowMap = class {
   }
 };
 
-// src/textures/DataTexture.js
-var DataTexture = class extends Texture {
-  constructor(data = null, width = 1, height = 1, format, type, mapping, wrapS, wrapT, magFilter = NearestFilter, minFilter = NearestFilter, anisotropy, colorSpace) {
-    super(null, mapping, wrapS, wrapT, magFilter, minFilter, format, type, anisotropy, colorSpace);
-    this.isDataTexture = true;
-    this.image = { data, width, height };
-    this.generateMipmaps = false;
-    this.flipY = false;
-    this.unpackAlignment = 1;
-  }
-};
-
 // src/renderers/shaders/DFGLUTData.js
 var DATA = new Uint16Array([
   12469,
@@ -23029,6 +23188,14 @@ var ITEM_MULTIDRAWABLE = 2;
 var KIND_SPRITE = 5;
 var defaultOnBeforeRender = Object3D.prototype.onBeforeRender;
 var defaultOnAfterRender = Object3D.prototype.onAfterRender;
+function boneTreeIsPure(bone) {
+  const children = bone.children;
+  for (let i = 0, l = children.length; i < l; i++) {
+    const c = children[i];
+    if (c.isBone !== true || !boneTreeIsPure(c)) return false;
+  }
+  return true;
+}
 var WebGLRenderer = class {
   constructor(parameters = {}) {
     const {
@@ -23092,6 +23259,7 @@ var WebGLRenderer = class {
     this._nestedStates = [];
     this._nestedDepth = 0;
     this._frameId = 0;
+    this._boneAtlas = null;
     this._cameraLayerMask = 1;
     this._envVersion = 0;
     this._lightsEpoch = 0;
@@ -23217,6 +23385,7 @@ var WebGLRenderer = class {
     this._flatMerged = false;
     this._deferSkeletons = false;
     this._skinnedPending = [];
+    this._atlasPending = [];
     this._zTmp = new Float64Array(1);
     this._rec = null;
     this._buildSeq = 0;
@@ -23383,6 +23552,10 @@ var WebGLRenderer = class {
     this.batcher.dispose();
     this.environments.dispose();
     this.background.dispose();
+    if (this._boneAtlas !== null) {
+      this._boneAtlas.dispose();
+      this._boneAtlas = null;
+    }
     if (this.megaBuffers !== null) this.megaBuffers.dispose();
     this._gl.deleteBuffer(this._frameBuffer);
     this._gl.deleteBuffer(this._lightsBuffer);
@@ -24276,6 +24449,7 @@ var WebGLRenderer = class {
     out[0] = ndcDepth(cx, cy, cz);
   }
   _projectObject(object, camera, groupOrder, sortObjects, list) {
+    if (object._skipStamp === epochs.structure) return;
     if (object.visible === false) return;
     const rec = this._rec;
     if ((object.layers.mask & this._cameraLayerMask) !== 0) {
@@ -24326,6 +24500,13 @@ var WebGLRenderer = class {
         }
         if (rec !== null) rec.addCandidate(object, inside, list.count > first ? first : -1);
       }
+    }
+    if (object.isBone === true && object._skipStamp !== -(epochs.structure + 2)) {
+      if (boneTreeIsPure(object)) {
+        object._skipStamp = epochs.structure;
+        return;
+      }
+      object._skipStamp = -(epochs.structure + 2);
     }
     const children = object.children;
     for (let i = 0, l = children.length; i < l; i++) this._projectObject(children[i], camera, groupOrder, sortObjects, list);
@@ -24559,6 +24740,12 @@ var WebGLRenderer = class {
         }
       }
       pending.length = 0;
+      const atlasPending = this._atlasPending;
+      if (atlasPending !== void 0 && atlasPending.length > 0) {
+        const atlas = this._boneAtlas !== null ? this._boneAtlas : this._boneAtlas = new WebGLBoneAtlas();
+        for (let i = 0; i < atlasPending.length; i++) atlas.sync(atlasPending[i]);
+        atlasPending.length = 0;
+      }
     }
     return ok;
   }
@@ -24570,11 +24757,17 @@ var WebGLRenderer = class {
     let variant = this._variantFor(object, geometry, material, shadowPass);
     if (object.isSkinnedMesh === true) {
       const skeleton = object.skeleton;
-      if (skeleton !== void 0 && skeleton.frame !== this._frameId) {
-        if (this._deferSkeletons === true) this._skinnedPending.push(skeleton);
-        else {
-          skeleton.update();
-          skeleton.frame = this._frameId;
+      if (skeleton !== void 0) {
+        const atlased = material.isShaderMaterial !== true;
+        if (this._deferSkeletons === true) {
+          if (skeleton.frame !== this._frameId) this._skinnedPending.push(skeleton);
+          if (atlased) this._atlasPending.push(skeleton);
+        } else {
+          if (skeleton.frame !== this._frameId) {
+            skeleton.update();
+            skeleton.frame = this._frameId;
+          }
+          if (atlased) (this._boneAtlas !== null ? this._boneAtlas : this._boneAtlas = new WebGLBoneAtlas()).sync(skeleton);
         }
       }
     }
@@ -24597,6 +24790,14 @@ var WebGLRenderer = class {
       geometry._frameStamp = frame;
       geometry._frameRid = this._geometryCounter++;
     }
+    let materialRid = material._frameRid;
+    if (object.isSkinnedMesh === true || object.morphTargetInfluences !== void 0) {
+      if (material._soloStamp !== frame) {
+        material._soloStamp = frame;
+        material._soloRid = this._materialCounter++;
+      }
+      materialRid = material._soloRid;
+    }
     let flags = 0;
     if (group === null && this._objectBatchable(object, geometry) && isTwoPass(material, shadowPass) === false) {
       let ok = true;
@@ -24613,7 +24814,7 @@ var WebGLRenderer = class {
         if (material.wireframe !== true && object.isSprite !== true && dr.start === 0 && dr.count === Infinity) flags |= ITEM_MULTIDRAWABLE;
       }
     }
-    list.push(object, geometry, material, group, material._frameRid, geometry._frameRid, variant, material._batchGroup, flags, object.isMesh === true ? -1 : this._layoutNeeds(material) & geometry._attrMask);
+    list.push(object, geometry, material, group, materialRid, geometry._frameRid, variant, material._batchGroup, flags, object.isMesh === true ? -1 : this._layoutNeeds(material) & geometry._attrMask);
     const rec = this._rec;
     if (rec !== null && shadowPass === false) {
       rec.regMaterial(material);
@@ -25584,7 +25785,7 @@ var WebGLRenderer = class {
       }
     }
     if (program.spriteCenterLocation !== null) gl.uniform2f(program.spriteCenterLocation, object.center.x, object.center.y);
-    if (object.isSkinnedMesh === true) this._uploadSkinning(program, object);
+    if (object.isSkinnedMesh === true) this._uploadSkinning(program, object, material);
     if (object.morphTargetInfluences !== void 0 && program.morphInfluencesUniform !== null) this._uploadMorphTargets(program, object, geometry);
     const page = this.pagedDraws && this.megaBuffers !== null && object.isMesh === true && object.isInstancedMesh !== true && object.isSkinnedMesh !== true && material.wireframe !== true && geometry.isInstancedBufferGeometry !== true ? this.megaBuffers.ensure(geometry) : null;
     if (page !== null && this.megaBuffers.supports(page, program)) {
@@ -25606,7 +25807,7 @@ var WebGLRenderer = class {
     if (object.onAfterRender !== defaultOnAfterRender) object.onAfterRender(this, scene, camera, geometry, material, group);
   }
   /** bindMatrix / bindMatrixInverse (re-sent only when the mesh's bind version changed) and the skeleton's bone texture. */
-  _uploadSkinning(program, object) {
+  _uploadSkinning(program, object, material) {
     const gl = this._gl;
     const bm = program.bindMatrixUniform, bmi = program.bindMatrixInverseUniform;
     if (bm !== null && !cacheArray(bm, object.bindMatrix.elements, 16)) {
@@ -25620,9 +25821,20 @@ var WebGLRenderer = class {
     const bt = program.boneTextureUniform;
     const skeleton = object.skeleton;
     if (bt !== null && skeleton !== void 0) {
-      if (skeleton.boneTexture === null) skeleton.computeBoneTexture();
       bt.boundStamp = this._samplerStamp;
-      this.textures.setTexture2D(skeleton.boneTexture, bt.unit);
+      if (material.isShaderMaterial !== true && program.boneBaseUniform !== null) {
+        if (skeleton._atlas !== this._boneAtlas) this._boneAtlas.sync(skeleton);
+        const bb = program.boneBaseUniform, base = skeleton._atlasBase;
+        if (bb.cache !== base) {
+          bb.cache = base;
+          gl.uniform1i(bb.location, base);
+          if (this._traceUniforms !== null) this._trace(bb);
+        }
+        this.textures.setTexture2D(this._boneAtlas.flush(), bt.unit);
+      } else {
+        if (skeleton._boneTexture === null) skeleton.computeBoneTexture();
+        this.textures.setTexture2D(skeleton._boneTexture, bt.unit);
+      }
     }
   }
   /** Morph target influences, base influence and the geometry's morph texture (three.js r186 texture layout). */
@@ -26697,25 +26909,602 @@ var SkinnedMesh = class extends Mesh {
 SkinnedMesh.prototype._flatUMW = SkinnedMesh.prototype.updateMatrixWorld;
 SkinnedMesh.prototype._flatPostUpdate = SkinnedMesh.prototype._updateBindMatrixInverse;
 
+// src/core/SlabTransform.js
+var TRS_VERSION = 10;
+var TRS_MATRIX_SEEN = 11;
+var TRS_QUAT_VERSION = 12;
+var TRS_WORLD_VERSION = 13;
+var TRS_PARENT_WORLD_VERSION = 14;
+var TRS_FLAGS = 15;
+var FLAG_NEEDS_UPDATE = 1;
+var FLAG_MATRIX_AUTO = 2;
+var FLAG_WORLD_AUTO = 4;
+var noopOnChange = Quaternion.prototype._onChangeCallback;
+var SlabVector3 = class extends Vector3 {
+  constructor(owner, d, record, base) {
+    super();
+    Object.defineProperty(this, "_owner", { value: owner });
+    this._d = d;
+    this._b = record + base;
+    this._v = record + TRS_VERSION;
+  }
+  get x() {
+    return this._d[this._b];
+  }
+  set x(value) {
+    const d = this._d;
+    if (d !== void 0) {
+      d[this._b] = value;
+      d[this._v]++;
+    }
+  }
+  get y() {
+    return this._d[this._b + 1];
+  }
+  set y(value) {
+    const d = this._d;
+    if (d !== void 0) {
+      d[this._b + 1] = value;
+      d[this._v]++;
+    }
+  }
+  get z() {
+    return this._d[this._b + 2];
+  }
+  set z(value) {
+    const d = this._d;
+    if (d !== void 0) {
+      d[this._b + 2] = value;
+      d[this._v]++;
+    }
+  }
+  set(x, y, z) {
+    if (z === void 0) z = this.z;
+    const d = this._d, b = this._b;
+    d[b] = x;
+    d[b + 1] = y;
+    d[b + 2] = z;
+    d[this._v]++;
+    return this;
+  }
+  copy(v) {
+    const d = this._d, b = this._b;
+    d[b] = v.x;
+    d[b + 1] = v.y;
+    d[b + 2] = v.z;
+    d[this._v]++;
+    return this;
+  }
+  fromArray(array, offset = 0) {
+    const d = this._d, b = this._b;
+    d[b] = array[offset];
+    d[b + 1] = array[offset + 1];
+    d[b + 2] = array[offset + 2];
+    d[this._v]++;
+    return this;
+  }
+  clone() {
+    return new Vector3(this.x, this.y, this.z);
+  }
+  toJSON() {
+    return { isVector3: true, x: this.x, y: this.y, z: this.z };
+  }
+};
+SlabVector3.prototype.isSlabTransform = true;
+var SlabQuaternion = class extends Quaternion {
+  constructor(owner, d, record) {
+    super();
+    Object.defineProperty(this, "_owner", { value: owner });
+    this._d = d;
+    this._b = record + 3;
+    this._v = record + TRS_VERSION;
+  }
+  get _x() {
+    return this._d[this._b];
+  }
+  set _x(value) {
+    const d = this._d;
+    if (d !== void 0) {
+      d[this._b] = value;
+      d[this._v]++;
+      d[this._v + 2]++;
+    }
+  }
+  get _y() {
+    return this._d[this._b + 1];
+  }
+  set _y(value) {
+    const d = this._d;
+    if (d !== void 0) {
+      d[this._b + 1] = value;
+      d[this._v]++;
+      d[this._v + 2]++;
+    }
+  }
+  get _z() {
+    return this._d[this._b + 2];
+  }
+  set _z(value) {
+    const d = this._d;
+    if (d !== void 0) {
+      d[this._b + 2] = value;
+      d[this._v]++;
+      d[this._v + 2]++;
+    }
+  }
+  get _w() {
+    return this._d[this._b + 3];
+  }
+  set _w(value) {
+    const d = this._d;
+    if (d !== void 0) {
+      d[this._b + 3] = value;
+      d[this._v]++;
+      d[this._v + 2]++;
+    }
+  }
+  set(x, y, z, w) {
+    const d = this._d, b = this._b;
+    d[b] = x;
+    d[b + 1] = y;
+    d[b + 2] = z;
+    d[b + 3] = w;
+    d[this._v]++;
+    d[this._v + 2]++;
+    this._onChangeCallback();
+    return this;
+  }
+  fromArray(array, offset = 0) {
+    const d = this._d, b = this._b;
+    d[b] = array[offset];
+    d[b + 1] = array[offset + 1];
+    d[b + 2] = array[offset + 2];
+    d[b + 3] = array[offset + 3];
+    d[this._v]++;
+    d[this._v + 2]++;
+    this._onChangeCallback();
+    return this;
+  }
+  clone() {
+    return new Quaternion(this._x, this._y, this._z, this._w);
+  }
+};
+SlabQuaternion.prototype.isSlabTransform = true;
+var SlabEuler = class extends Euler {
+  constructor(owner, d, record) {
+    super();
+    Object.defineProperty(this, "_owner", { value: owner });
+    this._d = d;
+    this._qv = record + TRS_QUAT_VERSION;
+    this._seen = 0;
+  }
+  get _stale() {
+    const d = this._d;
+    return d !== void 0 && d[this._qv] !== this._seen;
+  }
+  set _stale(value) {
+    const d = this._d;
+    if (d !== void 0) this._seen = value ? -1 : d[this._qv];
+  }
+  clone() {
+    if (this._stale) this._flush();
+    return new Euler(this._x, this._y, this._z, this._order);
+  }
+  toJSON() {
+    if (this._stale) this._flush();
+    return { isEuler: true, _x: this._x, _y: this._y, _z: this._z, _order: this._order };
+  }
+};
+
+// src/objects/RigPlan.js
+var RigPlan = class {
+  constructor(root, bonesClass) {
+    this.enabled = true;
+    const bones = [], parents = [], extras = [], extraOwner = [];
+    const visit = (bone, parentIndex) => {
+      if (bone.constructor !== bonesClass) this.enabled = false;
+      const k = bones.length;
+      bones.push(bone);
+      parents.push(parentIndex);
+      const children = bone.children;
+      for (let i = 0; i < children.length; i++) {
+        const child = children[i];
+        if (child.isBone === true) visit(child, k);
+        else {
+          extras.push(child);
+          extraOwner.push(k);
+        }
+      }
+    };
+    visit(root, -1);
+    const n = this.n = bones.length;
+    this.bones = bones;
+    this.recData = [];
+    this.recOff = new Int32Array(n);
+    this.slabData = [];
+    this.slabOff = new Int32Array(n);
+    this.parData = [];
+    this.parOff = new Int32Array(n);
+    this.parVerData = [];
+    this.parVerOff = new Int32Array(n);
+    this.forceFrom = new Int32Array(n);
+    this.forceOut = new Uint8Array(n + 1);
+    this.rootVersion = new Float64Array(1);
+    for (let k = 0; k < n; k++) {
+      const b = bones[k], pk = parents[k];
+      this.recData.push(b._snapData);
+      this.recOff[k] = b._snapOffset;
+      this.slabData.push(b._slabData);
+      this.slabOff[k] = b._slabOffset;
+      if (pk >= 0) {
+        this.parData.push(bones[pk]._slabData);
+        this.parOff[k] = bones[pk]._slabOffset + 16;
+        this.parVerData.push(bones[pk]._snapData);
+        this.parVerOff[k] = bones[pk]._snapOffset + TRS_WORLD_VERSION;
+        this.forceFrom[k] = pk;
+      } else {
+        this.parData.push(b._slabData);
+        this.parOff[k] = 0;
+        this.parVerData.push(this.rootVersion);
+        this.parVerOff[k] = 0;
+        this.forceFrom[k] = n;
+      }
+    }
+    this.extras = extras;
+    this.extraOwner = Int32Array.from(extraOwner);
+  }
+  /** Same effect as `root.updateMatrixWorld(force)` on the generic path. */
+  update(force) {
+    const n = this.n, recData = this.recData, recOff = this.recOff, slabData = this.slabData, slabOff = this.slabOff;
+    const parData = this.parData, parOff = this.parOff, parVerData = this.parVerData, parVerOff = this.parVerOff, forceFrom = this.forceFrom, forceOut = this.forceOut;
+    const external = this.bones[0].parent;
+    const hasExternal = external !== null;
+    if (hasExternal) {
+      parData[0] = external._slabData;
+      parOff[0] = external._slabOffset + 16;
+      this.rootVersion[0] = external._worldVersion;
+    }
+    forceOut[n] = force === true ? 1 : 0;
+    let recomputed = 0;
+    for (let k = 0; k < n; k++) {
+      const d = recData[k], o = recOff[k];
+      const te = slabData[k], l = slabOff[k];
+      const flags0 = d[o + TRS_FLAGS];
+      let flags = flags0;
+      if ((flags & FLAG_MATRIX_AUTO) !== 0) {
+        const version = d[o + TRS_VERSION];
+        if (version !== d[o + TRS_MATRIX_SEEN]) {
+          d[o + TRS_MATRIX_SEEN] = version;
+          const px2 = d[o], py2 = d[o + 1], pz2 = d[o + 2], x = d[o + 3], y = d[o + 4], z = d[o + 5], w = d[o + 6], sx = d[o + 7], sy = d[o + 8], sz = d[o + 9];
+          const x2 = x + x, y2 = y + y, z2 = z + z;
+          const xx = x * x2, xy = x * y2, xz = x * z2;
+          const yy = y * y2, yz = y * z2, zz = z * z2;
+          const wx = w * x2, wy = w * y2, wz = w * z2;
+          te[l] = (1 - (yy + zz)) * sx;
+          te[l + 1] = (xy + wz) * sx;
+          te[l + 2] = (xz - wy) * sx;
+          te[l + 3] = 0;
+          te[l + 4] = (xy - wz) * sy;
+          te[l + 5] = (1 - (xx + zz)) * sy;
+          te[l + 6] = (yz + wx) * sy;
+          te[l + 7] = 0;
+          te[l + 8] = (xz + wy) * sz;
+          te[l + 9] = (yz - wx) * sz;
+          te[l + 10] = (1 - (xx + yy)) * sz;
+          te[l + 11] = 0;
+          te[l + 12] = px2;
+          te[l + 13] = py2;
+          te[l + 14] = pz2;
+          te[l + 15] = 1;
+          flags |= FLAG_NEEDS_UPDATE;
+        }
+      }
+      let f = forceOut[forceFrom[k]] !== 0;
+      const parentVersion = parVerData[k][parVerOff[k]];
+      const hasParent = k !== 0 || hasExternal;
+      if ((flags & FLAG_NEEDS_UPDATE) !== 0 || f || hasParent && parentVersion !== d[o + TRS_PARENT_WORLD_VERSION]) {
+        if ((flags & FLAG_WORLD_AUTO) !== 0) {
+          const w0 = l + 16;
+          if (!hasParent) {
+            for (let i = 0; i < 16; i++) te[w0 + i] = te[l + i];
+          } else {
+            const ae = parData[k], a = parOff[k];
+            const b11 = te[l], b12 = te[l + 4], b13 = te[l + 8], b14 = te[l + 12];
+            const b21 = te[l + 1], b22 = te[l + 5], b23 = te[l + 9], b24 = te[l + 13];
+            const b31 = te[l + 2], b32 = te[l + 6], b33 = te[l + 10], b34 = te[l + 14];
+            const a11 = ae[a], a12 = ae[a + 4], a13 = ae[a + 8], a14 = ae[a + 12];
+            const a21 = ae[a + 1], a22 = ae[a + 5], a23 = ae[a + 9], a24 = ae[a + 13];
+            const a31 = ae[a + 2], a32 = ae[a + 6], a33 = ae[a + 10], a34 = ae[a + 14];
+            if (ae[a + 3] === 0 && ae[a + 7] === 0 && ae[a + 11] === 0 && ae[a + 15] === 1 && te[l + 3] === 0 && te[l + 7] === 0 && te[l + 11] === 0 && te[l + 15] === 1) {
+              te[w0] = a11 * b11 + a12 * b21 + a13 * b31;
+              te[w0 + 4] = a11 * b12 + a12 * b22 + a13 * b32;
+              te[w0 + 8] = a11 * b13 + a12 * b23 + a13 * b33;
+              te[w0 + 12] = a11 * b14 + a12 * b24 + a13 * b34 + a14;
+              te[w0 + 1] = a21 * b11 + a22 * b21 + a23 * b31;
+              te[w0 + 5] = a21 * b12 + a22 * b22 + a23 * b32;
+              te[w0 + 9] = a21 * b13 + a22 * b23 + a23 * b33;
+              te[w0 + 13] = a21 * b14 + a22 * b24 + a23 * b34 + a24;
+              te[w0 + 2] = a31 * b11 + a32 * b21 + a33 * b31;
+              te[w0 + 6] = a31 * b12 + a32 * b22 + a33 * b32;
+              te[w0 + 10] = a31 * b13 + a32 * b23 + a33 * b33;
+              te[w0 + 14] = a31 * b14 + a32 * b24 + a33 * b34 + a34;
+              te[w0 + 3] = 0;
+              te[w0 + 7] = 0;
+              te[w0 + 11] = 0;
+              te[w0 + 15] = 1;
+            } else {
+              const a41 = ae[a + 3], a42 = ae[a + 7], a43 = ae[a + 11], a44 = ae[a + 15];
+              const b41 = te[l + 3], b42 = te[l + 7], b43 = te[l + 11], b44 = te[l + 15];
+              te[w0] = a11 * b11 + a12 * b21 + a13 * b31 + a14 * b41;
+              te[w0 + 4] = a11 * b12 + a12 * b22 + a13 * b32 + a14 * b42;
+              te[w0 + 8] = a11 * b13 + a12 * b23 + a13 * b33 + a14 * b43;
+              te[w0 + 12] = a11 * b14 + a12 * b24 + a13 * b34 + a14 * b44;
+              te[w0 + 1] = a21 * b11 + a22 * b21 + a23 * b31 + a24 * b41;
+              te[w0 + 5] = a21 * b12 + a22 * b22 + a23 * b32 + a24 * b42;
+              te[w0 + 9] = a21 * b13 + a22 * b23 + a23 * b33 + a24 * b43;
+              te[w0 + 13] = a21 * b14 + a22 * b24 + a23 * b34 + a24 * b44;
+              te[w0 + 2] = a31 * b11 + a32 * b21 + a33 * b31 + a34 * b41;
+              te[w0 + 6] = a31 * b12 + a32 * b22 + a33 * b32 + a34 * b42;
+              te[w0 + 10] = a31 * b13 + a32 * b23 + a33 * b33 + a34 * b43;
+              te[w0 + 14] = a31 * b14 + a32 * b24 + a33 * b34 + a34 * b44;
+              te[w0 + 3] = a41 * b11 + a42 * b21 + a43 * b31 + a44 * b41;
+              te[w0 + 7] = a41 * b12 + a42 * b22 + a43 * b32 + a44 * b42;
+              te[w0 + 11] = a41 * b13 + a42 * b23 + a43 * b33 + a44 * b43;
+              te[w0 + 15] = a41 * b14 + a42 * b24 + a43 * b34 + a44 * b44;
+            }
+            d[o + TRS_PARENT_WORLD_VERSION] = parentVersion;
+          }
+          d[o + TRS_WORLD_VERSION]++;
+          recomputed++;
+        }
+        flags &= ~FLAG_NEEDS_UPDATE;
+        f = true;
+      }
+      if (flags !== flags0) d[o + TRS_FLAGS] = flags;
+      forceOut[k] = f ? 1 : 0;
+    }
+    epochs.world += recomputed;
+    const extras = this.extras, extraOwner = this.extraOwner;
+    for (let i = 0; i < extras.length; i++) extras[i].updateMatrixWorld(forceOut[extraOwner[i]] !== 0);
+  }
+};
+
 // src/objects/Bone.js
-var Bone = class extends Object3D {
+var Bone = class _Bone extends Object3D {
   constructor() {
     super();
     this.isBone = true;
     this.type = "Bone";
+    const d = this._snapData, o = this._snapOffset;
+    d[o] = 0;
+    d[o + 1] = 0;
+    d[o + 2] = 0;
+    d[o + 3] = 0;
+    d[o + 4] = 0;
+    d[o + 5] = 0;
+    d[o + 6] = 1;
+    d[o + 7] = 1;
+    d[o + 8] = 1;
+    d[o + 9] = 1;
+    d[o + TRS_VERSION] = 0;
+    d[o + TRS_MATRIX_SEEN] = 0;
+    d[o + TRS_QUAT_VERSION] = 0;
+    this._plan = null;
+    const position = new SlabVector3(this, d, o, 0);
+    const quaternion = new SlabQuaternion(this, d, o);
+    const scale = new SlabVector3(this, d, o, 7);
+    const rotation = new SlabEuler(this, d, o);
+    rotation._source = quaternion;
+    rotation._onChange(() => {
+      quaternion.setFromEuler(rotation, false);
+      rotation._seen = d[o + TRS_QUAT_VERSION];
+    });
+    Object.defineProperties(this, {
+      position: { configurable: true, enumerable: true, value: position },
+      rotation: { configurable: true, enumerable: true, value: rotation },
+      quaternion: { configurable: true, enumerable: true, value: quaternion },
+      scale: { configurable: true, enumerable: true, value: scale }
+    });
+  }
+  // Scene-graph state kept in the transform record (written by Object3D's constructor through these setters too)
+  get _worldVersion() {
+    return this._snapData[this._snapOffset + TRS_WORLD_VERSION];
+  }
+  set _worldVersion(value) {
+    this._snapData[this._snapOffset + TRS_WORLD_VERSION] = value;
+  }
+  get _parentWorldVersion() {
+    return this._snapData[this._snapOffset + TRS_PARENT_WORLD_VERSION];
+  }
+  set _parentWorldVersion(value) {
+    this._snapData[this._snapOffset + TRS_PARENT_WORLD_VERSION] = value;
+  }
+  get matrixWorldNeedsUpdate() {
+    return (this._snapData[this._snapOffset + TRS_FLAGS] & FLAG_NEEDS_UPDATE) !== 0;
+  }
+  set matrixWorldNeedsUpdate(value) {
+    this._setFlag(FLAG_NEEDS_UPDATE, value);
+  }
+  get matrixAutoUpdate() {
+    return (this._snapData[this._snapOffset + TRS_FLAGS] & FLAG_MATRIX_AUTO) !== 0;
+  }
+  set matrixAutoUpdate(value) {
+    this._setFlag(FLAG_MATRIX_AUTO, value);
+  }
+  get matrixWorldAutoUpdate() {
+    return (this._snapData[this._snapOffset + TRS_FLAGS] & FLAG_WORLD_AUTO) !== 0;
+  }
+  set matrixWorldAutoUpdate(value) {
+    this._setFlag(FLAG_WORLD_AUTO, value);
+  }
+  _setFlag(bit, value) {
+    const d = this._snapData, i = this._snapOffset + TRS_FLAGS;
+    d[i] = value ? d[i] | bit : d[i] & ~bit;
+  }
+  _forceRecompose() {
+    this._snapData[this._snapOffset + TRS_MATRIX_SEEN] = -1;
+  }
+  /** The local matrix was copied from elsewhere together with the TRS: it is in sync with the current values. */
+  _snapshot() {
+    const d = this._snapData, o = this._snapOffset;
+    d[o + TRS_MATRIX_SEEN] = d[o + TRS_VERSION];
+  }
+  updateMatrix() {
+    const d = this._snapData, o = this._snapOffset;
+    const version = d[o + TRS_VERSION];
+    if (version === d[o + TRS_MATRIX_SEEN]) return false;
+    d[o + TRS_MATRIX_SEEN] = version;
+    const px2 = d[o], py2 = d[o + 1], pz2 = d[o + 2], x = d[o + 3], y = d[o + 4], z = d[o + 5], w = d[o + 6], sx = d[o + 7], sy = d[o + 8], sz = d[o + 9];
+    const te = this._slabData, l = this._slabOffset;
+    const x2 = x + x, y2 = y + y, z2 = z + z;
+    const xx = x * x2, xy = x * y2, xz = x * z2;
+    const yy = y * y2, yz = y * z2, zz = z * z2;
+    const wx = w * x2, wy = w * y2, wz = w * z2;
+    te[l] = (1 - (yy + zz)) * sx;
+    te[l + 1] = (xy + wz) * sx;
+    te[l + 2] = (xz - wy) * sx;
+    te[l + 3] = 0;
+    te[l + 4] = (xy - wz) * sy;
+    te[l + 5] = (1 - (xx + zz)) * sy;
+    te[l + 6] = (yz + wx) * sy;
+    te[l + 7] = 0;
+    te[l + 8] = (xz + wy) * sz;
+    te[l + 9] = (yz - wx) * sz;
+    te[l + 10] = (1 - (xx + yy)) * sz;
+    te[l + 11] = 0;
+    te[l + 12] = px2;
+    te[l + 13] = py2;
+    te[l + 14] = pz2;
+    te[l + 15] = 1;
+    this.matrixWorldNeedsUpdate = true;
+    return true;
+  }
+  updateMatrixWorld(force) {
+    const parent = this.parent;
+    if (parent === null || parent.isBone !== true) {
+      let plan = this._plan;
+      if (plan === null) plan = this._plan = new RigPlan(this, _Bone);
+      if (plan.enabled) {
+        plan.update(force);
+        return;
+      }
+    }
+    if (this.matrixAutoUpdate) this.updateMatrix();
+    if (this.matrixWorldNeedsUpdate || force || parent !== null && parent._worldVersion !== this._parentWorldVersion) {
+      if (this.matrixWorldAutoUpdate === true) {
+        const te = this._slabData, l = this._slabOffset;
+        if (parent === null) {
+          for (let i = 0; i < 16; i++) te[l + 16 + i] = te[l + i];
+        } else {
+          const ae = parent._slabData, a = parent._slabOffset + 16;
+          const b11 = te[l], b12 = te[l + 4], b13 = te[l + 8], b14 = te[l + 12];
+          const b21 = te[l + 1], b22 = te[l + 5], b23 = te[l + 9], b24 = te[l + 13];
+          const b31 = te[l + 2], b32 = te[l + 6], b33 = te[l + 10], b34 = te[l + 14];
+          const a11 = ae[a], a12 = ae[a + 4], a13 = ae[a + 8], a14 = ae[a + 12];
+          const a21 = ae[a + 1], a22 = ae[a + 5], a23 = ae[a + 9], a24 = ae[a + 13];
+          const a31 = ae[a + 2], a32 = ae[a + 6], a33 = ae[a + 10], a34 = ae[a + 14];
+          const w = l + 16;
+          if (ae[a + 3] === 0 && ae[a + 7] === 0 && ae[a + 11] === 0 && ae[a + 15] === 1 && te[l + 3] === 0 && te[l + 7] === 0 && te[l + 11] === 0 && te[l + 15] === 1) {
+            te[w] = a11 * b11 + a12 * b21 + a13 * b31;
+            te[w + 4] = a11 * b12 + a12 * b22 + a13 * b32;
+            te[w + 8] = a11 * b13 + a12 * b23 + a13 * b33;
+            te[w + 12] = a11 * b14 + a12 * b24 + a13 * b34 + a14;
+            te[w + 1] = a21 * b11 + a22 * b21 + a23 * b31;
+            te[w + 5] = a21 * b12 + a22 * b22 + a23 * b32;
+            te[w + 9] = a21 * b13 + a22 * b23 + a23 * b33;
+            te[w + 13] = a21 * b14 + a22 * b24 + a23 * b34 + a24;
+            te[w + 2] = a31 * b11 + a32 * b21 + a33 * b31;
+            te[w + 6] = a31 * b12 + a32 * b22 + a33 * b32;
+            te[w + 10] = a31 * b13 + a32 * b23 + a33 * b33;
+            te[w + 14] = a31 * b14 + a32 * b24 + a33 * b34 + a34;
+            te[w + 3] = 0;
+            te[w + 7] = 0;
+            te[w + 11] = 0;
+            te[w + 15] = 1;
+          } else {
+            this._matrixWorld.multiplyMatrices(parent._matrixWorld, this._matrix);
+          }
+          this._parentWorldVersion = parent._worldVersion;
+        }
+        this._worldVersion++;
+        if (this._countsWorld) epochs.world++;
+      }
+      this.matrixWorldNeedsUpdate = false;
+      force = true;
+    }
+    const children = this.children;
+    for (let i = 0, l = children.length; i < l; i++) children[i].updateMatrixWorld(force);
   }
 };
 
 // src/objects/Skeleton.js
 var _identityMatrix = /* @__PURE__ */ new Matrix4();
+var _inverseSets = /* @__PURE__ */ new WeakMap();
+function inverseDataFor(boneInverses, n) {
+  const set = _inverseSets.get(boneInverses);
+  if (set !== void 0 && set.refs.length === n) {
+    const refs = set.refs;
+    let same = true;
+    for (let i = 0; i < n; i++) if (refs[i] !== boneInverses[i]) {
+      same = false;
+      break;
+    }
+    if (same) return set.data;
+  }
+  const data = new Float32Array(n * 16);
+  for (let i = 0; i < n; i++) {
+    const m = boneInverses[i];
+    data.set(m.elements, i * 16);
+    m.elements = data.subarray(i * 16, i * 16 + 16);
+  }
+  _inverseSets.set(boneInverses, { refs: boneInverses.slice(0, n), data });
+  return data;
+}
+function multiply4x4(ae, be, out, o) {
+  const a11 = ae[0], a12 = ae[4], a13 = ae[8], a14 = ae[12];
+  const a21 = ae[1], a22 = ae[5], a23 = ae[9], a24 = ae[13];
+  const a31 = ae[2], a32 = ae[6], a33 = ae[10], a34 = ae[14];
+  const a41 = ae[3], a42 = ae[7], a43 = ae[11], a44 = ae[15];
+  const b11 = be[0], b12 = be[4], b13 = be[8], b14 = be[12];
+  const b21 = be[1], b22 = be[5], b23 = be[9], b24 = be[13];
+  const b31 = be[2], b32 = be[6], b33 = be[10], b34 = be[14];
+  const b41 = be[3], b42 = be[7], b43 = be[11], b44 = be[15];
+  out[o] = a11 * b11 + a12 * b21 + a13 * b31 + a14 * b41;
+  out[o + 4] = a11 * b12 + a12 * b22 + a13 * b32 + a14 * b42;
+  out[o + 8] = a11 * b13 + a12 * b23 + a13 * b33 + a14 * b43;
+  out[o + 12] = a11 * b14 + a12 * b24 + a13 * b34 + a14 * b44;
+  out[o + 1] = a21 * b11 + a22 * b21 + a23 * b31 + a24 * b41;
+  out[o + 5] = a21 * b12 + a22 * b22 + a23 * b32 + a24 * b42;
+  out[o + 9] = a21 * b13 + a22 * b23 + a23 * b33 + a24 * b43;
+  out[o + 13] = a21 * b14 + a22 * b24 + a23 * b34 + a24 * b44;
+  out[o + 2] = a31 * b11 + a32 * b21 + a33 * b31 + a34 * b41;
+  out[o + 6] = a31 * b12 + a32 * b22 + a33 * b32 + a34 * b42;
+  out[o + 10] = a31 * b13 + a32 * b23 + a33 * b33 + a34 * b43;
+  out[o + 14] = a31 * b14 + a32 * b24 + a33 * b34 + a34 * b44;
+  out[o + 3] = a41 * b11 + a42 * b21 + a43 * b31 + a44 * b41;
+  out[o + 7] = a41 * b12 + a42 * b22 + a43 * b32 + a44 * b42;
+  out[o + 11] = a41 * b13 + a42 * b23 + a43 * b33 + a44 * b43;
+  out[o + 15] = a41 * b14 + a42 * b24 + a43 * b34 + a44 * b44;
+}
 var Skeleton = class _Skeleton {
   constructor(bones = [], boneInverses = []) {
     this.uuid = generateUUID();
     this.bones = bones.slice(0);
     this.boneInverses = boneInverses;
     this.boneMatrices = null;
-    this.boneTexture = null;
+    this._boneTexture = null;
     this.frame = -1;
+    this._atlas = null;
+    this._atlasBase = 0;
+    this._atlasCount = 0;
+    this._atlasVersion = -1;
+    this._dataVersion = 0;
+    this._flatBones = null;
+    this._flat = false;
+    this._recData = null;
+    this._recOff = null;
+    this._slabData = null;
+    this._slabOff = null;
     this._boneVersions = null;
     this._versionsFor = null;
     this._inversesVersion = 0;
@@ -26774,12 +27563,12 @@ var Skeleton = class _Skeleton {
     if (versions.length !== n) {
       versions = this._boneVersions = new Float64Array(n).fill(-1);
     }
+    if (this._flatFor(bones, n) === false) return this._updateObjects(bones, boneInverses, boneMatrices, n, versions);
+    const recData = this._recData, recOff = this._recOff;
     let changed = this._versionsFor !== boneInverses || this._lastInversesVersion !== this._inversesVersion || boneMatrices.length < n * 16;
     if (!changed) {
       for (let i = 0; i < n; i++) {
-        const bone = bones[i];
-        const v = bone ? bone._worldVersion : -2;
-        if (versions[i] !== v) {
+        if (versions[i] !== recData[i][recOff[i] + TRS_WORLD_VERSION]) {
           changed = true;
           break;
         }
@@ -26788,20 +27577,40 @@ var Skeleton = class _Skeleton {
     }
     this._versionsFor = boneInverses;
     this._lastInversesVersion = this._inversesVersion;
+    const slabData = this._slabData, slabOff = this._slabOff;
+    const be = inverseDataFor(boneInverses, n);
     for (let i = 0; i < n; i++) {
-      const bone = bones[i];
-      const ae = bone ? bone.matrixWorld.elements : _identityMatrix.elements;
-      const be = boneInverses[i].elements;
-      versions[i] = bone ? bone._worldVersion : -2;
-      const o = i * 16;
-      const a11 = ae[0], a12 = ae[4], a13 = ae[8], a14 = ae[12];
-      const a21 = ae[1], a22 = ae[5], a23 = ae[9], a24 = ae[13];
-      const a31 = ae[2], a32 = ae[6], a33 = ae[10], a34 = ae[14];
-      const a41 = ae[3], a42 = ae[7], a43 = ae[11], a44 = ae[15];
-      const b11 = be[0], b12 = be[4], b13 = be[8], b14 = be[12];
-      const b21 = be[1], b22 = be[5], b23 = be[9], b24 = be[13];
-      const b31 = be[2], b32 = be[6], b33 = be[10], b34 = be[14];
-      const b41 = be[3], b42 = be[7], b43 = be[11], b44 = be[15];
+      const ae = slabData[i], ao = slabOff[i] + 16;
+      const bo = i * 16;
+      versions[i] = recData[i][recOff[i] + TRS_WORLD_VERSION];
+      const o = bo;
+      const a11 = ae[ao], a12 = ae[ao + 4], a13 = ae[ao + 8], a14 = ae[ao + 12];
+      const a21 = ae[ao + 1], a22 = ae[ao + 5], a23 = ae[ao + 9], a24 = ae[ao + 13];
+      const a31 = ae[ao + 2], a32 = ae[ao + 6], a33 = ae[ao + 10], a34 = ae[ao + 14];
+      const b11 = be[bo], b12 = be[bo + 4], b13 = be[bo + 8], b14 = be[bo + 12];
+      const b21 = be[bo + 1], b22 = be[bo + 5], b23 = be[bo + 9], b24 = be[bo + 13];
+      const b31 = be[bo + 2], b32 = be[bo + 6], b33 = be[bo + 10], b34 = be[bo + 14];
+      if (ae[ao + 3] === 0 && ae[ao + 7] === 0 && ae[ao + 11] === 0 && ae[ao + 15] === 1 && be[bo + 3] === 0 && be[bo + 7] === 0 && be[bo + 11] === 0 && be[bo + 15] === 1) {
+        boneMatrices[o] = a11 * b11 + a12 * b21 + a13 * b31;
+        boneMatrices[o + 4] = a11 * b12 + a12 * b22 + a13 * b32;
+        boneMatrices[o + 8] = a11 * b13 + a12 * b23 + a13 * b33;
+        boneMatrices[o + 12] = a11 * b14 + a12 * b24 + a13 * b34 + a14;
+        boneMatrices[o + 1] = a21 * b11 + a22 * b21 + a23 * b31;
+        boneMatrices[o + 5] = a21 * b12 + a22 * b22 + a23 * b32;
+        boneMatrices[o + 9] = a21 * b13 + a22 * b23 + a23 * b33;
+        boneMatrices[o + 13] = a21 * b14 + a22 * b24 + a23 * b34 + a24;
+        boneMatrices[o + 2] = a31 * b11 + a32 * b21 + a33 * b31;
+        boneMatrices[o + 6] = a31 * b12 + a32 * b22 + a33 * b32;
+        boneMatrices[o + 10] = a31 * b13 + a32 * b23 + a33 * b33;
+        boneMatrices[o + 14] = a31 * b14 + a32 * b24 + a33 * b34 + a34;
+        boneMatrices[o + 3] = 0;
+        boneMatrices[o + 7] = 0;
+        boneMatrices[o + 11] = 0;
+        boneMatrices[o + 15] = 1;
+        continue;
+      }
+      const a41 = ae[ao + 3], a42 = ae[ao + 7], a43 = ae[ao + 11], a44 = ae[ao + 15];
+      const b41 = be[bo + 3], b42 = be[bo + 7], b43 = be[bo + 11], b44 = be[bo + 15];
       boneMatrices[o] = a11 * b11 + a12 * b21 + a13 * b31 + a14 * b41;
       boneMatrices[o + 4] = a11 * b12 + a12 * b22 + a13 * b32 + a14 * b42;
       boneMatrices[o + 8] = a11 * b13 + a12 * b23 + a13 * b33 + a14 * b43;
@@ -26819,7 +27628,83 @@ var Skeleton = class _Skeleton {
       boneMatrices[o + 11] = a41 * b13 + a42 * b23 + a43 * b33 + a44 * b43;
       boneMatrices[o + 15] = a41 * b14 + a42 * b24 + a43 * b34 + a44 * b44;
     }
-    if (this.boneTexture !== null) this.boneTexture.needsUpdate = true;
+    this._dataVersion++;
+    if (this._boneTexture !== null) this._boneTexture.needsUpdate = true;
+  }
+  /**
+   * Caches, per bone, the transform record and matrix slab it lives in so `update()` runs from flat arrays without
+   * touching the Bone objects. Only for skeletons made of Bones; rebuilt when the bone list changes.
+   */
+  _flatFor(bones, n) {
+    const refs = this._flatBones;
+    if (refs !== null && refs.length === n) {
+      let same = true;
+      for (let i = 0; i < n; i++) if (refs[i] !== bones[i]) {
+        same = false;
+        break;
+      }
+      if (same) return this._flat;
+    }
+    this._flatBones = bones.slice();
+    let flat = true;
+    for (let i = 0; i < n; i++) if (!bones[i] || bones[i].isBone !== true) {
+      flat = false;
+      break;
+    }
+    this._flat = flat;
+    if (flat) {
+      this._recData = new Array(n);
+      this._recOff = new Int32Array(n);
+      this._slabData = new Array(n);
+      this._slabOff = new Int32Array(n);
+      for (let i = 0; i < n; i++) {
+        const b = bones[i];
+        this._recData[i] = b._snapData;
+        this._recOff[i] = b._snapOffset;
+        this._slabData[i] = b._slabData;
+        this._slabOff[i] = b._slabOffset;
+      }
+    }
+    this._versionsFor = null;
+    return flat;
+  }
+  /** `update()` for skeletons that contain null entries or objects that are not Bones (reads the objects). */
+  _updateObjects(bones, boneInverses, boneMatrices, n, versions) {
+    let changed = this._versionsFor !== boneInverses || this._lastInversesVersion !== this._inversesVersion || boneMatrices.length < n * 16;
+    if (!changed) {
+      for (let i = 0; i < n; i++) {
+        const bone = bones[i];
+        const v = bone ? bone._worldVersion : -2;
+        if (versions[i] !== v) {
+          changed = true;
+          break;
+        }
+      }
+      if (!changed) return;
+    }
+    this._versionsFor = boneInverses;
+    this._lastInversesVersion = this._inversesVersion;
+    for (let i = 0; i < n; i++) {
+      const bone = bones[i];
+      const ae = bone ? bone._matrixWorld.elements : _identityMatrix.elements;
+      const be = boneInverses[i].elements;
+      versions[i] = bone ? bone._worldVersion : -2;
+      multiply4x4(ae, be, boneMatrices, i * 16);
+    }
+    this._dataVersion++;
+    if (this._boneTexture !== null) this._boneTexture.needsUpdate = true;
+  }
+  /**
+   * The bone texture, as in three.js: null until `computeBoneTexture()` has run. Skeletons drawn with built-in
+   * materials are served from the renderer's shared bone atlas and have no texture of their own, so reading this
+   * on a skeleton the renderer has drawn creates it on demand (three.js would already have created it).
+   */
+  get boneTexture() {
+    if (this._boneTexture === null && this._atlas !== null) this.computeBoneTexture();
+    return this._boneTexture;
+  }
+  set boneTexture(value) {
+    this._boneTexture = value;
   }
   clone() {
     return new _Skeleton(this.bones, this.boneInverses);
@@ -26835,7 +27720,7 @@ var Skeleton = class _Skeleton {
     boneTexture.needsUpdate = true;
     boneTexture._stream = true;
     this.boneMatrices = boneMatrices;
-    this.boneTexture = boneTexture;
+    this._boneTexture = boneTexture;
     return this;
   }
   getBoneByName(name) {
@@ -26846,9 +27731,10 @@ var Skeleton = class _Skeleton {
     return void 0;
   }
   dispose() {
-    if (this.boneTexture !== null) {
-      this.boneTexture.dispose();
-      this.boneTexture = null;
+    if (this._atlas !== null) this._atlas.release(this);
+    if (this._boneTexture !== null) {
+      this._boneTexture.dispose();
+      this._boneTexture = null;
     }
   }
   fromJSON(json, bones) {
@@ -31991,14 +32877,135 @@ function solveBezierParameter(x, x0, x1, x2, x3) {
 var QuaternionLinearInterpolant = class extends Interpolant {
   constructor(parameterPositions, sampleValues, sampleSize, resultBuffer) {
     super(parameterPositions, sampleValues, sampleSize, resultBuffer);
+    this._memoCos = NaN;
+    this._memoSin = 0;
+    this._memoLen = 0;
+  }
+  /**
+   * Same result as Interpolant.evaluate. A time inside the interval found by the previous call (the common case
+   * while a clip plays) is interpolated right here: the seek machinery would fall through to the same
+   * interpolate_ call without changing anything, and keeping the slerp inside this function keeps its doubles
+   * unboxed (calls across the generic evaluate allocated a HeapNumber per argument per track and frame).
+   */
+  evaluate(t) {
+    const i1 = this._cachedIndex;
+    if (i1 > 0 && this.valueSize === 4) {
+      const pp = this.parameterPositions, t1 = pp[i1], t0 = pp[i1 - 1];
+      if (t >= t0 && t < t1) {
+        const dst = this.resultBuffer, src = this.sampleValues, offset = i1 * 4, o0 = offset - 4;
+        const alpha = (t - t0) / (t1 - t0);
+        let x0 = src[o0], y0 = src[o0 + 1], z0 = src[o0 + 2], w0 = src[o0 + 3];
+        const x1 = src[offset], y1 = src[offset + 1], z1 = src[offset + 2], w1 = src[offset + 3];
+        if (alpha === 0) {
+          dst[0] = x0;
+          dst[1] = y0;
+          dst[2] = z0;
+          dst[3] = w0;
+          return dst;
+        }
+        if (alpha === 1) {
+          dst[0] = x1;
+          dst[1] = y1;
+          dst[2] = z1;
+          dst[3] = w1;
+          return dst;
+        }
+        if (w0 !== w1 || x0 !== x1 || y0 !== y1 || z0 !== z1) {
+          let s = 1 - alpha, u = alpha;
+          const cos = x0 * x1 + y0 * y1 + z0 * z1 + w0 * w1, dir = cos >= 0 ? 1 : -1, sqrSin = 1 - cos * cos;
+          if (sqrSin > Number.EPSILON) {
+            if (cos !== this._memoCos) this._memoAngle(cos, dir, sqrSin);
+            const sin = this._memoSin, len = this._memoLen;
+            s = Math.sin(s * len) / sin;
+            u = Math.sin(u * len) / sin;
+          }
+          const tDir = u * dir;
+          x0 = x0 * s + x1 * tDir;
+          y0 = y0 * s + y1 * tDir;
+          z0 = z0 * s + z1 * tDir;
+          w0 = w0 * s + w1 * tDir;
+          if (s === 1 - u) {
+            const f = 1 / Math.sqrt(x0 * x0 + y0 * y0 + z0 * z0 + w0 * w0);
+            x0 *= f;
+            y0 *= f;
+            z0 *= f;
+            w0 *= f;
+          }
+        }
+        dst[0] = x0;
+        dst[1] = y0;
+        dst[2] = z0;
+        dst[3] = w0;
+        return dst;
+      }
+    }
+    return super.evaluate(t);
+  }
+  _memoAngle(cos, dir, sqrSin) {
+    const sin = Math.sqrt(sqrSin);
+    this._memoCos = cos;
+    this._memoSin = sin;
+    this._memoLen = Math.atan2(sin, cos * dir);
   }
   interpolate_(i1, t0, t, t1) {
     const result = this.resultBuffer, values = this.sampleValues, stride = this.valueSize, alpha = (t - t0) / (t1 - t0);
     let offset = i1 * stride;
+    if (stride === 4) return this._slerp(result, values, offset, alpha);
     for (let end = offset + stride; offset !== end; offset += 4) {
       Quaternion.slerpFlat(result, 0, values, offset - stride, values, offset, alpha);
     }
     return result;
+  }
+  /**
+   * Quaternion.slerpFlat for one quaternion with the angle terms memoised: sqrt(1 - cos^2) and atan2(sin, cos) are
+   * pure functions of the dot product of the two keyframes, which is the same every frame while the clip time stays
+   * inside one interval. Same operations in the same order as slerpFlat, so the result is bit-identical.
+   */
+  _slerp(dst, src, offset, t) {
+    const o0 = offset - 4;
+    let x0 = src[o0], y0 = src[o0 + 1], z0 = src[o0 + 2], w0 = src[o0 + 3];
+    const x1 = src[offset], y1 = src[offset + 1], z1 = src[offset + 2], w1 = src[offset + 3];
+    if (t === 0) {
+      dst[0] = x0;
+      dst[1] = y0;
+      dst[2] = z0;
+      dst[3] = w0;
+      return dst;
+    }
+    if (t === 1) {
+      dst[0] = x1;
+      dst[1] = y1;
+      dst[2] = z1;
+      dst[3] = w1;
+      return dst;
+    }
+    if (w0 !== w1 || x0 !== x1 || y0 !== y1 || z0 !== z1) {
+      let s = 1 - t;
+      const cos = x0 * x1 + y0 * y1 + z0 * z1 + w0 * w1, dir = cos >= 0 ? 1 : -1, sqrSin = 1 - cos * cos;
+      if (sqrSin > Number.EPSILON) {
+        if (cos !== this._memoCos) this._memoAngle(cos, dir, sqrSin);
+        const sin = this._memoSin, len = this._memoLen;
+        s = Math.sin(s * len) / sin;
+        t = Math.sin(t * len) / sin;
+      }
+      const tDir = t * dir;
+      x0 = x0 * s + x1 * tDir;
+      y0 = y0 * s + y1 * tDir;
+      z0 = z0 * s + z1 * tDir;
+      w0 = w0 * s + w1 * tDir;
+      if (s === 1 - t) {
+        const f = 1 / Math.sqrt(x0 * x0 + y0 * y0 + z0 * z0 + w0 * w0);
+        x0 *= f;
+        y0 *= f;
+        z0 *= f;
+        w0 *= f;
+      }
+    }
+    dst[0] = x0;
+    dst[1] = y0;
+    dst[2] = z0;
+    dst[3] = w0;
+    return dst;
   }
 };
 
@@ -33119,6 +34126,9 @@ var PropertyBinding = class _PropertyBinding {
     this.parsedPath = parsedPath || _PropertyBinding.parseTrackName(path);
     this.node = _PropertyBinding.findNode(rootNode, this.parsedPath.nodeName);
     this.rootNode = rootNode;
+    this._slabData = null;
+    this._slabIndex = 0;
+    this._slabVersion = 0;
     this.getValue = this._getValue_unbound;
     this.setValue = this._setValue_unbound;
   }
@@ -33255,6 +34265,22 @@ var PropertyBinding = class _PropertyBinding {
     this.targetObject.matrixWorldNeedsUpdate = true;
   }
   // HasToFromArray
+  _setValue_slab3(buffer, offset) {
+    const d = this._slabData, i = this._slabIndex;
+    d[i] = buffer[offset];
+    d[i + 1] = buffer[offset + 1];
+    d[i + 2] = buffer[offset + 2];
+    d[this._slabVersion]++;
+  }
+  _setValue_slab4(buffer, offset) {
+    const d = this._slabData, i = this._slabIndex;
+    d[i] = buffer[offset];
+    d[i + 1] = buffer[offset + 1];
+    d[i + 2] = buffer[offset + 2];
+    d[i + 3] = buffer[offset + 3];
+    d[this._slabVersion]++;
+    d[this._slabVersion + 2]++;
+  }
   _setValue_fromArray(buffer, offset) {
     this.resolvedProperty.fromArray(buffer, offset);
   }
@@ -33389,6 +34415,12 @@ var PropertyBinding = class _PropertyBinding {
     }
     this.getValue = this.GetterByBindingType[bindingType];
     this.setValue = this.SetterByBindingTypeAndVersioning[bindingType][versioning];
+    if (bindingType === this.BindingType.HasFromToArray && nodeProperty.isSlabTransform === true && versioning === this.Versioning.MatrixWorldNeedsUpdate && nodeProperty._onChangeCallback === noopOnChange) {
+      this._slabData = nodeProperty._d;
+      this._slabIndex = nodeProperty._b;
+      this._slabVersion = nodeProperty._v;
+      this.setValue = nodeProperty.isQuaternion === true ? this._setValue_slab4 : this._setValue_slab3;
+    }
   }
   unbind() {
     this.node = null;
@@ -33442,6 +34474,19 @@ PropertyBinding.prototype.SetterByBindingTypeAndVersioning = [
 ];
 
 // src/animation/PropertyMixer.js
+var CHUNK_DOUBLES = 8192;
+var _chunk = null;
+var _chunkUsed = 0;
+function allocateDoubles(length) {
+  if (length > 256) return new Float64Array(length);
+  if (_chunk === null || _chunkUsed + length > CHUNK_DOUBLES) {
+    _chunk = new ArrayBuffer(CHUNK_DOUBLES * 8);
+    _chunkUsed = 0;
+  }
+  const array = new Float64Array(_chunk, _chunkUsed * 8, length);
+  _chunkUsed += length;
+  return array;
+}
 var PropertyMixer = class {
   constructor(binding, typeName, valueSize) {
     this.binding = binding;
@@ -33452,7 +34497,7 @@ var PropertyMixer = class {
         mixFunction = this._slerp;
         mixFunctionAdditive = this._slerpAdditive;
         setIdentity = this._setAdditiveIdentityQuaternion;
-        this.buffer = new Float64Array(valueSize * 6);
+        this.buffer = allocateDoubles(valueSize * 6);
         this._workIndex = 5;
         break;
       case "string":
@@ -33466,7 +34511,7 @@ var PropertyMixer = class {
         mixFunction = this._lerp;
         mixFunctionAdditive = this._lerpAdditive;
         setIdentity = this._setAdditiveIdentityNumeric;
-        this.buffer = new Float64Array(valueSize * 5);
+        this.buffer = allocateDoubles(valueSize * 5);
     }
     this._mixBufferRegion = mixFunction;
     this._mixBufferRegionAdditive = mixFunctionAdditive;
