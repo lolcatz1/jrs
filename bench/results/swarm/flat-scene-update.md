@@ -184,7 +184,13 @@ the correct one (a rebuild that frame is also built before the hooks run); the v
 point of the frame. Fix: level-0 verification now runs right after `_prepareList`. Both renderers report 0.
 
 Second merge (integration tip d48164c: drawlist-build, vao-order-base-instance, point-light-shadows, parity fixes;
-no conflicts): VALIDATION2_PLACEHOLDER
+no conflicts): `npm test` 152 / 152; conformance 35 PASS, 0 FAIL; addons clean; smoke glError 0;
+`reuse-check` 602 frame pairs identical, 0 verify mismatches; `flat-check` 328 frame pairs, **0 failures, recursive
+reference 0**; `fuzz --seeds=50 --continue` the same five pre-existing seeds (8 23 27 28 35, identical worst diffs on
+the tip); `run.mjs --compare --frames=60` meanAbsDiff / maxDiff equal to the tip's `latest.json` for all 17
+scenarios (shared-animated 0 / 1, skinned-crowd 0 / 2, shadows-point-multi 0 / 1, others 0 / 0); medians: shared-static
+0.6, shared-animated 4.2, hierarchy-animated 3.1, many-materials 0.5, transparent-sort 4.0, shader-client 2.3,
+shadows 0.3, shadows-animated 1.2 ms, no regression beyond noise.
 
 ## Risks / notes for the integrator
 
