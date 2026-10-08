@@ -14,7 +14,7 @@ let _object3DId = 0;
 
 const _v1 = /*@__PURE__*/ new Vector3();
 const _q1 = /*@__PURE__*/ new Quaternion();
-const _m1 = /*@__PURE__*/ new Matrix4();
+const _m1 = /*@__PURE__*/ new Matrix4(new Float64Array(16)); // double-precision scratch: lookAt / worldToLocal round only at the end, like three.js
 const _target = /*@__PURE__*/ new Vector3();
 const _position = /*@__PURE__*/ new Vector3();
 const _scale = /*@__PURE__*/ new Vector3();
@@ -159,7 +159,9 @@ class Object3D extends EventDispatcher {
 		if (x.isVector3) _target.copy(x); else _target.set(x, y, z);
 		const parent = this.parent;
 		this.updateWorldMatrix(true, false);
-		_position.setFromMatrixPosition(this._matrixWorld);
+		// at the root (or under an untransformed scene) the world position is the double-precision position itself
+		if (this.matrixAutoUpdate === true && (parent === null || (parent.isScene === true && parent._matrixWorld.isIdentity()))) _position.copy(this.position);
+		else _position.setFromMatrixPosition(this._matrixWorld);
 		if (this.isCamera || this.isLight) _m1.lookAt(_position, _target, this.up);
 		else _m1.lookAt(_target, _position, this.up);
 		this.quaternion.setFromRotationMatrix(_m1);

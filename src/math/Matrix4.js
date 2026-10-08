@@ -323,6 +323,8 @@ class Matrix4 {
 		te[3] = 0; te[7] = 0; te[11] = 0; te[15] = 1;
 		return this;
 	}
+	/** True for the identity matrix (exact comparison). */
+	isIdentity() { const e = this.elements; return e[0] === 1 && e[5] === 1 && e[10] === 1 && e[15] === 1 && e[1] === 0 && e[2] === 0 && e[3] === 0 && e[4] === 0 && e[6] === 0 && e[7] === 0 && e[8] === 0 && e[9] === 0 && e[11] === 0 && e[12] === 0 && e[13] === 0 && e[14] === 0; }
 	equals(m) { const te = this.elements, me = m.elements; for (let i = 0; i < 16; i++) if (te[i] !== me[i]) return false; return true; }
 	fromArray(array, offset = 0) { const te = this.elements; for (let i = 0; i < 16; i++) te[i] = array[i + offset]; return this; }
 	toArray(array = [], offset = 0) { const te = this.elements; for (let i = 0; i < 16; i++) array[offset + i] = te[i]; return array; }

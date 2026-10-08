@@ -286,12 +286,16 @@ class WebGLPrograms {
 		const isLit = materialType === MATERIAL_LAMBERT || materialType === MATERIAL_PHONG || materialType === MATERIAL_STANDARD;
 		const hasUv = attributes.uv !== undefined;
 		const hasUv1 = attributes.uv1 !== undefined;
-		// Shadow pass without alpha test is depth only: the program needs neither uvs, colours nor textures,
-		// so those features are dropped from the key and every such caster shares one lean program.
-		const leanShadow = variant.shadowPass === true && !(material.alphaTest > 0);
+		// three.js draws shadow casters with a MeshDepthMaterial that takes only map, alphaMap and alphaTest (0.5 for
+		// alphaToCoverage) from the caster. Without a map there is nothing to test, so every such caster shares one
+		// lean depth-only program (no uvs, colours or textures in its key).
+		const shadowPass = variant.shadowPass === true;
+		const shadowAlpha = shadowPass && (!!material.map || !!material.alphaMap) && (material.alphaTest > 0 || material.alphaToCoverage === true);
+		const leanShadow = shadowPass && !shadowAlpha;
 		// three.js's OPAQUE define: an opaque, normal-blended material writes alpha 1.0 whatever its map / opacity
 		const opaque = variant.shadowPass !== true && material.transparent === false && material.blending === NormalBlending && material.alphaToCoverage !== true;
-		const vertexColors = !leanShadow && material.vertexColors === true && attributes.color !== undefined;
+		// three's depth and normal shaders have no vertex-colour chunk
+		const vertexColors = !shadowPass && materialType !== MATERIAL_DEPTH && materialType !== MATERIAL_NORMAL && material.vertexColors === true && attributes.color !== undefined;
 		const fog = scene.fog != null && material.fog === true && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH;
 		const map = !leanShadow && !!material.map;
 		const alphaMap = !leanShadow && !!material.alphaMap;
@@ -382,7 +386,8 @@ class WebGLPrograms {
 		p.envWorldPos = hasEnvMap && (materialType === MATERIAL_LAMBERT || materialType === MATERIAL_PHONG || normalMap);
 		p.fog = fog;
 		p.fogExp2 = fog && scene.fog.isFogExp2 === true;
-		p.alphaTest = material.alphaTest > 0;
+		p.alphaTest = shadowPass ? shadowAlpha : (material.alphaTest > 0 && materialType !== MATERIAL_NORMAL); // three's normal shader has no alphatest chunk
+		p.alphaTestHalf = shadowAlpha && material.alphaToCoverage === true; // three approximates alphaToCoverage casters with alphaTest 0.5
 		p.sizeAttenuation = !instanceMaterial && (materialType === MATERIAL_POINTS || materialType === MATERIAL_SPRITE) && material.sizeAttenuation === true;
 		p.premultipliedAlpha = material.premultipliedAlpha === true;
 		p.dithering = material.dithering === true;
@@ -418,7 +423,7 @@ class WebGLPrograms {
 		if (baseId === undefined) { baseId = this._baseKeyIds.size; this._baseKeyIds.set(key, baseId); }
 		key = baseId;
 		key = key * 8 + numPointShadows; key = key * 2 + (pointShadowBasic ? 1 : 0);
-		key = key * 2 + (p.materialArray ? 1 : 0);
+		key = key * 2 + (p.materialArray ? 1 : 0); key = key * 2 + (p.alphaTestHalf ? 1 : 0);
 		key = key * 2 + (skinning ? 1 : 0); key = key * 2 + (p.morphTargets ? 1 : 0); key = key * 2 + (p.morphNormals ? 1 : 0); key = key * 2 + (p.morphColors ? 1 : 0);
 		key = key * 4 + morphTextureStride; key = key * 256 + morphTargetsCount;
 		key = key * 2 + (instanceMaterial ? 1 : 0); key = key * 2 + (p.dashed ? 1 : 0); key = key * 2 + (p.opaque ? 1 : 0);

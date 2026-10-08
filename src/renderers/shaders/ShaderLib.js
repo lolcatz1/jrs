@@ -190,6 +190,7 @@ ${MATERIAL_BLOCK}
 ${LIGHTS_BLOCK}
 #endif
 uniform mat4 modelMatrix;
+uniform mat4 modelViewMatrix; // per-object draws: built on the CPU in double precision (three.js's order of operations)
 uniform mat3 normalMatrix;
 in vec3 position;
 #ifdef USE_NORMAL
@@ -351,7 +352,11 @@ void main() {
 	${ShaderChunk.skinning_vertex}
 	#ifdef IS_SPRITE
 		// billboard: sprite plane in view space
+		#ifdef USE_OBJECT_TEXTURE
 		vec4 mvPosition = viewMatrix * model * vec4( 0.0, 0.0, 0.0, 1.0 );
+		#else
+		vec4 mvPosition = modelViewMatrix * vec4( 0.0, 0.0, 0.0, 1.0 );
+		#endif
 		vec2 scale = vec2( length( model[ 0 ].xyz ), length( model[ 1 ].xyz ) );
 		#ifdef INSTANCE_MATERIAL
 		if ( instB.y < 0.5 && projectionMatrix[ 2 ][ 3 ] == - 1.0 ) scale *= - mvPosition.z;
@@ -376,11 +381,20 @@ void main() {
 		vec4 worldPosition = vec4( model[ 3 ].xyz + camRight * rotated.x + camUp * rotated.y, 1.0 );
 	#else
 		vec4 worldPosition = model * vec4( transformed, 1.0 );
-		#if defined( IS_LINE ) || defined( IS_POINTS )
-		// like three.js: one modelView matrix applied to the vertex (fewer roundings than view * (model * position))
-		vec4 mvPosition = ( viewMatrix * model ) * vec4( transformed, 1.0 );
+		#if defined( USE_OBJECT_TEXTURE )
+			#if defined( IS_LINE ) || defined( IS_POINTS )
+			// batched lines / points: one modelView matrix applied to the vertex (fewer roundings than view * (model * position))
+			vec4 mvPosition = ( viewMatrix * model ) * vec4( transformed, 1.0 );
+			#else
+			vec4 mvPosition = viewMatrix * worldPosition;
+			#endif
+		#elif defined( USE_INSTANCING )
+		// three.js's order: projectionMatrix * ( modelViewMatrix * ( instanceMatrix * position ) ), modelViewMatrix
+		// rounded once from a double-precision product; same float32 operations -> same clip position
+		vec4 mvPosition = modelViewMatrix * ( instanceMatrix * vec4( transformed, 1.0 ) );
 		#else
-		vec4 mvPosition = viewMatrix * worldPosition;
+		// per-object draws (meshes, lines, points): the CPU double-precision modelViewMatrix
+		vec4 mvPosition = modelViewMatrix * vec4( transformed, 1.0 );
 		#endif
 	#endif
 	#ifndef SHADOW_LEAN
@@ -936,12 +950,14 @@ void main() {
 	#ifdef SHADOW_PASS
 	// three.js's shadow depth material alpha-tests map.a * alphaMap.g alone: no opacity, no vertex colours
 	vec4 diffuseColor = vec4( 1.0 );
+	#elif defined( IS_DEPTH )
+	vec4 diffuseColor = vec4( 1.0, 1.0, 1.0, diffuse.a ); // MeshDepthMaterial: the opacity, no vertex colours (three's depth shader)
 	#elif defined( INSTANCE_MATERIAL )
 	vec4 diffuseColor = vInstA;
 	#else
 	vec4 diffuseColor = vec4( diffuse.rgb, diffuse.a );
 	#endif
-	#if ( defined( USE_COLOR ) || defined( USE_INSTANCING_COLOR ) ) && !defined( SHADOW_PASS )
+	#if ( defined( USE_COLOR ) || defined( USE_INSTANCING_COLOR ) ) && !defined( SHADOW_PASS ) && !defined( IS_DEPTH )
 	diffuseColor *= vColor;
 	#endif
 	#ifdef USE_MAP
@@ -960,7 +976,9 @@ void main() {
 		#endif
 	#endif
 	#ifdef USE_ALPHATEST
-		#ifdef INSTANCE_MATERIAL
+		#ifdef ALPHATEST_HALF
+		if ( diffuseColor.a < 0.5 ) discard;
+		#elif defined( INSTANCE_MATERIAL )
 		if ( diffuseColor.a < vInstB.w ) discard;
 		#else
 		if ( diffuseColor.a < emissive.a ) discard;
@@ -1348,6 +1366,7 @@ export function buildBuiltinShader(p) {
 	}
 	if (p.fog) d('USE_FOG');
 	if (p.alphaTest) d('USE_ALPHATEST');
+	if (p.alphaTestHalf) d('ALPHATEST_HALF');
 	if (p.sizeAttenuation) d('SIZE_ATTENUATION');
 	if (p.dashed) d('IS_DASHED');
 	if (p.instanceMaterial) d('INSTANCE_MATERIAL');
