@@ -35,6 +35,7 @@ export const FEATURES = {
 	overrideMaterial: 'scene.overrideMaterial on some frames',
 	background: 'scene.background colour / clear colour',
 	toneMapping: 'tone mapping operators and exposure',
+	mutations: 'per-frame scene mutations: meshes added/removed/hidden, material colour/opacity/transparent/flatShading changed, lights added/changed, renderOrder, drawRange, geometry attribute updates, fog/background/exposure changes',
 	// off by default: known differences, see bench/results/swarm/parity-fuzzer.md
 	perMapTransform: 'different offset/repeat/rotation per map on one material (jrs applies the first map\'s transform to all)',
 	shaderFog: 'ShaderMaterial with fog: true (three fog chunks)',
@@ -637,13 +638,75 @@ export function buildFuzzScene(T, seed, features = defaultFeatures(), opts = {})
 		note('overrideMaterial frames: ' + overrideFrames.map((o) => o < 0 ? '-' : ['normal', 'basic', 'depth', 'lambert'][o]).join(' '));
 	}
 
+	// ---------- per-frame mutations (decided now, applied in frame(); same sequence for both libraries) ----------
+	// Targets renderers that reuse render lists / draw commands across frames: every kind of change that must
+	// invalidate a cached frame appears here, on randomly chosen frames.
+	const mutationOps = []; // ops[f] = [fn]
+	const mutationLog = [];
+	if (features.mutations) {
+		const pickMesh = () => meshes.length ? meshes[rng.int(meshes.length)] : null;
+		const insensitiveMaterials = materials.filter((m) => !orderSensitive.has(m));
+		const pickMaterial = () => insensitiveMaterials.length ? insensitiveMaterials[rng.int(insensitiveMaterials.length)] : null;
+		const lightsList = []; scene.traverse((o) => { if (o.isLight) lightsList.push(o); });
+		for (let f = 1; f < frames; f++) {
+			const ops = [];
+			if (rng.chance(0.6)) {
+				const n = 1 + rng.int(3);
+				for (let k = 0; k < n; k++) {
+					const kind = rng.pick(['hide', 'remove', 'add', 'color', 'opacity', 'transparent', 'flat', 'light', 'addLight', 'order', 'range', 'geometry', 'fog', 'background', 'exposure', 'map', 'instanceCount', 'scale']);
+					const m = pickMesh(), mat = pickMaterial(), li = lightsList.length ? lightsList[rng.int(lightsList.length)] : null;
+					const r1 = rng(), r2 = rng(), r3 = rng();
+					let op = null;
+					if (kind === 'hide' && m) op = () => { m.visible = !m.visible; };
+					else if (kind === 'remove' && m && m.parent) op = () => { if (m.parent) m.parent.remove(m); };
+					else if (kind === 'add' && mat) {
+						const g = geometries[rng.int(geometries.length)];
+						const px = rng.range(-3, 3), py = rng.range(-2, 2), pz = rng.range(-3, 3), rx = rng.range(0, 6), ry = rng.range(0, 6), sc = rng.range(0.3, 1.2);
+						const parent = roots.length && rng.chance(0.4) ? rng.pick(roots) : scene;
+						op = () => { const nm = new T.Mesh(g, mat); nm.position.set(px, py, pz); nm.rotation.set(rx, ry, 0); nm.scale.setScalar(sc); if (wantShadows) { nm.castShadow = true; nm.receiveShadow = true; } parent.add(nm); meshes.push(nm); };
+					}
+					else if (kind === 'color' && mat && mat.color) op = () => { mat.color.setHSL(r1, 0.6 + 0.3 * r2, 0.3 + 0.4 * r3); };
+					else if (kind === 'opacity' && mat && mat.transparent) op = () => { mat.opacity = 0.2 + 0.7 * r1; if (mat.uniforms && mat.uniforms.uOpacity) mat.uniforms.uOpacity.value = mat.opacity; };
+					else if (kind === 'transparent' && mat && !mat.isShaderMaterial && mat.blending === T.NormalBlending && !mat.premultipliedAlpha && mat.side !== T.DoubleSide && !mat.stencilWrite) op = () => { mat.transparent = !mat.transparent; mat.opacity = mat.transparent ? 0.3 + 0.6 * r1 : 1; mat.needsUpdate = true; };
+					else if (kind === 'flat' && mat && (mat.isMeshLambertMaterial || mat.isMeshPhongMaterial || mat.isMeshStandardMaterial) && !mat.wireframe) op = () => { mat.flatShading = !mat.flatShading; mat.needsUpdate = true; };
+					else if (kind === 'light' && li) op = () => { if (li.isAmbientLight || li.isHemisphereLight) li.intensity = 0.2 + 1.3 * r1; else { li.intensity *= 0.3 + 1.4 * r1; li.color.setHSL(r2, 0.5, 0.7); li.position.x += (r3 - 0.5) * 4; } };
+					else if (kind === 'addLight') {
+						const px = rng.range(-6, 6), py = rng.range(0, 8), pz = rng.range(-6, 6), it = rng.range(20, 150), hue = rng();
+						op = () => { const l = new T.PointLight(new T.Color().setHSL(hue, 0.6, 0.7), it, 0, 2); l.position.set(px, py, pz); scene.add(l); };
+					}
+					else if (kind === 'order' && m && m.renderOrder === 0) op = () => { m.renderOrder = m.renderOrder === 0 ? -1 : 0; };
+					else if (kind === 'range') {
+						const g = geometries[rng.int(geometries.length)];
+						op = () => { const total = g.index ? g.index.count : g.attributes.position.count; const start = 3 * Math.floor(r1 * (total / 6)); g.setDrawRange(start, 3 * Math.max(1, Math.floor(r2 * (total - start) / 3))); };
+					}
+					else if (kind === 'geometry') {
+						const g = geometries[rng.int(geometries.length)];
+						op = () => { const a = g.attributes.position.array; const sc = 0.8 + 0.4 * r1; for (let i = 0; i < a.length; i++) a[i] *= sc; g.attributes.position.needsUpdate = true; g.computeBoundingSphere(); };
+					}
+					else if (kind === 'fog' && features.fog) op = () => { if (scene.fog && scene.fog.isFog) { scene.fog.near = 2 + 6 * r1; scene.fog.far = 12 + 12 * r2; } else if (scene.fog) scene.fog.density = 0.02 + 0.07 * r1; else scene.fog = new T.Fog(new T.Color().setHSL(r1, 0.5, 0.5), 3, 20); };
+					else if (kind === 'background' && features.background) op = () => { scene.background = new T.Color().setHSL(r1, 0.5, 0.3); };
+					else if (kind === 'exposure' && features.toneMapping && toneMapping !== T.NoToneMapping) op = () => { renderer_.toneMappingExposure = 0.5 + 1.5 * r1; };
+					else if (kind === 'map' && mat && mat.map && textures.length) { const t = textures[rng.int(textures.length)]; op = () => { mat.map = t; mat.needsUpdate = true; if (mat.uniforms && mat.uniforms.tex) mat.uniforms.tex.value = t; }; }
+					else if (kind === 'instanceCount') { const ims = meshes.filter((x) => x.isInstancedMesh); if (ims.length) { const im = ims[rng.int(ims.length)]; op = () => { im.count = Math.max(1, Math.floor(im.instanceMatrix.count * (0.3 + 0.7 * r1))); }; } }
+					else if (kind === 'scale' && m) op = () => { m.scale.multiplyScalar(0.6 + 0.8 * r1); };
+					if (op) { ops.push(op); mutationLog.push(`f${f}:${kind}`); }
+				}
+			}
+			mutationOps[f] = ops;
+		}
+		if (mutationLog.length) note('mutations ' + mutationLog.join(' '));
+	}
+	let renderer_ = null;
+
 	// ---------- per-frame driver ----------
 	const setup = (renderer) => {
+		renderer_ = renderer;
 		renderer.toneMapping = toneMapping; renderer.toneMappingExposure = exposure;
 		renderer.shadowMap.enabled = wantShadows && shadowLights.length > 0; renderer.shadowMap.type = shadowType;
 		if (useClearColor) renderer.setClearColor(clearColor, 1);
 	};
 	const frame = (renderer, f) => {
+		if (mutationOps[f]) for (const op of mutationOps[f]) op();
 		for (const a of animated) a.fn(f);
 		for (const u of shaderUniformsShared) u.uTime.value = f * 0.3;
 		placeCamera(f);

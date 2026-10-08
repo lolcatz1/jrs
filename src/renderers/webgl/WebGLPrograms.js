@@ -107,7 +107,8 @@ class WebGLProgram {
 		const isCustom = parameters.materialType === MATERIAL_SHADER;
 		this.samplerUniforms = [];
 		let nextUnit = 0;
-		gl.useProgram(program);
+		gl.useProgram(program); // leaves this program current in GL: the renderer syncs its state cache (justLinked)
+		this.justLinked = true;
 		for (const name in this.uniforms) {
 			const u = this.uniforms[name];
 			const target = samplerTarget(gl, u.type);

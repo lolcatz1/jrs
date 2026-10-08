@@ -404,7 +404,7 @@ class WebGLRenderer {
 		this._currentCamera = camera;
 		this._currentScene = scene;
 		this._materialCounter = 0; this._geometryCounter = 0; this._programCounter = 0;
-		this._currentMaterial = null; this._currentSide = -1; this._sideOverride = -1; this._listShadowPass = false;
+		this._currentMaterial = null; this._currentProgram = null; this._currentSide = -1; this._sideOverride = -1; this._listShadowPass = false;
 		this._traceUniforms = this.debug.traceUniforms === true ? new Map() : null;
 		this._traceSwitches = 0; this._traceDraws = this.info.render.calls; this._traceSeq = this._traceUniforms !== null ? [] : null; this._traceList = 'o';
 		this._updateEnv(scene);
@@ -982,6 +982,7 @@ class WebGLRenderer {
 			return entry.program;
 		}
 		const program = this.programs.acquireProgram(parameters, material);
+		if (program.justLinked === true) { program.justLinked = false; this.state.currentProgram = program.program; } // linking made it current behind the state cache
 		if (entry !== undefined) {
 			// current program becomes the alternate; the one it displaces is released
 			if (entry.altProgram !== null) this.programs.releaseProgram(entry.altProgram);
@@ -1104,6 +1105,10 @@ class WebGLRenderer {
 		if (!this._isBatchable(item)) return false;
 		const object = item.object, material = item.material;
 		if (object.isMesh !== true || material.wireframe === true || object.isSprite === true) return false;
+		// a sub-draw of a multi-draw covers the whole geometry: a drawRange set after the mega-buffer record was
+		// built (ensure() only checks it when creating the record) must take the per-draw path
+		const dr = item.geometry.drawRange;
+		if (dr.start !== 0 || dr.count !== Infinity) return false;
 		const rec = this.megaBuffers.ensure(item.geometry);
 		if (this._megaTouch !== null) this._megaTouch.set(item.geometry, rec);
 		if (rec === null || rec.page === null) return false;
@@ -1371,7 +1376,10 @@ class WebGLRenderer {
 	/** Shared setup for a draw: program, material state, textures, block binding. Returns the program. */
 	_setupMaterial(item, program, material, camera, frontFaceCW, side) {
 		const gl = this._gl, state = this.state;
-		const programChanged = state.useProgram(program.program);
+		// a program linked during this list is already current in GL, so the GL-level switch alone cannot tell
+		// a new program from the previous draw's: track the renderer-level program as well
+		const programChanged = state.useProgram(program.program) || this._currentProgram !== program;
+		this._currentProgram = program;
 		if (programChanged) { this.info.render.programSwitches++; this._traceSwitches++; if (this._traceSeq !== null) this._traceSeq.push({ id: program.id, list: this._traceList, renderOrder: item.object.renderOrder, material: material.type + (material.name ? '(' + material.name + ')' : '') }); }
 		const materialChanged = this._currentMaterial !== material || programChanged || this._currentSide !== side;
 		if (materialChanged) {
