@@ -92,3 +92,21 @@ the comparison to trust.
 
 * Dedupe varyings at compile time when several maps are the same texture object with the same matrix.
 * Skip the per-frame texture-matrix refresh for materials whose textures are `matrixAutoUpdate = false` and unchanged.
+
+## Merge with lines / points / sprites and skinning-perf (tip 9290f22)
+
+* `_syncMaterialBlock` keeps the dash sizes (`s[12..14]`) and the points height (`s[19]`) next to the per-map transform loop.
+* Points: `pointsUv` (points with a `uv` attribute and a map or alphaMap) adds a `vPointUv` varying = the map's transform (slot 0,
+  identity without a map) x `uv`; without the attribute the fragment shader transforms `gl_PointCoord` with the same slot.
+  The alphaMap shares that uv, as in three.js. `texture.channel` is ignored for points (three.js: USE_POINTS_UV).
+* `getParameters` assigns `mapUv ... specularMapUv` and `pointsUv` onto the reusable `this._params`; the key keeps the appended code.
+* Validation on the merged tree: `npm test` 179/179, conformance 0 failures, `node bench/lps.mjs` all within tolerance,
+  `node bench/fuzz.mjs --seeds=30 --continue --enable=perMapTransform` fails only 8 12 27 (the tip's list), `smoke.mjs`
+  glError 0, `addons.mjs` no failures; points with map / alphaMap, with and without `uv`, and transformed textures match three.js (max diff 0).
+  Full `node bench/run.mjs --compare --frames=60`: no scenario's meanAbsDiff / maxDiff above `latest.json` (23 scenarios).
+  Medians were again 1.5-3x the committed ones on this loaded machine. Interleaved A/B against the tip (3 pairs, ms):
+  many-materials tip 1 / 0.9 / 0.9 vs branch 1.5 / 1.1 / 1.0, shared-static 1.1 / 1.7 / 0.9 vs 0.9 / 1.6 / 0.9,
+  hierarchy-animated 9.8 / 9.3 / 11.4 vs 7 / 7.8 / 8.5. many-materials is the one scenario where the branch looks up to
+  ~10% slower at the 0.1 ms resolution of the timer (one extra `bufferSubData` per changed record and 7 transform reads per
+  material per frame when the scene's materials are rewritten); it is within the run-to-run spread, so treat it as a
+  possible small cost, not a measured one.
