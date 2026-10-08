@@ -33,6 +33,7 @@ window.runScenario = async function (libName, scenarioName, opts = {}) {
 	const { scene, camera, update, warm } = sc.build(T, n);
 	const buildMs = performance.now() - t0;
 	const gl = renderer.getContext();
+	if (renderer.batcher && new URLSearchParams(location.search).get('db') === '1') renderer.batcher.doubleBuffer = true;
 	if (warm) warm(renderer);
 	for (let f = 0; f < warmup; f++) { if (update) update(f); renderer.render(scene, camera); }
 	gl.finish();
@@ -41,6 +42,7 @@ window.runScenario = async function (libName, scenarioName, opts = {}) {
 	const glErrors = gl.getError();
 	let jsMs = 0, best = Infinity, worst = 0;
 	const samples = [];
+	const mb0 = renderer.batcher && renderer.batcher.stats ? renderer.batcher.stats.bytesUploaded : 0;
 	const wall0 = performance.now();
 	for (let f = 0; f < frames; f++) {
 		const s = performance.now();
@@ -61,6 +63,7 @@ window.runScenario = async function (libName, scenarioName, opts = {}) {
 		drawCalls: info.calls, triangles: Math.round(info.triangles),
 		programs: renderer.info.programs ? renderer.info.programs.length : undefined,
 		glCalls, glError: glErrors,
+		matrixBytesPerFrame: renderer.batcher && renderer.batcher.stats ? Math.round((renderer.batcher.stats.bytesUploaded - mb0) / frames) : undefined,
 	};
 	// capture a thumbnail for visual sanity
 	if (opts.capture) result.image = canvas.toDataURL('image/png');

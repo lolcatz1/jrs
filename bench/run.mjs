@@ -22,7 +22,7 @@ async function freshPage() {
 	const page = await browser.newPage();
 	page.on('pageerror', (e) => console.log('[pageerror]', e.message));
 	page.on('console', (m) => { if (m.type() === 'error') console.log('[browser]', m.text()); });
-	await page.goto(`http://127.0.0.1:${port}/bench/index.html`);
+	await page.goto(`http://127.0.0.1:${port}/bench/index.html${process.env.JRS_DB ? "?db=1" : ""}`);
 	await page.waitForFunction(() => window.ready === true, null, { timeout: 60000 });
 	return page;
 }

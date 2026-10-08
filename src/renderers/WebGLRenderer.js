@@ -358,6 +358,7 @@ class WebGLRenderer {
 		if (scene.matrixWorldAutoUpdate === true) scene.updateMatrixWorld();
 		if (camera.parent === null && camera.matrixWorldAutoUpdate === true) camera.updateMatrixWorld();
 		this._frameId++;
+		if (this._renderCallDepth === 0) this.batcher.beginFrame();
 		this._renderCallDepth++;
 		this._currentCamera = camera;
 		this._currentScene = scene;
