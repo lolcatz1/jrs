@@ -1,0 +1,37 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>lines/points/sprites feature cases</title></head>
+<body>
+<script type="module">
+import * as JRS from '/src/index.js';
+import * as THREE from '/node_modules/three/build/three.module.js';
+import { cases } from '/bench/lps-cases.js';
+const libs = { jrs: JRS, three: THREE };
+window.caseNames = Object.keys(cases);
+function render(libName, name, frames) {
+	const T = libs[libName];
+	const canvas = document.createElement('canvas'); canvas.width = 320; canvas.height = 240; document.body.appendChild(canvas);
+	const renderer = new T.WebGLRenderer({ canvas, antialias: false, preserveDrawingBuffer: true });
+	const c = cases[name](T);
+	renderer.setPixelRatio(c.pixelRatio || 1);
+	renderer.setSize(320, 240, false);
+	for (let f = 0; f < frames; f++) { if (c.update) c.update(f); renderer.render(c.scene, c.camera); }
+	if (c.update && frames >= 6) { /* the last frame is the one compared: render it twice more so list / command reuse has a chance to kick in */ }
+	const gl = renderer.getContext(), w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+	const px = new Uint8Array(w * h * 4); gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+	const out = { px, w, h, calls: renderer.info.render.calls, url: canvas.toDataURL('image/png') };
+	renderer.dispose(); canvas.remove();
+	return out;
+}
+window.compareCase = (name, frames = 6) => {
+	const a = render('jrs', name, frames), b = render('three', name, frames);
+	let sum = 0, maxd = 0, over = 0, alphaMax = 0, differing = 0;
+	for (let i = 0; i < a.px.length; i += 4) {
+		const d = Math.max(Math.abs(a.px[i] - b.px[i]), Math.abs(a.px[i + 1] - b.px[i + 1]), Math.abs(a.px[i + 2] - b.px[i + 2]));
+		sum += Math.abs(a.px[i] - b.px[i]) + Math.abs(a.px[i + 1] - b.px[i + 1]) + Math.abs(a.px[i + 2] - b.px[i + 2]);
+		if (d > maxd) maxd = d; if (d > 32) over++; if (d > 0) differing++;
+		alphaMax = Math.max(alphaMax, Math.abs(a.px[i + 3] - b.px[i + 3]));
+	}
+	return { name, mean: +(sum / (a.px.length * 3 / 4)).toFixed(3), max: maxd, over32: over, differing, alphaMax, callsJrs: a.calls, callsThree: b.calls, jrs: a.url, three: b.url };
+};
+window.ready = true;
+</script></body></html>

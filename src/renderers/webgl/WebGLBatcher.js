@@ -16,6 +16,7 @@ import { Matrix3 } from '../../math/Matrix3.js';
 const TEX_STRIDE_FLOATS = TEXELS_PER_OBJECT * 4; // model matrix (4 texels) + normal matrix columns (3 texels) + spare
 const MATRICES_PER_ROW = MATRIX_TEXTURE_WIDTH / TEXELS_PER_OBJECT;
 // scratch for view-space entries: Float32Array-backed like Object3D.modelViewMatrix, so the arithmetic matches the per-object path bit for bit
+const _f32 = new Float32Array(10), _i32 = new Int32Array(_f32.buffer);
 const _mv = new Matrix4();
 const _nm = new Matrix3();
 
@@ -42,6 +43,7 @@ class WebGLBatcher {
 		// _worldVersion, same material index) at the same position already has its 32 floats in place
 		this.texIds = new Int32Array(this.texCapacity).fill(-1);
 		this.texVersions = new Float64Array(this.texCapacity);
+		this.pixelRatio = 1; this.pointScale = 1;
 		this.viewDependent = false; // some entry of the current fill holds view-space matrices (depends on the camera)
 		this._viewBits = new Float32Array(16); this._viewBitsU = new Uint32Array(this._viewBits.buffer);
 	}
@@ -51,7 +53,8 @@ class WebGLBatcher {
 	/** Selects the GPU texture the next fill is uploaded to (`null` = the shared default slot). */
 	use(slot) { this.slot = slot === null ? this.defaultSlot : slot; }
 	newSlot() { return new MatrixTextureSlot(); }
-	begin() { this.texCount = 0; this.texHash = 0x811c9dc5 | 0; this.viewDependent = false; }
+	/** `pixelRatio` and `height` (renderer drawing size in CSS pixels) feed the per-point size math of `addTexInstance`, as in three's refreshUniformsPoints. */
+	begin(pixelRatio = 1, height = 1) { this.texCount = 0; this.texHash = 0x811c9dc5 | 0; this.viewDependent = false; this.pixelRatio = pixelRatio; this.pointScale = height * 0.5; }
 	ensureTex(extra) {
 		if (this.texCount + extra > this.texCapacity) {
 			let cap = this.texCapacity;
@@ -100,6 +103,50 @@ class WebGLBatcher {
 	 * Call `mixView(camera)` once per run before: the hash must change with the camera. The entry is always
 	 * rewritten (it depends on the camera), and the position is marked so a later world entry there is too.
 	 */
+	/**
+	 * Append a sprite, point cloud or line: its world matrix plus the values its material contributes per object
+	 * (see INSTANCE_MATERIAL in the vertex shader). They have no normal matrix, so texels 4-5 carry colour + opacity and a
+	 * kind-specific parameter block, and a sprite's anchor goes in texel 6. The values are mixed into the upload-skip hash.
+	 */
+	addTexInstance(object, material) {
+		const p = this.texCount, d = this.texData, o = p * TEX_STRIDE_FLOATS;
+		const s = object._slabData, so = object._slabOffset + 16;
+		for (let i = 0; i < 16; i++) d[o + i] = s[so + i];
+		let n = 0;
+		if (object.isSprite === true) {
+			const c = object.center;
+			d[o + 24] = c.x; d[o + 25] = c.y;
+			_f32[8] = c.x; _f32[9] = c.y; n = 2;
+			if (material.isSpriteMaterial === true) { // B: rotation, attenuation flag, -, alphaTest
+				const color = material.color;
+				d[o + 16] = color.r; d[o + 17] = color.g; d[o + 18] = color.b; d[o + 19] = material.opacity;
+				d[o + 20] = material.rotation; d[o + 21] = material.sizeAttenuation === true ? 1 : 0; d[o + 22] = 0; d[o + 23] = material.alphaTest;
+				n = 10;
+			}
+		} else if (object.isPoints === true && material.isPointsMaterial === true) { // B: size, height / 2 when attenuated, -, alphaTest
+			const color = material.color;
+			d[o + 16] = color.r; d[o + 17] = color.g; d[o + 18] = color.b; d[o + 19] = material.opacity;
+			d[o + 20] = material.size * this.pixelRatio; d[o + 21] = material.sizeAttenuation === true ? this.pointScale : 0; d[o + 22] = 0; d[o + 23] = material.alphaTest;
+			n = 8;
+		} else if (object.isLine === true && material.isLineBasicMaterial === true) { // B (dashed): scale, dashSize, totalSize, alphaTest
+			const color = material.color;
+			d[o + 16] = color.r; d[o + 17] = color.g; d[o + 18] = color.b; d[o + 19] = material.opacity;
+			if (material.isLineDashedMaterial === true) { d[o + 20] = material.scale; d[o + 21] = material.dashSize; d[o + 22] = material.dashSize + material.gapSize; } else { d[o + 20] = 0; d[o + 21] = 0; d[o + 22] = 1; }
+			d[o + 23] = material.alphaTest;
+			n = 8;
+		}
+		d[o + 28] = 0; d[o + 29] = 0; d[o + 30] = 0; d[o + 31] = 0;
+		this.texIds[p] = -1; // the entry holds no normal matrix: a mesh at this position must rewrite it
+		let h = this.texHash;
+		h = Math.imul(h ^ object.id, 16777619);
+		h = Math.imul(h ^ object._worldVersion, 16777619);
+		if (n >= 8) for (let k = 0; k < 8; k++) _f32[k] = d[o + 16 + k];
+		if (n === 2) { _f32[0] = _f32[8]; _f32[1] = _f32[9]; }
+		for (let k = 0; k < n; k++) h = Math.imul(h ^ _i32[k], 16777619);
+		this.texHash = h;
+		this.texCount = p + 1;
+		return p;
+	}
 	addTexView(object, camera, both) {
 		const p = this.texCount, d = this.texData, o = p * TEX_STRIDE_FLOATS;
 		_mv.multiplyMatrices(camera.matrixWorldInverse, object.matrixWorld);

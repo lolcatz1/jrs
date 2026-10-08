@@ -1,6 +1,6 @@
 import {
 	REVISION, NoToneMapping, SRGBColorSpace, LinearSRGBColorSpace, PCFShadowMap, BasicShadowMap, VSMShadowMap, FrontSide, BackSide, DoubleSide,
-	UnsignedByteType, RGBAFormat, WebGLCoordinateSystem
+	UnsignedByteType, RGBAFormat, WebGLCoordinateSystem, CustomBlending
 } from '../constants.js';
 import { Matrix3 } from '../math/Matrix3.js';
 import { WebGLEnvironments } from './webgl/WebGLEnvironments.js';
@@ -27,7 +27,7 @@ import { WebGLBindingStates } from './webgl/WebGLBindingStates.js';
 import { WebGLBatcher } from './webgl/WebGLBatcher.js';
 import { layoutOf, LAYOUT_WORLD, LAYOUT_BOTH } from './shaders/ShaderMaterialBatching.js';
 import { customShaderObjTexMode } from './shaders/ShaderLib.js';
-import { WebGLMegaBuffers } from './webgl/WebGLMegaBuffers.js';
+import { WebGLMegaBuffers, NULL_RECORDS, slotOf, KIND_TRIANGLES, KIND_LINE_STRIP, KIND_LINE_LOOP, KIND_LINE_SEGMENTS, KIND_POINTS } from './webgl/WebGLMegaBuffers.js';
 import { WebGLMorphtargets } from './webgl/WebGLMorphtargets.js';
 import { computeNormalMatrix } from '../core/TransformSlab.js';
 import { WebGLInfo } from './webgl/WebGLInfo.js';
@@ -38,6 +38,7 @@ import { MATERIAL_SHADER, MATERIAL_SPRITE, MATERIAL_POINTS, MATERIAL_SHADOW_DEPT
 const _projScreenMatrix = /*@__PURE__*/ new Matrix4();
 const _vector3 = /*@__PURE__*/ new Vector3();
 const _color = /*@__PURE__*/ new Color();
+const _fogRGB = /*@__PURE__*/ new Color();
 const _frustum = /*@__PURE__*/ new Frustum();
 
 function isDescendantOf(object, ancestor) {
@@ -60,6 +61,7 @@ const V_SKINNING = 2048, V_MORPH_POSITION = 4096, V_MORPH_NORMAL = 8192, V_MORPH
 const V_SIDE_BACK = 1 << 23, V_SIDE_FRONT = 1 << 24; // two-pass transparent DoubleSide materials (three.js renders back faces, then front faces); above the morph-count bits
 
 const ITEM_BATCHABLE = 1, ITEM_MULTIDRAWABLE = 2; // list.flags bits, see _pushItem
+const KIND_SPRITE = 5; // batch kinds 0-4 are the mega-buffer kinds
 const defaultOnBeforeRender = Object3D.prototype.onBeforeRender;
 const defaultOnAfterRender = Object3D.prototype.onAfterRender;
 
@@ -182,6 +184,7 @@ class WebGLRenderer {
 		this.lights = new WebGLLights();
 		this.bindingStates = new WebGLBindingStates(gl, this.state, this.attributes, this.info);
 		this.batcher = new WebGLBatcher(gl);
+		this._maxLineWidth = gl.getParameter(gl.ALIASED_LINE_WIDTH_RANGE)[1];
 		this.multiDrawExt = gl.getExtension('WEBGL_multi_draw');
 		this.megaBuffers = this.multiDrawExt !== null ? new WebGLMegaBuffers(gl, this.state, this.info) : null;
 		// the one batched variant of a custom program serves instanced and multi-draw runs alike (gl_DrawID is 0 outside multi-draw calls)
@@ -1355,7 +1358,7 @@ class WebGLRenderer {
 		const frame = this._frameId;
 		if (material._frameStamp !== frame) {
 			material._frameStamp = frame;
-			const bg = this._batchGroupOf(material);
+			const bg = object.isMesh === true ? this._batchGroupOf(material) : null; // sprites / points / lines carry their material values per object instead (INSTANCE_MATERIAL)
 			material._batchGroup = bg;
 			if (bg === null) material._frameRid = this._materialCounter++;
 			else { if (bg._frameStamp !== frame) { bg._frameStamp = frame; bg._frameRid = this._materialCounter++; } material._frameRid = bg._frameRid; }
@@ -1380,7 +1383,7 @@ class WebGLRenderer {
 				if (material.wireframe !== true && object.isSprite !== true && dr.start === 0 && dr.count === Infinity) flags |= ITEM_MULTIDRAWABLE;
 			}
 		}
-		list.push(object, geometry, material, group, material._frameRid, geometry._frameRid, variant, material._batchGroup, flags);
+		list.push(object, geometry, material, group, material._frameRid, geometry._frameRid, variant, material._batchGroup, flags, object.isMesh === true ? -1 : this._layoutNeeds(material) & geometry._attrMask);
 		const rec = this._rec;
 		if (rec !== null && shadowPass === false) { rec.regMaterial(material); rec.regPair(material, variant, object); }
 	}
@@ -1452,6 +1455,8 @@ class WebGLRenderer {
 			if (!instanced) for (const name in attributes) { if (attributes[name].isInstancedBufferAttribute === true) { instanced = true; break; } }
 			geometry._attrInstanced = instanced; // a per-instance attribute would be consumed by the batch's instancing: never batched
 			geometry._attrBits = a; geometry._attrBitsVersion = geometry._layoutVersion;
+			// which of the attributes lines / points / sprites may use the geometry carries (see _layoutNeeds)
+			geometry._attrMask = (attributes.color !== undefined ? 1 : 0) | (attributes.lineDistance !== undefined ? 2 : 0) | (attributes.uv !== undefined ? 4 : 0);
 		}
 		let a = geometry._attrBits;
 		if (material.vertexColors !== true) a &= ~(V_HAS_COLOR | V_COLOR_ALPHA);
@@ -1492,11 +1497,15 @@ class WebGLRenderer {
 	}
 
 	_getProgram(material, object, scene, variant) {
-		if (material._resolveStamp === this._frameId && material._resolveVariant === variant) return material._resolveProgram;
+		const frame = this._frameId;
+		// two cached resolutions per frame: the plain variant (render list) and the batched one (draw list)
+		if (material._resolveStamp === frame && material._resolveVariant === variant) return material._resolveProgram;
+		if (material._resolveStamp2 === frame && material._resolveVariant2 === variant) return material._resolveProgram2;
 		const props = this._materialProps(material);
 		if (props.envStamp !== this._frameId && this._inDrawList === false) { props.envStamp = this._frameId; this._refreshEnvironment(material, props, scene); }
 		const program = this._getProgramSlow(props, material, object, scene, variant);
-		material._resolveStamp = this._frameId; material._resolveVariant = variant; material._resolveProgram = program;
+		if (material._resolveStamp === frame) { material._resolveStamp2 = frame; material._resolveVariant2 = variant; material._resolveProgram2 = program; }
+		else { material._resolveStamp = frame; material._resolveVariant = variant; material._resolveProgram = program; }
 		return program;
 	}
 	/**
@@ -1605,7 +1614,8 @@ class WebGLRenderer {
 		const ns = material.normalScale;
 		if (ns !== undefined) { s[16] = ns.x; s[17] = ns.y; } else { s[16] = 1; s[17] = 1; }
 		s[18] = material.size !== undefined ? material.size * this._pixelRatio : 1;
-		s[19] = material.isSpriteMaterial ? material.rotation : (material.bumpScale !== undefined ? material.bumpScale : 1);
+		s[19] = material.isSpriteMaterial ? material.rotation : material.isPointsMaterial ? this._height * 0.5 : (material.bumpScale !== undefined ? material.bumpScale : 1);
+		if (material.isLineDashedMaterial === true) { s[12] = material.scale; s[13] = material.dashSize; s[14] = material.dashSize + material.gapSize; }
 		const map = material.map || material.alphaMap || material.emissiveMap || material.normalMap || material.roughnessMap || material.metalnessMap || material.aoMap || material.specularMap;
 		if (map && map.isTexture) {
 			if (map.matrixAutoUpdate === true) map.updateMatrix();
@@ -1669,10 +1679,49 @@ class WebGLRenderer {
 	// ------------------------------------------------------------------ drawing
 
 	/**
+	 * Attributes (bit 0 colour, 1 lineDistance, 2 uv) a lines / points material reads. Mega-buffer pages hold only those,
+	 * so geometries that differ in attributes the material ignores still share a page, and runs of them stay one draw.
+	 */
+	_layoutNeeds(material) {
+		return (material.vertexColors === true ? 1 : 0) | (material.isLineDashedMaterial === true ? 2 : 0) | (material.map || material.alphaMap ? 4 : 0);
+	}
+
+	/**
+	 * May a run of sprites / points / lines that starts at `item` continue with `next`? Same material (and program), or any
+	 * material that draws identically apart from the values that travel per object in the matrix texture (colour, opacity,
+	 * rotation, point size, dash sizes, alphaTest value, size attenuation): same type, textures, GL state, fog, vertexColors ...
+	 */
+	_sameInstanceRun(item, next) {
+		const a = item.material, b = next.material;
+		if (a === b) return item.program === next.program;
+		if (a.type !== b.type || a.map !== b.map || a.alphaMap !== b.alphaMap || a.side !== b.side || a.transparent !== b.transparent || a.blending !== b.blending ||
+			a.depthFunc !== b.depthFunc || a.depthTest !== b.depthTest || a.depthWrite !== b.depthWrite || a.colorWrite !== b.colorWrite ||
+			a.premultipliedAlpha !== b.premultipliedAlpha || a.dithering !== b.dithering || a.toneMapped !== b.toneMapped || a.fog !== b.fog ||
+			a.alphaToCoverage !== b.alphaToCoverage || (a.alphaTest > 0) !== (b.alphaTest > 0) || a.polygonOffset !== b.polygonOffset ||
+			a.stencilWrite === true || b.stencilWrite === true || a.vertexColors !== b.vertexColors || a.visible !== b.visible) return false;
+		if (a.blending === CustomBlending) return false;
+		if (a.polygonOffset === true && (a.polygonOffsetFactor !== b.polygonOffsetFactor || a.polygonOffsetUnits !== b.polygonOffsetUnits)) return false;
+		if (a.linewidth !== b.linewidth && this._maxLineWidth > 1) return false; // WebGL on ANGLE ignores widths above 1: then the width cannot split a run
+		return a.isSpriteMaterial === true || a.isPointsMaterial === true || a.isLineBasicMaterial === true;
+	}
+
+	/** Primitive kind of a batchable object; one instanced run draws a single kind (a Line and a LineLoop sharing a geometry are different draws). */
+	_batchKind(object) {
+		if (object.isMesh === true) return KIND_TRIANGLES;
+		if (object.isLine === true) return object.isLineSegments === true ? KIND_LINE_SEGMENTS : object.isLineLoop === true ? KIND_LINE_LOOP : KIND_LINE_STRIP;
+		if (object.isPoints === true) return KIND_POINTS;
+		return KIND_SPRITE;
+	}
+
+	/**
 	 * A plain mesh without per-object hooks, instancing, skinning, morph targets or per-instance attributes, and
 	 * not mirrored (a negative-determinant world matrix flips the front face, which a batch cannot do per object).
 	 */
 	_objectBatchable(object, geometry) {
+		if (object.isSprite === true || object.isLine === true || object.isPoints === true) {
+			// sprites, points and lines have no front face to flip and carry their material values per object (addTexInstance)
+			return object.morphTargetInfluences === undefined && geometry._attrInstanced !== true && object.onBeforeRender === defaultOnBeforeRender && object.onAfterRender === defaultOnAfterRender;
+		}
 		if (object.isMesh !== true || object.isInstancedMesh === true || object.isSkinnedMesh === true ||
 			object.morphTargetInfluences !== undefined || geometry._attrInstanced === true ||
 			object.onBeforeRender !== defaultOnBeforeRender || object.onAfterRender !== defaultOnAfterRender) return false;
@@ -1685,14 +1734,15 @@ class WebGLRenderer {
 	 * (`ensure` compares attribute layout and sizes). Geometries are also noted once per command build in the
 	 * touch map, which a draw-command cache uses to validate a replay.
 	 */
-	_mdRecordOf(geometry) {
+	_mdRecordOf(geometry, kind = KIND_TRIANGLES, needs = 0) {
 		let rec;
-		if (geometry._mdFrame !== this._frameId || (geometry._mdRec !== null && geometry._mdRec.layoutVersion !== geometry._layoutVersion)) {
-			geometry._mdFrame = this._frameId;
-			rec = geometry._mdRec = this.megaBuffers.ensure(geometry);
+		const slot = slotOf(kind, needs);
+		if (geometry._mdFrame !== this._frameId || geometry._mdSlot !== slot || (geometry._mdRec !== null && geometry._mdRec.layoutVersion !== geometry._layoutVersion)) {
+			geometry._mdFrame = this._frameId; geometry._mdSlot = slot;
+			rec = geometry._mdRec = this.megaBuffers.ensure(geometry, kind, needs);
 			geometry._mdTouch = -1;
 		} else rec = geometry._mdRec;
-		if (this._megaTouch !== null && geometry._mdTouch !== this._buildSeq) { geometry._mdTouch = this._buildSeq; this._megaTouch.set(geometry, rec); }
+		if (this._megaTouch !== null && geometry._mdTouch !== this._buildSeq) { geometry._mdTouch = this._buildSeq; this._megaTouch.set(geometry, rec !== null ? rec : NULL_RECORDS[slot]); }
 		return rec;
 	}
 
@@ -1719,8 +1769,9 @@ class WebGLRenderer {
 			this._executeCommands(commandCache.cmdN, scene, camera, shadowPass);
 			return;
 		}
-		batcher.begin();
+		batcher.begin(this._pixelRatio, this._height);
 		let cmdN = 0, mdN = 0;
+		let instanceKinds = false; // a batched run of sprites / points / lines was built: their per-object material values live in the matrix texture
 		const touch = commandCache !== null ? (this._megaTouch = this._touchMap) : null;
 		if (touch !== null) touch.clear();
 		this._buildSeq++;
@@ -1733,30 +1784,38 @@ class WebGLRenderer {
 			const material = item.material, bg = item.batchGroup;
 			// a ShaderMaterial run of any length goes through the batched program variant (one program per material
 			// instead of switching between the per-object and the batched variant, which would re-send every uniform)
-			const minRun = material.isShaderMaterial === true ? 1 : minimum;
+			const instanceKind = item.layoutClass >= 0 || item.object.isSprite === true; // sprite / points / line item
+			const minRun = material.isShaderMaterial === true ? 1 : instanceKind ? Math.min(minimum, 2) : minimum;
 			let j = i + 1;
 			let kind = 0; // 0 single, 1 instanced run, 2 multi-draw run; +2 when the run spans several materials
 			let firstOtherMaterial = -1; // first item of the run whose material differs from `material` (same batch group)
 			let rec0;
-			if (multi && (fl & ITEM_MULTIDRAWABLE) !== 0 && (rec0 = this._mdRecordOf(item.geometry)) !== null && megaBuffers.supports(rec0, item.program)) {
+			const kind0 = instanceKind ? this._batchKind(item.object) : KIND_TRIANGLES, needs0 = instanceKind ? this._layoutNeeds(material) : 0;
+			if (multi && (fl & ITEM_MULTIDRAWABLE) !== 0 && (rec0 = this._mdRecordOf(item.geometry, kind0, needs0)) !== null && megaBuffers.supports(rec0, item.program)) {
 				item.mdRecord = rec0;
 				const page = rec0.page, indexed = rec0.indexed, program = item.program, renderOrder = item.renderOrder;
-				let distinct = 1, lastGeometry = item.geometry, firstGroupEnd = -1;
+				let distinct = 1, lastGeometry = item.geometry, firstGroupEnd = -1, kindEnd = -1;
 				while (j < n) {
 					const nextIndex = keys[j];
 					const next = items[nextIndex];
-					if ((flags[nextIndex] & ITEM_MULTIDRAWABLE) === 0 || next.program !== program || next.renderOrder !== renderOrder) break;
-					if (next.material !== material && (bg === null || next.batchGroup !== bg)) break;
+					if ((flags[nextIndex] & ITEM_MULTIDRAWABLE) === 0 || next.renderOrder !== renderOrder) break;
+					if (instanceKind) { if (next.layoutClass < 0 || !this._sameInstanceRun(item, next)) break; }
+					else if (next.program !== program || (next.material !== material && (bg === null || next.batchGroup !== bg))) break;
 					const geometry = next.geometry;
-					if (geometry !== lastGeometry || geometry._mdFrame !== this._frameId) {
-						const rec = this._mdRecordOf(geometry);
-						if (rec === null || rec.page !== page || rec.indexed !== indexed || !megaBuffers.supports(rec, program)) break;
+					const nextKind = instanceKind ? this._batchKind(next.object) : KIND_TRIANGLES;
+					if (instanceKind || geometry !== lastGeometry || geometry._mdFrame !== this._frameId) {
+						const rec = this._mdRecordOf(geometry, nextKind, instanceKind ? needs0 : 0);
+						if (rec === null || rec.page !== page || rec.indexed !== indexed || rec.mode !== rec0.mode || !megaBuffers.supports(rec, program)) break;
+						next.mdRecord = rec; // a geometry used as several kinds (Line / LineLoop) has one record per kind
 						if (geometry !== lastGeometry) { distinct++; lastGeometry = geometry; if (firstGroupEnd < 0) firstGroupEnd = j; }
+						if (kindEnd < 0 && nextKind !== kind0) kindEnd = j;
 					}
-					if (firstOtherMaterial < 0 && next.material !== material) firstOtherMaterial = j;
+					if (firstOtherMaterial < 0 && bg !== null && next.material !== material) firstOtherMaterial = j;
 					j++;
 				}
 				if (firstGroupEnd < 0) firstGroupEnd = j;
+				// an instanced draw uses one geometry and one primitive kind (a Line and a LineLoop expand to the same LINES records but are not the same draw)
+				if (kindEnd >= 0 && kindEnd < firstGroupEnd) firstGroupEnd = kindEnd;
 				// Cost model: a multi-draw costs one call plus a small per-sub-draw cost; an instanced draw
 				// costs one call per distinct geometry. Repeated geometries (sorted contiguously) are
 				// therefore drawn instanced, geometry-group by geometry-group; mostly-distinct runs use multi-draw.
@@ -1767,15 +1826,17 @@ class WebGLRenderer {
 				while (j < n) {
 					const nextIndex = keys[j];
 					const next = items[nextIndex];
-					if (next.geometry === geometry && (next.material === material || (bg !== null && next.batchGroup === bg)) && next.program === program &&
-						next.renderOrder === renderOrder && (flags[nextIndex] & ITEM_BATCHABLE) !== 0) {
-						if (firstOtherMaterial < 0 && next.material !== material) firstOtherMaterial = j;
+					if (next.geometry === geometry && next.renderOrder === renderOrder && (flags[nextIndex] & ITEM_BATCHABLE) !== 0 &&
+						(instanceKind ? next.layoutClass >= 0 && this._batchKind(next.object) === kind0 && this._sameInstanceRun(item, next)
+							: next.program === program && (next.material === material || (bg !== null && next.batchGroup === bg)))) {
+						if (firstOtherMaterial < 0 && bg !== null && next.material !== material) firstOtherMaterial = j;
 						j++;
 					} else break;
 				}
 				if (j - i >= minRun) kind = 1;
 			}
 			const multiMaterial = kind !== 0 && firstOtherMaterial >= 0 && firstOtherMaterial < j;
+			if (kind !== 0 && instanceKind) instanceKinds = true;
 			const windowBase = multiMaterial ? bg.page * this._materialWindow : 0;
 			// texture entry layout of the run (ShaderMaterialBatching.js): world matrices, or the view-space pair for custom programs reading modelViewMatrix / normalMatrix
 			const layout = kind !== 0 ? layoutOf(item.program.objTexMode) : LAYOUT_WORLD, both = layout === LAYOUT_BOTH;
@@ -1791,9 +1852,10 @@ class WebGLRenderer {
 				this._cmdMdStart[cmdN] = mdN;
 				for (let k = i; k < j; k++) {
 					const it = items[keys[k]];
-					if (layout === LAYOUT_WORLD) batcher.addTex(it.object, multiMaterial ? this._materialRecordIndex(it.material, windowBase) : 0);
+					if (instanceKind) batcher.addTexInstance(it.object, it.material);
+					else if (layout === LAYOUT_WORLD) batcher.addTex(it.object, multiMaterial ? this._materialRecordIndex(it.material, windowBase) : 0);
 					else batcher.addTexView(it.object, camera, both);
-					const geometry = it.geometry, rec = geometry._mdRec;
+					const geometry = it.geometry, rec = instanceKind ? it.mdRecord : geometry._mdRec;
 					megaBuffers.queue(rec, geometry);
 					if (rec.indexed) { this._mdCounts[mdN] = rec.indexCount; this._mdOffsets[mdN] = rec.byteOffset; }
 					else { this._mdCounts[mdN] = rec.vertexCount; this._mdOffsets[mdN] = rec.baseVertex; }
@@ -1804,7 +1866,8 @@ class WebGLRenderer {
 				this._cmdOffset[cmdN] = batcher.texCount;
 				this._cmdCount[cmdN] = j - i;
 				this._cmdKind[cmdN] = multiMaterial ? 3 : 1;
-				if (multiMaterial) { for (let k = i; k < j; k++) { const it = items[keys[k]]; batcher.addTex(it.object, this._materialRecordIndex(it.material, windowBase)); } }
+				if (instanceKind) { for (let k = i; k < j; k++) { const it = items[keys[k]]; batcher.addTexInstance(it.object, it.material); } }
+				else if (multiMaterial) { for (let k = i; k < j; k++) { const it = items[keys[k]]; batcher.addTex(it.object, this._materialRecordIndex(it.material, windowBase)); } }
 				else if (layout === LAYOUT_WORLD) { for (let k = i; k < j; k++) batcher.addTex(items[keys[k]].object, 0); }
 				else { for (let k = i; k < j; k++) batcher.addTexView(items[keys[k]].object, camera, both); }
 			} else {
@@ -1819,7 +1882,9 @@ class WebGLRenderer {
 		if (batcher.texCount > 0) batcher.uploadTexture(this.state, TEXTURE_UNITS.objectMatrices);
 		if (commandCache !== null) {
 			this._megaTouch = null;
-			this._saveCommands(commandCache, keysVersion, cmdN, mdN, multi, touch, list.cache.pMat, camera);
+			// batched sprites / points / lines keep per-object material values in the matrix texture, which a replay would not refresh: always rebuild those lists
+			if (instanceKinds) commandCache.version = -1;
+			else this._saveCommands(commandCache, keysVersion, cmdN, mdN, multi, touch, list.cache.pMat, camera);
 		}
 		this._executeCommands(cmdN, scene, camera, shadowPass);
 	}
@@ -1849,7 +1914,7 @@ class WebGLRenderer {
 		cache.viewDependent = batcher.viewDependent;
 		if (batcher.viewDependent) cache.view.set(camera.matrixWorldInverse.elements);
 		// a geometry whose mega-buffer record changed while building (reallocation) is not safe to replay
-		for (const [geometry, rec] of touch) if (rec !== null && rec.layoutVersion !== geometry._layoutVersion) return;
+		for (const [geometry, rec] of touch) if (rec.page !== null && rec.layoutVersion !== geometry._layoutVersion) return;
 		cache.items = this._cmdItem.slice(0, cmdN);
 		cache.offset = this._cmdOffset.slice(0, cmdN); cache.count = this._cmdCount.slice(0, cmdN);
 		cache.kind = this._cmdKind.slice(0, cmdN); cache.mdStart = this._cmdMdStart.slice(0, cmdN);
@@ -1857,7 +1922,7 @@ class WebGLRenderer {
 		cache.cmdN = cmdN; cache.mdN = mdN;
 		cache.texCount = batcher.texCount; cache.texHash = batcher.texHash;
 		cache.megaGeoms.length = 0; cache.megaRecs.length = 0; cache.megaPages.length = 0;
-		for (const [geometry, rec] of touch) { cache.megaGeoms.push(geometry); cache.megaRecs.push(rec); cache.megaPages.push(rec === null ? null : rec.page); }
+		for (const [geometry, rec] of touch) { cache.megaGeoms.push(geometry); cache.megaRecs.push(rec); cache.megaPages.push(rec.page); }
 		let spans = false;
 		for (let c = 0; c < cmdN; c++) if (this._cmdKind[c] >= 3) { spans = true; break; }
 		cache.syncMats = spans ? pairMats : null; // building a run that spans materials refreshes each material's record; replay must too
@@ -1879,8 +1944,9 @@ class WebGLRenderer {
 		if (cache.texCount > 0 && (batcher.texture === null || batcher.textureHash !== cache.texHash || batcher.textureCount !== cache.texCount)) return false;
 		const geoms = cache.megaGeoms;
 		for (let i = 0; i < geoms.length; i++) {
-			const rec = this.megaBuffers.ensure(geoms[i]);
-			if (rec !== cache.megaRecs[i] || (rec !== null && rec.page !== cache.megaPages[i])) return false;
+			const expected = cache.megaRecs[i];
+			const rec = this.megaBuffers.ensureSlot(geoms[i], expected.slot);
+			if ((rec !== null ? rec : NULL_RECORDS[expected.slot]) !== expected || (rec !== null && rec.page !== cache.megaPages[i])) return false;
 			if (rec !== null) this.megaBuffers.queue(rec, geoms[i]); // uploads are lazy: changed vertex data still has to reach the page before the replayed draws
 		}
 		const syncMats = cache.syncMats;
@@ -1928,12 +1994,12 @@ class WebGLRenderer {
 		const ext = this.multiDrawExt;
 		let primitives = 0;
 		if (rec.indexed) {
-			ext.multiDrawElementsWEBGL(gl.TRIANGLES, this._mdCounts, mdStart, gl.UNSIGNED_INT, this._mdOffsets, mdStart, count);
+			ext.multiDrawElementsWEBGL(rec.mode, this._mdCounts, mdStart, gl.UNSIGNED_INT, this._mdOffsets, mdStart, count);
 		} else {
-			ext.multiDrawArraysWEBGL(gl.TRIANGLES, this._mdOffsets, mdStart, this._mdCounts, mdStart, count);
+			ext.multiDrawArraysWEBGL(rec.mode, this._mdOffsets, mdStart, this._mdCounts, mdStart, count);
 		}
 		for (let k = 0; k < count; k++) primitives += this._mdCounts[mdStart + k];
-		this.info.update(primitives, gl.TRIANGLES, 1);
+		this.info.update(primitives, rec.mode, 1);
 		this.info.render.batches++;
 		this.info.render.instances += count;
 	}
@@ -2226,7 +2292,7 @@ class WebGLRenderer {
 		if (pu.toneMappingExposure && uniforms.toneMappingExposure === undefined) setUniformValue(gl, this, pu.toneMappingExposure, this.toneMappingExposure);
 		const fog = this._currentScene ? this._currentScene.fog : null;
 		if (fog && material.fog === true) {
-			if (pu.fogColor) setUniformValue(gl, this, pu.fogColor, fog.color);
+			if (pu.fogColor) setUniformValue(gl, this, pu.fogColor, fog.color.getRGB(_fogRGB, this._currentRenderTarget === null ? this._outputColorSpace : ColorManagement.workingColorSpace)); // three.js: getUnlitUniformColorSpace
 			if (fog.isFog) { if (pu.fogNear) setUniformValue(gl, this, pu.fogNear, fog.near); if (pu.fogFar) setUniformValue(gl, this, pu.fogFar, fog.far); }
 			else if (pu.fogDensity) setUniformValue(gl, this, pu.fogDensity, fog.density);
 		}
