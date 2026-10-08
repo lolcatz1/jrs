@@ -125,7 +125,7 @@ space, sRGB output, physically based light units):
 * **Cameras:** `PerspectiveCamera`, `OrthographicCamera` (incl. view offsets, zoom, film offset).
 * **Materials:** `MeshBasicMaterial`, `MeshLambertMaterial`, `MeshPhongMaterial`,
   `MeshStandardMaterial` (`MeshPhysicalMaterial` renders as Standard), `MeshNormalMaterial`,
-  `MeshDepthMaterial`, `LineBasicMaterial`, `LineDashedMaterial` (solid), `PointsMaterial`,
+  `MeshDepthMaterial`, `LineBasicMaterial`, `LineDashedMaterial`, `PointsMaterial`,
   `SpriteMaterial`, `ShaderMaterial`, `RawShaderMaterial`. Maps: `map`, `alphaMap`, `normalMap`,
   `emissiveMap`, `roughnessMap`, `metalnessMap`, `aoMap`, `specularMap`; vertex colours,
   `flatShading`, `wireframe`, `alphaTest`, transparency and all blending modes, `side`,

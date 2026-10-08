@@ -176,6 +176,36 @@ Limits and fallbacks:
 meshes, 200 Phong materials, 3 geometries) goes from 600 instanced draws plus 200 block binds to
 3 draws.
 
+### 4d. Lines, points and sprites (`INSTANCE_MATERIAL`)
+
+`Sprite`, `Points`, `Line`, `LineSegments` and `LineLoop` batch like meshes, with two differences.
+
+* **Per-object material values.** A mesh batch spans materials through the Materials record array (§4c).
+  Sprites, points and lines instead carry the few values their shaders read from the material
+  (colour and opacity, a sprite's rotation and size-attenuation flag, a point's size and attenuation
+  scale, a dashed line's scale / dash / gap sizes, `alphaTest`) in the matrix-texture entry itself:
+  texels 4-5 (the normal-matrix slots, unused by these objects), a sprite's anchor (`center`) in texel 6. The
+  batched program variant (`INSTANCE_MATERIAL`) reads them in the vertex shader and passes them on as
+  `flat` varyings. Materials that draw identically apart from those values (same type, textures,
+  blending, depth/stencil/polygon-offset state, side, fog, `alphaTest > 0`, `vertexColors`, ...) therefore share a
+  run, however many material instances there are: 5,000 sprites with 3,500 distinct `SpriteMaterial`s
+  become one draw per compatible stretch of the depth-sorted list. There is no limit like the
+  material window, and a colour / opacity / rotation edit is picked up the next frame because the values are
+  re-read (and hashed into the upload-skip hash) whenever a batch is built. Lists that contain such batches do
+  not replay cached draw commands (§3b), for the same reason.
+* **One draw for any mix of lines.** A `Line` (strip), `LineLoop` and `LineSegments` are expanded when
+  they enter a mega-buffer page (§4b) to indexed `LINES` pairs, and points are paged as they are, so one
+  `multiDrawElements(LINES)` / `multiDrawArrays(POINTS)` covers any mix of geometries of one layout. Pages hold only the
+  attributes the material reads (position, plus colour / `lineDistance` / uv when `vertexColors`, dashing or a map
+  is on), and the opaque sort key carries that layout class, so geometries that differ in attributes the material ignores still
+  share a page. Geometries above 65,536 vertices are drawn alone (a private copy of a huge buffer buys nothing).
+  Sprites share one quad geometry, so they use the instanced path.
+
+Parity details that live here: `LineDashedMaterial` dashes in the fragment shader (`mod(scale * lineDistance, dashSize + gapSize) > dashSize`),
+point sprites flip `gl_PointCoord.y` and use the geometry's `uv` when it has one, point size and attenuation follow
+`size * pixelRatio` and `height / 2` of the renderer (not of the render target), opaque materials force alpha 1 (`OPAQUE`), and
+`Fog` colour is uploaded in the output colour space like three.js does.
+
 ## 5. Uniform blocks instead of uniform uploads (`src/renderers/shaders/ShaderLib.js`)
 
 Three std140 blocks replace most `uniform*` calls:
