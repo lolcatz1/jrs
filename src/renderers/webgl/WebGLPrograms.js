@@ -180,6 +180,7 @@ class WebGLPrograms {
 		this.renderer = renderer;
 		this.cache = new Map();
 		this.programs = [];
+		this._params = {};
 	}
 
 	/** Compute the integer key + parameters for a built-in material. */
@@ -215,33 +216,43 @@ class WebGLPrograms {
 
 		// batched sprites / points / lines read colour, opacity, rotation, point size, dash sizes ... per object from the matrix texture
 		const instanceMaterial = (variant.objectTexture === true || variant.multiDraw === true) && (materialType === MATERIAL_SPRITE || materialType === MATERIAL_POINTS || materialType === MATERIAL_LINE);
-		const p = {
-			materialType,
-			map, alphaMap, emissiveMap, normalMap, roughnessMap, metalnessMap, aoMap, specularMap,
-			useUv, useUv1,
-			vertexColors,
-			vertexAlphas: vertexColors && attributes.color.itemSize === 4,
-			instancing: variant.instancing,
-			instancingColor: variant.instancing && variant.instancingColor,
-			objectTexture: variant.objectTexture === true || variant.multiDraw === true,
-			multiDraw: variant.multiDraw === true,
-			flatShading: isLit && material.flatShading === true,
-			doubleSided: !leanShadow && material.side === DoubleSide,
-			leanShadow,
-			fog, fogExp2: fog && scene.fog.isFogExp2 === true,
-			alphaTest: material.alphaTest > 0,
-			instanceMaterial,
-			sizeAttenuation: !instanceMaterial && (materialType === MATERIAL_POINTS || materialType === MATERIAL_SPRITE) && material.sizeAttenuation === true,
-			premultipliedAlpha: material.premultipliedAlpha === true,
-			dashed: materialType === MATERIAL_LINE && material.isLineDashedMaterial === true,
-			opaque: material.transparent === false && material.blending === NormalBlending && material.alphaToCoverage === false,
-			dithering: material.dithering === true,
-			vertexUv1s: hasUv1,
-			toneMapped: toneMapping !== NoToneMapping,
-			toneMapping,
-			sRGBOutput,
-			numDirShadows, numSpotShadows,
-		};
+		// reused between calls so resolving a program for a material that was not seen before allocates nothing; acquireProgram copies it when it creates a program
+		const p = this._params;
+		p.materialType = materialType;
+		p.map = map;
+		p.alphaMap = alphaMap;
+		p.emissiveMap = emissiveMap;
+		p.normalMap = normalMap;
+		p.roughnessMap = roughnessMap;
+		p.metalnessMap = metalnessMap;
+		p.aoMap = aoMap;
+		p.specularMap = specularMap;
+		p.useUv = useUv;
+		p.useUv1 = useUv1;
+		p.vertexColors = vertexColors;
+		p.vertexAlphas = vertexColors && attributes.color.itemSize === 4;
+		p.instancing = variant.instancing;
+		p.instancingColor = variant.instancing && variant.instancingColor;
+		p.objectTexture = variant.objectTexture === true || variant.multiDraw === true;
+		p.multiDraw = variant.multiDraw === true;
+		p.flatShading = isLit && material.flatShading === true;
+		p.doubleSided = !leanShadow && material.side === DoubleSide;
+		p.leanShadow = leanShadow;
+		p.fog = fog;
+		p.fogExp2 = fog && scene.fog.isFogExp2 === true;
+		p.alphaTest = material.alphaTest > 0;
+		p.instanceMaterial = instanceMaterial;
+		p.sizeAttenuation = !instanceMaterial && (materialType === MATERIAL_POINTS || materialType === MATERIAL_SPRITE) && material.sizeAttenuation === true;
+		p.premultipliedAlpha = material.premultipliedAlpha === true;
+		p.dashed = materialType === MATERIAL_LINE && material.isLineDashedMaterial === true;
+		p.opaque = material.transparent === false && material.blending === NormalBlending && material.alphaToCoverage === false;
+		p.dithering = material.dithering === true;
+		p.vertexUv1s = hasUv1;
+		p.toneMapped = toneMapping !== NoToneMapping;
+		p.toneMapping = toneMapping;
+		p.sRGBOutput = sRGBOutput;
+		p.numDirShadows = numDirShadows;
+		p.numSpotShadows = numSpotShadows;
 		let key = materialType;
 		key = key * 2 + (map ? 1 : 0); key = key * 2 + (alphaMap ? 1 : 0); key = key * 2 + (emissiveMap ? 1 : 0); key = key * 2 + (normalMap ? 1 : 0);
 		key = key * 2 + (roughnessMap ? 1 : 0); key = key * 2 + (metalnessMap ? 1 : 0); key = key * 2 + (aoMap ? 1 : 0); key = key * 2 + (specularMap ? 1 : 0);
@@ -265,6 +276,7 @@ class WebGLPrograms {
 		}
 		let program = this.cache.get(key);
 		if (program === undefined) {
+			parameters = Object.assign({}, parameters); // `parameters` is the shared scratch object of getParameters
 			const src = parameters.materialType === MATERIAL_SHADER ? buildCustomShader(material, parameters) : buildBuiltinShader(parameters);
 			program = new WebGLProgram(this.gl, parameters, src.vertexShader, src.fragmentShader);
 			// the constructor binds the new program to set sampler units; tell the state cache

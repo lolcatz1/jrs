@@ -141,6 +141,7 @@ class WebGLRenderer {
 		this.bindingStates = new WebGLBindingStates(gl, this.state, this.attributes, this.info);
 		this.batcher = new WebGLBatcher(gl);
 		this._maxLineWidth = gl.getParameter(gl.ALIASED_LINE_WIDTH_RANGE)[1];
+		this._vflags = { instancing: false, instancingColor: false, receiveShadow: false, shadowPass: false, multiDraw: false, objectTexture: false };
 		this.multiDrawExt = gl.getExtension('WEBGL_multi_draw');
 		this.megaBuffers = this.multiDrawExt !== null ? new WebGLMegaBuffers(gl, this.state, this.info) : null;
 		this._mdCounts = new Int32Array(1024); this._mdOffsets = new Int32Array(1024); this._mdN = 0;
@@ -659,7 +660,7 @@ class WebGLRenderer {
 	_materialProps(material) {
 		let props = this._materialProperties.get(material);
 		if (props === undefined) {
-			props = { programs: [], blockData: new Float32Array(MATERIAL_BLOCK_SIZE / 4), blockSlot: -1, blockStamp: -1, textureStamp: -1, resolveStamp: -1, resolveVariant: -1, resolveProgram: null };
+			props = { programs: [], blockData: new Float32Array(MATERIAL_BLOCK_SIZE / 4), blockSlot: -1, blockStamp: -1, textureStamp: -1, resolveStamp: -1, resolveVariant: -1, resolveProgram: null, resolveStamp2: -1, resolveVariant2: -1, resolveProgram2: null };
 			this._materialProperties.set(material, props);
 			material.addEventListener('dispose', this._onMaterialDispose);
 		}
@@ -678,9 +679,13 @@ class WebGLRenderer {
 
 	_getProgram(material, object, scene, variant) {
 		const props = this._materialProps(material);
-		if (props.resolveStamp === this._frameId && props.resolveVariant === variant) return props.resolveProgram;
+		const frame = this._frameId;
+		// two cached resolutions per frame: the plain variant (render list) and the batched one (draw list)
+		if (props.resolveStamp === frame && props.resolveVariant === variant) return props.resolveProgram;
+		if (props.resolveStamp2 === frame && props.resolveVariant2 === variant) return props.resolveProgram2;
 		const program = this._getProgramSlow(props, material, object, scene, variant);
-		props.resolveStamp = this._frameId; props.resolveVariant = variant; props.resolveProgram = program;
+		if (props.resolveStamp === frame) { props.resolveStamp2 = frame; props.resolveVariant2 = variant; props.resolveProgram2 = program; }
+		else { props.resolveStamp = frame; props.resolveVariant = variant; props.resolveProgram = program; }
 		return program;
 	}
 	_getProgramSlow(props, material, object, scene, variant) {
@@ -695,11 +700,10 @@ class WebGLRenderer {
 				return entry.program;
 			}
 		}
-		const vflags = {
-			instancing: (variant & V_INSTANCING) !== 0, instancingColor: (variant & V_INSTANCING_COLOR) !== 0,
-			receiveShadow: (variant & V_RECEIVE_SHADOW) !== 0, shadowPass: (variant & V_SHADOW_PASS) !== 0,
-			multiDraw: (variant & V_MULTIDRAW) !== 0, objectTexture: (variant & V_OBJTEX) !== 0,
-		};
+		const vflags = this._vflags;
+		vflags.instancing = (variant & V_INSTANCING) !== 0; vflags.instancingColor = (variant & V_INSTANCING_COLOR) !== 0;
+		vflags.receiveShadow = (variant & V_RECEIVE_SHADOW) !== 0; vflags.shadowPass = (variant & V_SHADOW_PASS) !== 0;
+		vflags.multiDraw = (variant & V_MULTIDRAW) !== 0; vflags.objectTexture = (variant & V_OBJTEX) !== 0;
 		const parameters = this.programs.getParameters(material, object, scene || _emptyScene, this.lights, vflags);
 		if (entry !== undefined && entry.program.parameters.key === parameters.key && material.isShaderMaterial !== true) {
 			entry.materialVersion = material.version; entry.envVersion = this._envVersion;
