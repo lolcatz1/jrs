@@ -444,9 +444,10 @@ export function buildFuzzScene(T, seed, features = defaultFeatures(), opts = {})
 		else {
 			const tpl = rng.pick(shaderTemplates);
 			const uniforms = T.UniformsUtils.merge([T.UniformsLib.fog, {
-				tint: { value: params.color }, uOpacity: { value: transparent ? params.opacity : 1 }, tex: { value: params.map || null },
+				tint: { value: params.color }, uOpacity: { value: transparent ? params.opacity : 1 }, tex: { value: null },
 				lightDir: { value: new T.Vector3(rng.range(-1, 1), rng.range(0.2, 1), rng.range(-1, 1)) }, uTime: { value: 0 },
 			}]);
+			uniforms.tex.value = params.map || null; // after merge: three.js nulls render-target textures in cloneUniforms
 			const defines = {};
 			if (tpl.name === 'chunks-uv-fog' && params.map) defines.USE_UV = '';
 			const sp = { uniforms, defines, vertexShader: tpl.vertexShader, fragmentShader: tpl.fragmentShader, side: params.side, transparent: params.transparent, blending: params.blending, depthTest: params.depthTest, depthWrite: params.depthWrite, premultipliedAlpha: params.premultipliedAlpha, vertexColors: hasVertexColors, wireframe: params.wireframe };

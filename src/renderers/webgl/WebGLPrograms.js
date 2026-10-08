@@ -208,7 +208,9 @@ class WebGLPrograms {
 		const numSpotShadows = receiveShadow ? lights.numSpotShadows : 0;
 		const toneMapping = (material.toneMapped && renderer.toneMapping !== NoToneMapping && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH && materialType !== MATERIAL_NORMAL) ? renderer.toneMapping : NoToneMapping;
 		const currentRenderTarget = renderer.getRenderTarget();
-		const sRGBOutput = (currentRenderTarget === null ? renderer.outputColorSpace : currentRenderTarget.texture.colorSpace) === SRGBColorSpace && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH && materialType !== MATERIAL_NORMAL;
+		// three.js: shaders encode to the output colour space only when rendering to the canvas; a render target
+		// is written in the working (linear) space (an sRGB render target encodes in hardware)
+		const sRGBOutput = currentRenderTarget === null && renderer.outputColorSpace === SRGBColorSpace && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH && materialType !== MATERIAL_NORMAL;
 
 		const p = {
 			materialType,

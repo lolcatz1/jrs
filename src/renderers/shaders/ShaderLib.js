@@ -952,7 +952,7 @@ export function buildCustomShader(material, p) {
 			customDefines,
 			p.fog ? '#define USE_FOG' : '',
 			p.fogExp2 ? '#define FOG_EXP2' : '',
-			p.vertexColors ? '#define USE_COLOR' : '',
+			(p.vertexColors || p.instancingColor) ? '#define USE_COLOR' : '', // three.js defines USE_COLOR in the fragment shader for instance colours too
 			p.vertexAlphas ? '#define USE_COLOR_ALPHA' : '',
 			p.vertexUv1s ? '#define USE_UV1' : '',
 			p.flatShading ? '#define FLAT_SHADED' : '',
