@@ -16370,6 +16370,7 @@ var WebGLShadowMap = class {
     this.lists = /* @__PURE__ */ new WeakMap();
     this._shadowLights = [];
     this._casters = [];
+    this._casterCount = 0;
     this.records = /* @__PURE__ */ new WeakMap();
     this._sig = new Float64Array(4096);
     this._sigN = 0;
@@ -16526,8 +16527,9 @@ var WebGLShadowMap = class {
     const size = shadow.map.width;
     const camera = shadow.camera;
     const casters = this._casters;
-    casters.length = 0;
-    this._gather(scene, camera, casters);
+    this._casterCount = 0;
+    this._gather(scene, camera);
+    const casterCount = this._casterCount;
     let list = this.lists.get(light);
     if (list === void 0) {
       list = new WebGLRenderList();
@@ -16541,7 +16543,7 @@ var WebGLShadowMap = class {
       state.viewport(0, 0, size, size);
       list.init();
       renderer._renderOrderReset();
-      for (let i = 0, n = casters.length; i < n; i++) {
+      for (let i = 0; i < casterCount; i++) {
         const object = casters[i];
         if (object.frustumCulled === false || renderer._cullTest(object, object.geometry, _frustum, true)) this._pushCaster(object, list);
       }
@@ -16552,12 +16554,13 @@ var WebGLShadowMap = class {
       renderer._drawList(list, list.opaqueSorted, list.opaqueCount, scene, camera, true);
       renderer._drawList(list, list.transparentSorted, list.transparentCount, scene, camera, true);
     }
+    for (let i = 0; i < casterCount; i++) casters[i] = null;
   }
-  _gather(object, shadowCamera, out) {
+  _gather(object, shadowCamera) {
     if (object.visible === false) return;
-    if (object.castShadow && (object.isMesh || object.isLine || object.isPoints) && object.layers.test(shadowCamera.layers)) out.push(object);
+    if (object.castShadow && (object.isMesh || object.isLine || object.isPoints) && object.layers.test(shadowCamera.layers)) this._casters[this._casterCount++] = object;
     const children = object.children;
-    for (let i = 0, l = children.length; i < l; i++) this._gather(children[i], shadowCamera, out);
+    for (let i = 0, l = children.length; i < l; i++) this._gather(children[i], shadowCamera);
   }
   /**
    * Walks the casters (no culling, no list building) and records everything the depth map depends on: the shadow

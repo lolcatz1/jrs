@@ -51,7 +51,8 @@ class WebGLShadowMap {
 		this.type = PCFShadowMap;
 		this.lists = new WeakMap(); // light -> WebGLRenderList
 		this._shadowLights = [];
-		this._casters = []; // point lights: casters gathered once, culled per face
+		this._casters = []; // point lights: casters gathered once, culled per face (slots past _casterCount are null)
+		this._casterCount = 0;
 		// Per-light "what produced the depth map" signatures. When the signature of the current frame equals the one the
 		// map was last rendered from, the map is still exact and the whole pass (collect, cull, sort, upload, draw) is skipped.
 		this.records = new WeakMap(); // light -> { sig, n, valid, map, epoch }
@@ -202,8 +203,9 @@ class WebGLShadowMap {
 		const size = shadow.map.width;
 		const camera = shadow.camera;
 		const casters = this._casters;
-		casters.length = 0;
-		this._gather(scene, camera, casters);
+		this._casterCount = 0;
+		this._gather(scene, camera);
+		const casterCount = this._casterCount;
 		let list = this.lists.get(light);
 		if (list === undefined) { list = new WebGLRenderList(); this.lists.set(light, list); }
 		for (let face = 0; face < 6; face++) {
@@ -214,7 +216,7 @@ class WebGLShadowMap {
 			state.viewport(0, 0, size, size);
 			list.init();
 			renderer._renderOrderReset();
-			for (let i = 0, n = casters.length; i < n; i++) {
+			for (let i = 0; i < casterCount; i++) {
 				const object = casters[i];
 				if (object.frustumCulled === false || renderer._cullTest(object, object.geometry, _frustum, true)) this._pushCaster(object, list);
 			}
@@ -225,13 +227,14 @@ class WebGLShadowMap {
 			renderer._drawList(list, list.opaqueSorted, list.opaqueCount, scene, camera, true);
 			renderer._drawList(list, list.transparentSorted, list.transparentCount, scene, camera, true);
 		}
+		for (let i = 0; i < casterCount; i++) casters[i] = null; // do not keep removed objects alive
 	}
 
-	_gather(object, shadowCamera, out) {
+	_gather(object, shadowCamera) {
 		if (object.visible === false) return;
-		if (object.castShadow && (object.isMesh || object.isLine || object.isPoints) && object.layers.test(shadowCamera.layers)) out.push(object);
+		if (object.castShadow && (object.isMesh || object.isLine || object.isPoints) && object.layers.test(shadowCamera.layers)) this._casters[this._casterCount++] = object;
 		const children = object.children;
-		for (let i = 0, l = children.length; i < l; i++) this._gather(children[i], shadowCamera, out);
+		for (let i = 0, l = children.length; i < l; i++) this._gather(children[i], shadowCamera);
 	}
 
 	/**

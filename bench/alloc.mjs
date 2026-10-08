@@ -33,7 +33,7 @@ async function measure(lib, name) {
 		const canvas = document.createElement('canvas'); canvas.width = 320; canvas.height = 240; document.body.appendChild(canvas);
 		const renderer = new T.WebGLRenderer({ canvas, antialias: false, stencil: name.startsWith('shader-client'), powerPreference: 'high-performance' });
 		renderer.setSize(320, 240, false);
-		if (name === 'shadows') renderer.shadowMap.enabled = true;
+		if (name.startsWith('shadows')) renderer.shadowMap.enabled = true;
 		const { scene, camera, update, warm, frame } = sc.build(T, sc.n);
 		if (warm) warm(renderer);
 		let f = 0;
