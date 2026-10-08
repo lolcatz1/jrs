@@ -2,7 +2,7 @@ import {
 	MATERIAL_BASIC, MATERIAL_LAMBERT, MATERIAL_PHONG, MATERIAL_STANDARD, MATERIAL_NORMAL, MATERIAL_DEPTH, MATERIAL_LINE, MATERIAL_POINTS,
 	MATERIAL_SPRITE, MATERIAL_SHADER, MATERIAL_SHADOW_DEPTH, TEXTURE_UNITS, pointShadowUnit, buildBuiltinShader, buildCustomShader
 } from '../shaders/ShaderLib.js';
-import { DoubleSide, NoToneMapping, SRGBColorSpace, BasicShadowMap } from '../../constants.js';
+import { DoubleSide, BackSide, NoToneMapping, SRGBColorSpace, BasicShadowMap } from '../../constants.js';
 import { OBJ_ELIGIBLE, OBJ_USES_MODEL } from '../shaders/ShaderMaterialBatching.js';
 
 export const BLOCK_FRAME = 0;
@@ -109,7 +109,8 @@ class WebGLProgram {
 		const reserveMatrixUnit = isCustom && this.uniforms.objectMatrices !== undefined; // batched variant: unit 15 belongs to the matrix texture
 		this.samplerUniforms = [];
 		let nextUnit = 0;
-		gl.useProgram(program);
+		gl.useProgram(program); // leaves this program current in GL: the renderer syncs its state cache (justLinked)
+		this.justLinked = true;
 		for (const name in this.uniforms) {
 			const u = this.uniforms[name];
 			const target = samplerTarget(gl, u.type);
@@ -128,7 +129,8 @@ class WebGLProgram {
 				continue;
 			}
 			if (!isCustom && (TEXTURE_UNITS[name] !== undefined || TEXTURE_UNITS[name + '0'] !== undefined)) {
-				unit = u.size > 1 ? TEXTURE_UNITS[name + '0'] : TEXTURE_UNITS[name];
+				// a sampler array of size 1 (one shadow-casting light) is still an array: it takes the '<name>0' slot
+				unit = TEXTURE_UNITS[name] !== undefined ? TEXTURE_UNITS[name] : TEXTURE_UNITS[name + '0'];
 			} else if (isCustom && name === 'objectMatrices') {
 				// batched variant of a custom program: the matrix texture keeps its fixed unit (bound by the renderer, never by the material)
 				unit = TEXTURE_UNITS.objectMatrices;
@@ -249,7 +251,9 @@ class WebGLPrograms {
 		const pointShadowBasic = numPointShadows > 0 && renderer.shadowMap.type === BasicShadowMap;
 		const toneMapping = (material.toneMapped && renderer.toneMapping !== NoToneMapping && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH && materialType !== MATERIAL_NORMAL) ? renderer.toneMapping : NoToneMapping;
 		const currentRenderTarget = renderer.getRenderTarget();
-		const sRGBOutput = (currentRenderTarget === null ? renderer.outputColorSpace : currentRenderTarget.texture.colorSpace) === SRGBColorSpace && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH && materialType !== MATERIAL_NORMAL;
+		// three.js: shaders encode to the output colour space only when rendering to the canvas; a render target
+		// is written in the working (linear) space (an sRGB render target encodes in hardware)
+		const sRGBOutput = currentRenderTarget === null && renderer.outputColorSpace === SRGBColorSpace && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH && materialType !== MATERIAL_NORMAL;
 		// skinning and morph targets are object / geometry features (same rule as three.js: the program follows the object)
 		const skinning = object.isSkinnedMesh === true;
 		const morphAttributes = geometry.morphAttributes;
@@ -273,7 +277,8 @@ class WebGLPrograms {
 			materialArray: variant.materialArray === true && (variant.objectTexture === true || variant.multiDraw === true),
 			materialArraySize: renderer._materialWindow, materialPad: renderer._materialPad,
 			flatShading: isLit && material.flatShading === true,
-			doubleSided: !leanShadow && material.side === DoubleSide,
+			doubleSided: !leanShadow && variant.side === DoubleSide,
+			flipSided: !leanShadow && variant.side === BackSide,
 			leanShadow,
 			fog, fogExp2: fog && scene.fog.isFogExp2 === true,
 			alphaTest: material.alphaTest > 0,
@@ -295,7 +300,7 @@ class WebGLPrograms {
 		key = key * 2 + (map ? 1 : 0); key = key * 2 + (alphaMap ? 1 : 0); key = key * 2 + (emissiveMap ? 1 : 0); key = key * 2 + (normalMap ? 1 : 0);
 		key = key * 2 + (roughnessMap ? 1 : 0); key = key * 2 + (metalnessMap ? 1 : 0); key = key * 2 + (aoMap ? 1 : 0); key = key * 2 + (specularMap ? 1 : 0);
 		key = key * 2 + (useUv ? 1 : 0); key = key * 2 + (useUv1 ? 1 : 0); key = key * 2 + (vertexColors ? 1 : 0); key = key * 2 + (p.vertexAlphas ? 1 : 0);
-		key = key * 2 + (p.instancing ? 1 : 0); key = key * 2 + (p.instancingColor ? 1 : 0); key = key * 2 + (p.flatShading ? 1 : 0); key = key * 2 + (p.doubleSided ? 1 : 0);
+		key = key * 2 + (p.instancing ? 1 : 0); key = key * 2 + (p.instancingColor ? 1 : 0); key = key * 2 + (p.flatShading ? 1 : 0); key = key * 2 + (p.doubleSided ? 1 : 0); key = key * 2 + (p.flipSided ? 1 : 0);
 		key = key * 2 + (fog ? 1 : 0); key = key * 2 + (p.alphaTest ? 1 : 0); key = key * 2 + (p.sizeAttenuation ? 1 : 0); key = key * 2 + (p.premultipliedAlpha ? 1 : 0);
 		key = key * 2 + (p.dithering ? 1 : 0); key = key * 2 + (hasUv1 ? 1 : 0); key = key * 8 + toneMapping; key = key * 2 + (sRGBOutput ? 1 : 0);
 		key = key * 8 + numDirShadows; key = key * 8 + numSpotShadows; key = key * 2 + (p.multiDraw ? 1 : 0); key = key * 2 + (p.objectTexture ? 1 : 0); key = key * 2 + (leanShadow ? 1 : 0);
