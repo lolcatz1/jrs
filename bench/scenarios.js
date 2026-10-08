@@ -171,6 +171,11 @@ export const scenarios = {
 		n: 2000,
 		build(T, n) { return buildShadows(T, n, false, true); }
 	},
+	// Same, with a third of the casters moving each frame: the six-face pass cannot be skipped.
+	'shadows-point-animated': {
+		n: 2000,
+		build(T, n) { return buildShadows(T, n, true, true); }
+	},
 	// Every shadow kind at once: directional + spot + two point lights casting (cube maps share texture units with the 2D maps), plus a non-casting point light.
 	'shadows-point-multi': {
 		n: 400,
