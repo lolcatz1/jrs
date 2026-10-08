@@ -141,8 +141,10 @@ space, sRGB output, physically based light units):
   uniforms. Fog uniforms and `toneMappingExposure` are filled from the scene and renderer.
   `lights: true` (scene-driven light uniforms) is not implemented.
 * **Lights:** `AmbientLight`, `HemisphereLight`, `DirectionalLight`, `PointLight`, `SpotLight`
-  (`RectAreaLight` is accepted but not shaded). Shadow maps for directional and spot lights
-  (`castShadow`, `receiveShadow`, `shadow.mapSize/bias/normalBias/radius/camera`).
+  (`RectAreaLight` is accepted but not shaded). Shadow maps for directional, spot and point lights
+  (`castShadow`, `receiveShadow`, `shadow.mapSize/bias/normalBias/radius/camera`). Point lights render a six-face cube depth map
+  and are sampled exactly as in three r186 (`PCFShadowMap`, `BasicShadowMap`); at most 4 point lights cast shadows at once,
+  sharing texture units 8-14 with directional and spot shadow maps. `VSMShadowMap` is not supported for point lights (three skips them too).
 * **Scene:** `Fog`, `FogExp2`, `background` colour, `renderOrder`, `visible`, `frustumCulled`,
   `onBeforeRender/onAfterRender`, tone mapping (`Linear`, `Reinhard`, `Cineon`, `ACESFilmic`,
   `Neutral`), `outputColorSpace`, render targets (`WebGLRenderTarget`, `DepthTexture`).
@@ -160,7 +162,7 @@ space, sRGB output, physically based light units):
   `OrbitControls` and `BufferGeometryUtils` import and run unchanged through an import map
   (`"three/addons/": "<three>/examples/jsm/"`). Verified with `node bench/addons.mjs`.
 
-Not implemented (yet): environment maps / IBL on built-in materials, point-light shadows,
+Not implemented (yet): environment maps / IBL on built-in materials,
 `InstancedMesh` morph targets (`morphTexture`), `SkeletonHelper`, clipping planes, `Scene.background` textures, `ShaderMaterial`
 `lights: true`, `onBeforeCompile` for built-in materials, rendering of `InterleavedBufferAttribute`
 geometry (the classes exist for API compatibility),
