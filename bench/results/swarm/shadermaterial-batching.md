@@ -91,12 +91,14 @@ per-material cost in the client scene). `autoBatchMinimum` therefore does not ap
 ShaderMaterials. The matrix texture's sampler keeps its fixed unit 15 in custom programs; the
 material's own samplers are numbered around it.
 
-**Multi-draw with custom attributes.** Mega-buffer layouts now include every non-instanced
-attribute of a geometry, and a page keeps one VAO for the fixed-location attributes plus one per
-program with custom attributes (pointed at that program's linker-assigned locations). Without this
-the 442 pre-merged chunks of the client scene (unique geometries, five custom attributes) could not
-be multi-drawn. The cost model that chooses instanced-per-geometry vs. multi-draw per run is
-unchanged.
+**Multi-draw with custom attributes.** The 442 pre-merged chunks of the client scene (unique
+geometries, five custom attributes) can only be multi-drawn when the mega-buffer pages carry the
+custom attributes. My first version packed every non-instanced attribute and gave a page one VAO per
+program with custom attributes (linker-assigned locations); the integration branch meanwhile merged
+`swarm/vao-order-base-instance`, which binds custom attributes to fixed per-name locations and packs
+them into pages with a single VAO. The final branch uses that design: a run is multi-drawn only when
+`megaBuffers.supports(record, program)` confirms the page carries every custom attribute the batched
+program reads. The cost model that chooses instanced-per-geometry vs. multi-draw per run is unchanged.
 
 **Matrix texture per list.** Previously one GPU texture served every list, so the transparent list
 of a frame overwrote the opaque list's matrices and the opaque commands could never replay in a
@@ -112,8 +114,8 @@ client frame all six lists replay every frame and nothing is uploaded.
 * My first version of the mega-buffer `Page` constructor created the index buffer before binding
   the page VAO, so the element-array binding landed in whatever VAO the previous draw left bound
   (an `InstancedBufferGeometry` mesh drawn right before the first multi-draw lost its index buffer
-  from the next frame on). Fixed by unbinding the VAO first; the conformance and edge-case scenes
-  cover the sequence.
+  from the next frame on). Superseded by the upstream page implementation (VAO bound first); the
+  conformance and edge-case scenes cover the sequence.
 * Changing `autoBatchShaderMaterials` at runtime left reused render lists pointing at the other
   program variant; the flag is now part of the render-list reuse signature.
 

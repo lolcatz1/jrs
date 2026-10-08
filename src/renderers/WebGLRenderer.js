@@ -88,6 +88,8 @@ class WebGLRenderer {
 		 * Requires WEBGL_multi_draw; falls back to instanced batching of identical geometries otherwise.
 		 */
 		this.autoMultiDraw = true;
+		/** Single draws of geometries held in a mega-buffer page use the page's VAO (fewer vertex-array binds); false restores per-geometry VAOs. */
+		this.pagedDraws = true;
 		/**
 		 * Let one batch span several built-in materials that share a program, GL state and textures:
 		 * each instance / sub-draw selects its material record from a window of the material uniform
@@ -1144,6 +1146,8 @@ class WebGLRenderer {
 		const rec = this.megaBuffers.ensure(item.geometry);
 		if (this._megaTouch !== null) this._megaTouch.set(item.geometry, rec);
 		if (rec === null || rec.page === null) return false;
+		// the page must carry every custom attribute the (batched) program reads, at its fixed per-name location
+		if (!this.megaBuffers.supports(rec, item.program)) return false;
 		item.mdRecord = rec;
 		return true;
 	}
@@ -1361,7 +1365,7 @@ class WebGLRenderer {
 		// the matrix texture lives on a fixed unit; make sure nothing replaced it there
 		this.state.bindTexture(gl.TEXTURE_2D, this.batcher.texture, TEXTURE_UNITS.objectMatrices);
 		const rec = item.mdRecord;
-		this.state.bindVertexArray(rec.page.vaoFor(program, this.state));
+		this.state.bindVertexArray(rec.page.vao);
 		const ext = this.multiDrawExt;
 		let primitives = 0;
 		if (rec.indexed) {
@@ -1500,6 +1504,12 @@ class WebGLRenderer {
 		if (object.isSkinnedMesh === true) this._uploadSkinning(program, object);
 		if (object.morphTargetInfluences !== undefined && program.morphInfluencesUniform !== null) this._uploadMorphTargets(program, object, geometry);
 		// geometry
+		const page = this.pagedDraws && this.megaBuffers !== null && object.isMesh === true && object.isInstancedMesh !== true && object.isSkinnedMesh !== true && material.wireframe !== true && geometry.isInstancedBufferGeometry !== true ? this.megaBuffers.ensure(geometry) : null;
+		if (page !== null && this.megaBuffers.supports(page, program)) {
+			this._drawPaged(page, geometry, group, object);
+			if (object.onAfterRender !== defaultOnAfterRender) object.onAfterRender(this, scene, camera, geometry, material, group);
+			return;
+		}
 		const mode = object.isInstancedMesh ? 1 : 0;
 		const record = this.bindingStates.bind(geometry, mode, object, null, program);
 		let instanceCount = 1, instanced = false;
@@ -1564,6 +1574,28 @@ class WebGLRenderer {
 		this._draw(record, geometry, null, this._drawMode(object, material), instanceCount, true);
 		this.info.render.batches++;
 		this.info.render.instances += instanceCount;
+	}
+
+	/**
+	 * Single draw of a geometry that lives in a mega-buffer page: the page's VAO is shared by every geometry of the
+	 * layout, so consecutive draws of different geometries (of different programs too, when their attribute
+	 * locations agree) keep it bound. Indices were rebased to the page when uploaded, so the draw only needs the
+	 * geometry's index offset (or first vertex), no base-vertex extension.
+	 */
+	_drawPaged(rec, geometry, group, object) {
+		const gl = this._gl, mega = this.megaBuffers;
+		mega.sync(rec, geometry);
+		if (!rec.counted) { rec.counted = true; this.bindingStates.register(geometry); }
+		this.state.bindVertexArray(rec.page.vao);
+		let drawStart = 0, drawCount = rec.indexed ? rec.indexCount : rec.vertexCount;
+		if (group !== null) {
+			const end = Math.min(drawCount, group.start + group.count);
+			drawStart = group.start; drawCount = end - drawStart;
+		}
+		if (drawCount <= 0) return;
+		if (rec.indexed) gl.drawElements(gl.TRIANGLES, drawCount, gl.UNSIGNED_INT, rec.byteOffset + drawStart * 4);
+		else gl.drawArrays(gl.TRIANGLES, rec.baseVertex + drawStart, drawCount);
+		this.info.update(drawCount, gl.TRIANGLES, 1);
 	}
 
 	_draw(record, geometry, group, mode, instanceCount, instanced) {

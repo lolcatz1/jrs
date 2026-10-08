@@ -123,8 +123,7 @@ more per vertex than an attribute would on software GL; on GPUs it is the same t
 Instanced batching needs identical geometry. For runs of **different** geometries that share a
 material, jrs uses `WEBGL_multi_draw` (Chrome, Firefox, Safari): geometries with the same
 attribute layout (names, item sizes, types, indexed or not; custom attributes included) are sub-allocated
-into large shared vertex and index buffers ("pages", 262k vertices each, one VAO per page for the
-fixed-location attributes plus one per custom-attribute program). Indices are rebased to
+into large shared vertex and index buffers ("pages", 262k vertices each, one VAO per page). Indices are rebased to
 the page's vertex base at upload time, so no base-vertex extension is needed. A run becomes one
 `multiDrawElementsWEBGL` (or `multiDrawArraysWEBGL`) call whose sub-draws read their object
 matrix and normal matrix from the same per-frame matrix texture, indexed by `gl_DrawID`. This is the transform-texture technique that three's `BatchedMesh` asks the
@@ -223,9 +222,9 @@ removes that limit without touching the application's shader:
   against matrices that are still on the GPU while other lists and passes draw through the batcher.
   The static client frame (two shadow passes plus the main pass, each with opaque and transparent
   batches) therefore uploads nothing at all once warm.
-* Multi-draw runs of custom programs need their custom attributes in the mega-buffers: every
-  non-instanced attribute of a geometry is now packed (§4b), and a program with custom attribute
-  names gets a VAO per page that points them at its linker-assigned locations.
+* Multi-draw runs of custom programs need their custom attributes in the mega-buffers: custom
+  attributes have fixed per-name locations (§4b) and are packed into the pages, and a run is only
+  multi-drawn when its page carries every custom attribute the batched program reads.
 
 Effect: the client-shaped `shader-client` scene goes from 1,313 draws to 297 (132 instanced /
 single draws plus 165 multi-draws) and 3,320 to 955 GL calls per frame, pixel-identical to three.js;

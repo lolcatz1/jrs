@@ -4,10 +4,10 @@
  * DIFFERENT geometries can then be issued as a single multiDrawElementsWEBGL call, with each
  * sub-draw reading its object matrix from a per-frame matrix texture via gl_DrawID.
  *
- * Every (non-interleaved, non-instanced) attribute is packed; indices are rebased to the page's vertex base
- * at upload time (no base-vertex extension needed). Attributes with fixed locations (position, normal, uv,
- * color, uv1) are enabled in the page's shared VAO; custom attributes (ShaderMaterial programs) have
- * linker-assigned locations, so such a program gets its own VAO per page (`vaoFor`).
+ * Only attributes with fixed locations (position, normal, uv, color, uv1, and custom ShaderMaterial attributes
+ * that have a per-name location, see WebGLPrograms.customAttributeLocation) are packed; indices are
+ * rebased to the page's vertex base at upload time, so any geometry of a page is drawn with the page's VAO
+ * and a plain index offset (drawElements) or first vertex (drawArrays): the base-vertex extensions would add nothing.
  *
  * Dynamic geometry: uploads are queued (`queue`) when a geometry is actually drawn through a page and
  * executed together (`flush`) before the draws. Only attributes whose `version` changed are queued, and
@@ -21,7 +21,9 @@
  */
 import { ATTRIBUTE_LOCATIONS } from './WebGLBindingStates.js';
 import { mergeUpdateRanges } from './WebGLAttributes.js';
+import { customAttributeLocation, customAttributeCount } from './WebGLPrograms.js';
 import { BufferAttribute } from '../../core/BufferAttribute.js';
+import { attributeEpoch } from '../../core/attributeEpoch.js';
 
 const NO_HOOK = BufferAttribute.prototype.onUploadCallback;
 
@@ -85,12 +87,15 @@ class Page {
 		this.buffers = {};
 		this.bufferIds = {};
 		this.indexBufferId = ++bufferIdCounter;
-		// the element buffer binding below is vertex-array state: make sure it does not land in the caller's VAO
-		gl.bindVertexArray(null);
+		this.vao = gl.createVertexArray();
+		gl.bindVertexArray(this.vao);
 		for (const a of layout.attributes) {
 			const buffer = gl.createBuffer();
 			gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
 			gl.bufferData(gl.ARRAY_BUFFER, capacity * a.itemSize * a.bytes, gl.STATIC_DRAW);
+			gl.enableVertexAttribArray(a.location);
+			if ((a.glType === gl.INT || a.glType === gl.UNSIGNED_INT) && !a.normalized) gl.vertexAttribIPointer(a.location, a.itemSize, a.glType, 0, 0);
+			else gl.vertexAttribPointer(a.location, a.itemSize, a.glType, a.normalized, 0, 0);
 			this.buffers[a.name] = buffer;
 			this.bufferIds[a.name] = ++bufferIdCounter;
 		}
@@ -100,50 +105,12 @@ class Page {
 			gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
 			gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indexCapacity * 4, gl.STATIC_DRAW);
 		}
-		this.vao = this._createVAO(null);  // fixed-location attributes only
-		this.customVaos = null;            // program id -> VAO, for programs with custom attributes
 		gl.bindVertexArray(null);
 		gl.bindBuffer(gl.ARRAY_BUFFER, null);
-	}
-	/** A VAO over the page's buffers: fixed attributes at their fixed locations, custom ones where `program` linked them. */
-	_createVAO(program) {
-		const gl = this.gl;
-		const vao = gl.createVertexArray();
-		gl.bindVertexArray(vao);
-		for (const a of this.layout.attributes) {
-			let location = a.location;
-			if (location < 0) {
-				if (program === null) continue;
-				const custom = program.attributes[a.name];
-				if (custom === undefined || custom.location < 0) continue;
-				location = custom.location;
-			}
-			gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers[a.name]);
-			gl.enableVertexAttribArray(location);
-			if (a.integer) gl.vertexAttribIPointer(location, a.itemSize, a.glType, 0, 0);
-			else gl.vertexAttribPointer(location, a.itemSize, a.glType, a.normalized, 0, 0);
-		}
-		if (this.indexBuffer !== null) gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
-		return vao;
-	}
-	/** The VAO to draw with `program` from this page. The caller's VAO cache is invalidated when one is created. */
-	vaoFor(program, state) {
-		if (program.hasCustomAttributes !== true) return this.vao;
-		if (this.customVaos === null) this.customVaos = new Map();
-		let vao = this.customVaos.get(program.id);
-		if (vao === undefined) {
-			vao = this._createVAO(program);
-			this.customVaos.set(program.id, vao);
-			this.gl.bindVertexArray(null);
-			this.gl.bindBuffer(this.gl.ARRAY_BUFFER, null);
-			state.currentVAO = null; state.currentArrayBuffer = null;
-		}
-		return vao;
 	}
 	dispose() {
 		const gl = this.gl;
 		gl.deleteVertexArray(this.vao);
-		if (this.customVaos !== null) for (const vao of this.customVaos.values()) gl.deleteVertexArray(vao);
 		for (const name in this.buffers) gl.deleteBuffer(this.buffers[name]);
 		if (this.indexBuffer) gl.deleteBuffer(this.indexBuffer);
 	}
@@ -158,6 +125,7 @@ class WebGLMegaBuffers {
 		this.gl = gl;
 		this.state = state;
 		this.info = info;
+		this.maxAttributes = gl.getParameter(gl.MAX_VERTEX_ATTRIBS);
 		this.layouts = new Map(); // signature -> { signature, attributes:[{name,itemSize,glType,bytes,normalized,location}], indexed, pages: [] }
 		this.records = new WeakMap(); // geometry -> allocation record (page === null: not eligible for this layout version)
 		this._onGeometryDispose = this._onGeometryDispose.bind(this);
@@ -185,7 +153,10 @@ class WebGLMegaBuffers {
 					return null;
 				}
 				const position = geometry.attributes.position, index = geometry.index;
-				if (position.count === rec.vertexCount && (rec.indexed ? index !== null && index.count === rec.indexCount : index === null)) return rec;
+				// a program linked after the page layout was made may have registered a name this geometry also carries
+				const known = customAttributeCount();
+				const stale = rec.registered !== known && (rec.registered = known, this._missesCustomAttribute(rec, geometry));
+				if (!stale && position.count === rec.vertexCount && (rec.indexed ? index !== null && index.count === rec.indexCount : index === null)) return rec;
 			}
 			this._free(rec); // layout changed or an array was replaced by one of another size: reallocate once
 		}
@@ -193,6 +164,38 @@ class WebGLMegaBuffers {
 		this.records.set(geometry, rec);
 		if (rec.page !== null) geometry.addEventListener('dispose', this._onGeometryDispose);
 		return rec.page !== null ? rec : null;
+	}
+
+	_missesCustomAttribute(rec, geometry) {
+		const names = rec.layout.customNames;
+		for (const name in geometry.attributes) {
+			if (ATTRIBUTE_LOCATIONS[name] !== undefined || names.has(name)) continue;
+			const location = customAttributeLocation(name);
+			if (location >= 0 && location < this.maxAttributes) return true;
+		}
+		return false;
+	}
+
+	/** True when this record's page carries every custom attribute `program` reads, at the locations the program uses. */
+	supports(rec, program) {
+		if (!program.hasCustomAttributes) return true;
+		if (rec.okProgram === program) return true;
+		if (rec.badProgram === program) return false;
+		let ok = program.customFixed;
+		if (ok) {
+			const list = program.customAttributes;
+			for (let i = 0; i < list.length; i++) if (!rec.layout.customNames.has(list[i].name)) { ok = false; break; }
+		}
+		if (ok) rec.okProgram = program; else rec.badProgram = program;
+		return ok;
+	}
+
+	/** Uploads what changed in `geometry` since the record was last synchronised (nothing, cheaply, when no attribute was touched). */
+	sync(rec, geometry) {
+		if (rec.epoch === attributeEpoch.value) return;
+		this.queue(rec, geometry);
+		this.flush();
+		rec.epoch = attributeEpoch.value;
 	}
 
 	_onGeometryDispose(event) {
@@ -214,25 +217,25 @@ class WebGLMegaBuffers {
 	_layoutOf(geometry) {
 		const attributes = geometry.attributes;
 		if (attributes.position === undefined || attributes.position.isInterleavedBufferAttribute) return null;
-		const list = [], gl = this.gl;
+		const list = [];
 		for (const name in attributes) {
-			const fixed = ATTRIBUTE_LOCATIONS[name];
-			const location = fixed === undefined ? -1 : fixed; // -1: custom attribute, location per program (see Page.vaoFor)
+			let location = ATTRIBUTE_LOCATIONS[name];
+			const custom = location === undefined;
+			if (custom) { location = customAttributeLocation(name); if (location < 0 || location >= this.maxAttributes) continue; }
 			const a = attributes[name];
-			if (a.isInterleavedBufferAttribute || a.isInstancedBufferAttribute || a.onUploadCallback !== NO_HOOK) return null;
-			const glType = glTypeOf(gl, a.array);
-			if (glType === 0) return null;
-			if (a.count !== attributes.position.count) return null;
-			const normalized = a.normalized === true;
-			const integer = (glType === gl.INT || glType === gl.UNSIGNED_INT || a.gpuType === 1013) && glType !== gl.FLOAT && !normalized; // as WebGLBindingStates._setupAttribute
-			list.push({ name, itemSize: a.itemSize, glType, bytes: a.array.BYTES_PER_ELEMENT, normalized, integer, location });
+			// a custom attribute that cannot be packed is left out (a program that reads it is then drawn the regular way, see supports())
+			if (a.isInterleavedBufferAttribute || a.isInstancedBufferAttribute || a.onUploadCallback !== NO_HOOK || a.isFloat16BufferAttribute === true) { if (custom) continue; return null; }
+			const glType = glTypeOf(this.gl, a.array);
+			const integerType = glType === this.gl.INT || glType === this.gl.UNSIGNED_INT;
+			if (glType === 0 || (a.gpuType === 1013 && !integerType) || a.count !== attributes.position.count) { if (custom) continue; return null; }
+			list.push({ name, itemSize: a.itemSize, glType, bytes: a.array.BYTES_PER_ELEMENT, normalized: a.normalized === true, location });
 		}
-		list.sort((x, y) => x.location !== y.location ? x.location - y.location : (x.name < y.name ? -1 : 1));
+		list.sort((x, y) => x.location - y.location);
 		if (geometry.index !== null && geometry.index.onUploadCallback !== NO_HOOK) return null;
 		const indexed = geometry.index !== null;
-		const signature = list.map((a) => `${a.name}:${a.itemSize}:${a.glType}:${a.normalized ? 1 : 0}${a.integer ? 'I' : ''}`).join('|') + (indexed ? '|i' : '');
+		const signature = list.map((a) => `${a.name}:${a.itemSize}:${a.glType}:${a.normalized ? 1 : 0}`).join('|') + (indexed ? '|i' : '');
 		let layout = this.layouts.get(signature);
-		if (layout === undefined) { layout = { signature, attributes: list, indexed, pages: [] }; this.layouts.set(signature, layout); }
+		if (layout === undefined) { layout = { signature, attributes: list, indexed, pages: [], customNames: new Set() }; for (const a of list) if (ATTRIBUTE_LOCATIONS[a.name] === undefined) layout.customNames.add(a.name); this.layouts.set(signature, layout); }
 		return layout;
 	}
 
@@ -266,6 +269,7 @@ class WebGLMegaBuffers {
 			page, layout, baseVertex, vertexCount, indexStart, indexCount, byteOffset: indexStart * 4,
 			versions: new Array(n).fill(-1), seqs: new Array(n).fill(-1), indexVersion: -1, indexSeq: -1,
 			layoutVersion: geometry._layoutVersion, indexed: layout.indexed, reuploads: 0, dynamic: false,
+			epoch: -1, okProgram: null, badProgram: null, registered: customAttributeCount(), counted: false,
 		};
 		if (this._registry !== null) this._registry.register(geometry, rec, rec);
 		return rec;
