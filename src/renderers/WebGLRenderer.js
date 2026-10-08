@@ -532,10 +532,13 @@ class WebGLRenderer {
 			if (this._currentRenderTarget === null) ColorManagement.fromWorkingColorSpace(_color, this._outputColorSpace);
 			this.state.setClearColor(_color.r, _color.g, _color.b, 1);
 			if (this.autoClear || this.autoClearColor) this.clear(true, this.autoClearDepth, this.autoClearStencil);
-			this._applyClearColor();
-		} else if (this.autoClear) {
-			this._applyClearColor(); // the conversion depends on the current render target
-			this.clear(this.autoClearColor, this.autoClearDepth, this.autoClearStencil);
+			// like three.js, the background colour stays the GL clear colour afterwards
+		} else {
+			// three.js sets the clear colour only for a null background (the conversion depends on the current
+			// render target); a texture background clears with whatever clear colour is current, which after a
+			// shadow pass is white (WebGLShadowMap) and after a colour-background frame that colour
+			if (background === null) this._applyClearColor();
+			if (this.autoClear) this.clear(this.autoClearColor, this.autoClearDepth, this.autoClearStencil);
 		}
 
 		if (backgroundTexture !== null) this.background.render(scene, camera, backgroundTexture);

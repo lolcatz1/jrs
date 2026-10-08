@@ -78,6 +78,9 @@ class WebGLShadowMap {
 		for (let i = 0; i < lights.numSpotShadows; i++) shadowLights.push(lights.spot[i]);
 		for (let i = 0; i < lights.numPointShadows; i++) shadowLights.push(lights.point[i]);
 		if (shadowLights.length === 0) return;
+		// three.js clears its shadow maps to white and leaves that as the GL clear colour (visible when a
+		// texture background does not cover the frame, e.g. the cube box under an orthographic camera)
+		renderer.state.setClearColor(1, 1, 1, 1);
 
 		const state = renderer.state;
 		let previousTarget = null, previousFace = 0;

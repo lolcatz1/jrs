@@ -1,3 +1,4 @@
+import { NormalBlending } from '../../constants.js';
 import { ShaderChunk } from './ShaderChunk.js';
 import {
 	NoToneMapping as _NoToneMapping, LinearToneMapping, ReinhardToneMapping, CineonToneMapping, ACESFilmicToneMapping, AgXToneMapping, NeutralToneMapping,
@@ -841,6 +842,9 @@ void main() {
 
 	#ifdef IS_NORMAL_MATERIAL
 	fragColor = vec4( normalize( ( viewMatrix * vec4( normal, 0.0 ) ).xyz ) * 0.5 + 0.5, diffuseColor.a );
+		#ifdef OPAQUE
+		fragColor.a = 1.0;
+		#endif
 	return;
 	#endif
 
@@ -1051,6 +1055,9 @@ void main() {
 	}
 	#endif
 
+	#ifdef OPAQUE
+	diffuseColor.a = 1.0; // three.js opaque_fragment: opaque normal-blended materials write alpha 1.0
+	#endif
 	fragColor = vec4( outgoingLight, diffuseColor.a );
 	#if TONE_MAPPING > 0 && defined( TONE_MAPPED )
 	fragColor.rgb = toneMapping( fragColor.rgb );
@@ -1138,6 +1145,7 @@ export function buildBuiltinShader(p) {
 		case MATERIAL_SPRITE: d('IS_SPRITE'); break;
 	}
 	if (p.leanShadow) d('SHADOW_LEAN');
+	if (p.opaque) d('OPAQUE');
 	if (p.map) d('USE_MAP');
 	if (p.alphaMap) d('USE_ALPHAMAP');
 	if (p.emissiveMap) d('USE_EMISSIVEMAP');
@@ -1361,7 +1369,7 @@ export function buildCustomShader(material, p) {
 			(toneMapping !== _NoToneMapping) ? ShaderChunk['tonemapping_pars_fragment'] : '',
 			(toneMapping !== _NoToneMapping) ? `vec3 toneMapping( vec3 color ) { return ${toneMappingFunctions[toneMapping] || 'Linear'}ToneMapping( color ); }` : '',
 			p.dithering ? '#define DITHERING' : '',
-			material.transparent === false ? '#define OPAQUE' : '',
+			(material.transparent === false && material.blending === NormalBlending && material.alphaToCoverage !== true) ? '#define OPAQUE' : '', // three.js's condition
 			ShaderChunk['colorspace_pars_fragment'],
 			`vec4 linearToOutputTexel( vec4 value ) {\n	return ${colorSpaceFn}( vec4( value.rgb * ${encodingMatrix}, value.a ) );\n}`,
 			'\n'

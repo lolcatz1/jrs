@@ -2,7 +2,7 @@ import {
 	MATERIAL_BASIC, MATERIAL_LAMBERT, MATERIAL_PHONG, MATERIAL_STANDARD, MATERIAL_NORMAL, MATERIAL_DEPTH, MATERIAL_LINE, MATERIAL_POINTS,
 	MATERIAL_SPRITE, MATERIAL_SHADER, MATERIAL_SHADOW_DEPTH, TEXTURE_UNITS, pointShadowUnit, buildBuiltinShader, buildCustomShader
 } from '../shaders/ShaderLib.js';
-import { DoubleSide, BackSide, NoToneMapping, SRGBColorSpace, BasicShadowMap, CubeUVReflectionMapping, CubeRefractionMapping } from '../../constants.js';
+import { DoubleSide, BackSide, NoToneMapping, SRGBColorSpace, BasicShadowMap, CubeUVReflectionMapping, CubeRefractionMapping, NormalBlending } from '../../constants.js';
 import { OBJ_ELIGIBLE, OBJ_USES_MODEL } from '../shaders/ShaderMaterialBatching.js';
 
 export const BLOCK_FRAME = 0;
@@ -278,6 +278,8 @@ class WebGLPrograms {
 		// Shadow pass without alpha test is depth only: the program needs neither uvs, colours nor textures,
 		// so those features are dropped from the key and every such caster shares one lean program.
 		const leanShadow = variant.shadowPass === true && !(material.alphaTest > 0);
+		// three.js's OPAQUE define: an opaque, normal-blended material writes alpha 1.0 whatever its map / opacity
+		const opaque = variant.shadowPass !== true && material.transparent === false && material.blending === NormalBlending && material.alphaToCoverage !== true;
 		const vertexColors = !leanShadow && material.vertexColors === true && attributes.color !== undefined;
 		const fog = scene.fog != null && material.fog === true && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH;
 		const map = !leanShadow && !!material.map;
@@ -331,6 +333,7 @@ class WebGLPrograms {
 			doubleSided: !leanShadow && variant.side === DoubleSide,
 			flipSided: !leanShadow && variant.side === BackSide,
 			leanShadow,
+			opaque,
 			envMap: hasEnvMap,
 			envMapCubeUV,
 			envMapRefraction: hasEnvMap && envMap.mapping === CubeRefractionMapping,
@@ -360,7 +363,7 @@ class WebGLPrograms {
 		key = key * 2 + (p.instancing ? 1 : 0); key = key * 2 + (p.instancingColor ? 1 : 0); key = key * 2 + (p.flatShading ? 1 : 0); key = key * 2 + (p.doubleSided ? 1 : 0); key = key * 2 + (p.flipSided ? 1 : 0);
 		key = key * 2 + (fog ? 1 : 0); key = key * 2 + (p.alphaTest ? 1 : 0); key = key * 2 + (p.sizeAttenuation ? 1 : 0); key = key * 2 + (p.premultipliedAlpha ? 1 : 0);
 		key = key * 2 + (p.dithering ? 1 : 0); key = key * 2 + (hasUv1 ? 1 : 0); key = key * 8 + toneMapping; key = key * 2 + (sRGBOutput ? 1 : 0);
-		key = key * 8 + numDirShadows; key = key * 8 + numSpotShadows; key = key * 2 + (p.multiDraw ? 1 : 0); key = key * 2 + (p.objectTexture ? 1 : 0); key = key * 2 + (leanShadow ? 1 : 0);
+		key = key * 8 + numDirShadows; key = key * 8 + numSpotShadows; key = key * 2 + (p.multiDraw ? 1 : 0); key = key * 2 + (p.objectTexture ? 1 : 0); key = key * 2 + (leanShadow ? 1 : 0); key = key * 2 + (opaque ? 1 : 0);
 		// With every feature the product of the fields above exceeds 2^53 (precision loss would merge programs that differ
 		// only in their low bits), so the base part is interned to a small id and the remaining fields are packed under it.
 		let baseId = this._baseKeyIds.get(key);
