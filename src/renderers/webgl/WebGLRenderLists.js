@@ -18,9 +18,17 @@
  *
  * Opaque key:      [renderOrder rank:6][program:6][material:10][indexed:1][geometry:9]
  * Transparent key: [renderOrder rank:6][depth back-to-front:26]
+ *
+ * The "material" field is a per-frame dense id of the item's material *batch group*: built-in
+ * materials whose draws can share one batch (same GL state, same textures, records in one
+ * window of the material buffer) share a group, so geometry runs span materials; every other
+ * material is its own group.
  */
+import { RenderListCache } from './WebGLRenderListCache.js';
+
 const INDEX_BITS = 20;
 const INDEX_RANGE = 1 << INDEX_BITS; // 1,048,576 items per list
+const MAX_LISTS_PER_SLOT = 8; // cameras remembered per (scene, call depth)
 const MAX_KEY = 4294967295;
 
 // Scratch shared by every list (sorting is synchronous, so one set is enough).
@@ -146,6 +154,9 @@ class WebGLRenderList {
 		this.opaqueSorted = null;      // Uint32Array of item indices after finish()
 		this.transparentSorted = null;
 		this.minDepth = Infinity; this.maxDepth = -Infinity;
+		this.opaqueVersion = 0; this.transparentVersion = 0; // bumped whenever the sorted keys are rebuilt (draw-command caches compare them)
+		this.camera = null;        // set by WebGLRenderLists.get: one list per (scene, call depth, camera)
+		this.cache = new RenderListCache();
 		// view-space depth of the item about to be pushed. Passed through a typed array instead of an
 		// argument: a double crossing a non-inlined call boundary is boxed into a HeapNumber per call.
 		this.zScratch = new Float64Array(1);
@@ -158,7 +169,7 @@ class WebGLRenderList {
 	_getItem(object, geometry, material, group, variant) {
 		let item = this.items[this.count];
 		if (item === undefined) {
-			item = { id: object.id, object, geometry, material, program: null, group, renderOrder: object.renderOrder, materialRid: 0, geometryRid: 0, variant, mdRecord: null };
+			item = { id: object.id, object, geometry, material, program: null, group, renderOrder: object.renderOrder, materialRid: 0, geometryRid: 0, variant, mdRecord: null, batchGroup: null };
 			this.items[this.count] = item;
 		} else {
 			item.id = object.id; item.object = object; item.geometry = geometry; item.material = material; item.program = null;
@@ -170,10 +181,10 @@ class WebGLRenderList {
 	/**
 	 * Adds an item. `item.program` is resolved later by the renderer (once the frame's lights are known).
 	 */
-	push(object, geometry, material, group, materialRid, geometryRid, variant) {
+	push(object, geometry, material, group, materialRid, geometryRid, variant, batchGroup) {
 		if (this.count >= INDEX_RANGE) return; // list full; ignore extra items rather than corrupt keys
 		const item = this._getItem(object, geometry, material, group, variant);
-		item.materialRid = materialRid; item.geometryRid = geometryRid;
+		item.materialRid = materialRid; item.geometryRid = geometryRid; item.batchGroup = batchGroup;
 		const index = this.count - 1;
 		if (material.transparent === true) {
 			const slot = this.transparent;
@@ -199,9 +210,12 @@ class WebGLRenderList {
 	 * Build keys and sort. `rankOf(renderOrder)` maps a renderOrder value to 0..63.
 	 */
 	finish(sortObjects, rankOf) {
+		const singleRank = rankOf(this.count > 0 ? this.items[0].renderOrder : 0) === 0 && rankOf(Infinity) === 0; // ranker reports a single render order
+		this._finishOpaque(sortObjects, rankOf, singleRank);
+		this._finishTransparent(sortObjects, rankOf, singleRank);
+	}
+	_finishOpaque(sortObjects, rankOf, singleRank) {
 		const items = this.items;
-		const singleRank = rankOf(this.count > 0 ? items[0].renderOrder : 0) === 0 && rankOf(Infinity) === 0; // ranker reports a single render order
-		// opaque
 		const os = this.opaque, oids = os.ids, ohi = os.hi, on = os.n;
 		for (let i = 0; i < on; i++) {
 			const item = items[oids[i]];
@@ -213,7 +227,10 @@ class WebGLRenderList {
 			ohi[i] = (((rank * 64 + program) * 1024 + mat) * 2 + indexed) * 512 + geo;
 		}
 		this.opaqueSorted = os.finish(sortObjects);
-		// transparent: back to front
+		this.opaqueVersion++;
+	}
+	_finishTransparent(sortObjects, rankOf, singleRank) {
+		const items = this.items;
 		const ts = this.transparent, tids = ts.ids, thi = ts.hi, tn = ts.n, td = this.transparentDepth;
 		const range = this.maxDepth - this.minDepth;
 		const scale = range > 0 ? 67108863 / range : 0; // 26 bits
@@ -227,6 +244,24 @@ class WebGLRenderList {
 			thi[i] = key < 0 ? 0 : key > MAX_KEY ? MAX_KEY : key;
 		}
 		this.transparentSorted = ts.finish(sortObjects);
+		this.transparentVersion++;
+	}
+	/**
+	 * Camera moved but the item set did not: recompute the transparent depth keys from fresh depths (`itemZ[item index]`)
+	 * and re-order (the previous order is repaired in place). Identical to what a full rebuild produces.
+	 */
+	resortTransparent(sortObjects, rankOf, itemZ) {
+		const ts = this.transparent, tids = ts.ids, tn = ts.n, td = this.transparentDepth;
+		let min = Infinity, max = -Infinity;
+		for (let i = 0; i < tn; i++) {
+			const z = itemZ[tids[i]];
+			td[i] = z;
+			if (z < min) min = z;
+			if (z > max) max = z;
+		}
+		this.minDepth = min; this.maxDepth = max;
+		const singleRank = rankOf(this.count > 0 ? this.items[0].renderOrder : 0) === 0 && rankOf(Infinity) === 0;
+		this._finishTransparent(sortObjects, rankOf, singleRank);
 	}
 	/** Item for a sorted entry (an item index). */
 	itemFromKey(key) { return this.items[key]; }
@@ -234,16 +269,17 @@ class WebGLRenderList {
 
 class WebGLRenderLists {
 	constructor() { this.lists = new WeakMap(); }
-	get(scene, renderCallDepth) {
-		const listArray = this.lists.get(scene);
-		let list;
-		if (listArray === undefined) {
-			list = new WebGLRenderList();
-			this.lists.set(scene, [list]);
-		} else {
-			if (renderCallDepth >= listArray.length) { list = new WebGLRenderList(); listArray.push(list); }
-			else list = listArray[renderCallDepth];
-		}
+	/** One list per (scene, render call depth, camera) so alternating cameras each keep their own cached list. */
+	get(scene, renderCallDepth, camera = null) {
+		let byDepth = this.lists.get(scene);
+		if (byDepth === undefined) { byDepth = []; this.lists.set(scene, byDepth); }
+		let slot = byDepth[renderCallDepth];
+		if (slot === undefined) { slot = []; byDepth[renderCallDepth] = slot; }
+		for (let i = 0; i < slot.length; i++) if (slot[i].camera === camera) return slot[i];
+		const list = new WebGLRenderList();
+		list.camera = camera;
+		if (slot.length >= MAX_LISTS_PER_SLOT) slot.shift(); // least recently created camera loses its list
+		slot.push(list);
 		return list;
 	}
 	dispose() { this.lists = new WeakMap(); }

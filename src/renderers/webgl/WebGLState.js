@@ -44,6 +44,9 @@ class WebGLState {
 		this.currentScissorTest = null;
 		this.currentMaterialWord = -1; // packed state of the last "simple" material applied by setMaterial; -1 = unknown
 		this.currentTextureSlot = null;
+		// pixel store (unpack) state, cached so per-frame texture uploads do not re-send it
+		this._unpackFlipY = null; this._unpackPremultiply = null; this._unpackAlignment = null;
+		gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
 		this.currentBoundTextures = []; // slot -> {type, texture}
 		this.currentFramebuffer = null;
 		this.maxTextures = gl.getParameter(gl.MAX_COMBINED_TEXTURE_IMAGE_UNITS);
@@ -348,8 +351,17 @@ class WebGLState {
 			bound.type = undefined; bound.texture = undefined;
 		}
 	}
+	/** Sets the three unpack parameters every upload needs, skipping the ones already current. */
+	setUnpack(flipY, premultiplyAlpha, alignment) {
+		const gl = this.gl;
+		if (this._unpackFlipY !== flipY) { this._unpackFlipY = flipY; gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, flipY); }
+		if (this._unpackPremultiply !== premultiplyAlpha) { this._unpackPremultiply = premultiplyAlpha; gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, premultiplyAlpha); }
+		if (this._unpackAlignment !== alignment) { this._unpackAlignment = alignment; gl.pixelStorei(gl.UNPACK_ALIGNMENT, alignment); }
+	}
 	reset() {
 		const gl = this.gl;
+		this._unpackFlipY = null; this._unpackPremultiply = null; this._unpackAlignment = null;
+		gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
 		gl.disable(gl.BLEND); gl.disable(gl.CULL_FACE); gl.disable(gl.DEPTH_TEST); gl.disable(gl.POLYGON_OFFSET_FILL);
 		gl.disable(gl.SCISSOR_TEST); gl.disable(gl.STENCIL_TEST); gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
 		gl.blendEquation(gl.FUNC_ADD); gl.blendFunc(gl.ONE, gl.ZERO); gl.blendFuncSeparate(gl.ONE, gl.ZERO, gl.ONE, gl.ZERO); gl.blendColor(0, 0, 0, 0);

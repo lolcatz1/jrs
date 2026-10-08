@@ -7,6 +7,7 @@ import { Layers } from './Layers.js';
 import { Matrix3 } from '../math/Matrix3.js';
 import * as MathUtils from '../math/MathUtils.js';
 import { transformSlab, LOCAL_OFFSET, WORLD_OFFSET } from './TransformSlab.js';
+import { epochs, trackRenderProperty } from './epochs.js';
 
 let _object3DId = 0;
 
@@ -86,17 +87,17 @@ class Object3D extends EventDispatcher {
 		this._normalVersion = -1;
 		this._flipVersion = -1; this._frontFaceCW = false;
 		this._cullVersion = -1; this._cullSphere = null; // cull-cache doubles (radius, centre) live in the snapshot record at +10..+13
+		// cached frustum test result per pass (0 = camera, 1 = shadow): frustum version it was computed for, and the result
+		this._cullFV0 = -1; this._cullVis0 = false; this._cullFV1 = -1; this._cullVis1 = false;
 
 		this.matrixAutoUpdate = Object3D.DEFAULT_MATRIX_AUTO_UPDATE;
 		this.matrixWorldAutoUpdate = Object3D.DEFAULT_MATRIX_WORLD_AUTO_UPDATE;
 		this.matrixWorldNeedsUpdate = false;
 
 		this.layers = new Layers();
-		this.visible = true;
+		this._visible = true; this._receiveShadow = false; this._frustumCulled = true; this._renderOrder = 0; // tracked accessors (see epochs.js)
+		this._countsWorld = true; // Camera sets this to false: a moving camera must not look like a moving scene
 		this.castShadow = false;
-		this.receiveShadow = false;
-		this.frustumCulled = true;
-		this.renderOrder = 0;
 		this.animations = [];
 		this.customDepthMaterial = undefined;
 		this.customDistanceMaterial = undefined;
@@ -107,12 +108,10 @@ class Object3D extends EventDispatcher {
 	get matrix() { return this._matrix; }
 	set matrix(m) { if (m !== this._matrix) this._matrix.copy(m); }
 	get matrixWorld() { return this._matrixWorld; }
-	set matrixWorld(m) { if (m !== this._matrixWorld) { this._matrixWorld.copy(m); this._worldVersion++; } }
+	set matrixWorld(m) { if (m !== this._matrixWorld) { this._matrixWorld.copy(m); this._worldVersion++; if (this._countsWorld) epochs.world++; } }
 
 	onBeforeShadow() {}
 	onAfterShadow() {}
-	onBeforeRender() {}
-	onAfterRender() {}
 
 	applyMatrix4(matrix) {
 		if (this.matrixAutoUpdate) this.updateMatrix();
@@ -165,6 +164,7 @@ class Object3D extends EventDispatcher {
 			object.removeFromParent();
 			object.parent = this;
 			this.children.push(object);
+			epochs.structure++;
 			object.matrixWorldNeedsUpdate = true;
 			object.dispatchEvent(_addedEvent);
 			_childaddedEvent.child = object;
@@ -184,6 +184,7 @@ class Object3D extends EventDispatcher {
 		if (index !== -1) {
 			object.parent = null;
 			this.children.splice(index, 1);
+			epochs.structure++;
 			object.dispatchEvent(_removedEvent);
 			_childremovedEvent.child = object;
 			this.dispatchEvent(_childremovedEvent);
@@ -204,6 +205,7 @@ class Object3D extends EventDispatcher {
 		object.removeFromParent();
 		object.parent = this;
 		this.children.push(object);
+		epochs.structure++;
 		object.updateWorldMatrix(false, true);
 		object.dispatchEvent(_addedEvent);
 		_childaddedEvent.child = object;
@@ -299,6 +301,7 @@ class Object3D extends EventDispatcher {
 				if (parent === null) this._matrixWorld.copy(this._matrix);
 				else { this._matrixWorld.multiplyMatrices(parent._matrixWorld, this._matrix); this._parentWorldVersion = parent._worldVersion; }
 				this._worldVersion++;
+				if (this._countsWorld) epochs.world++;
 			}
 			this.matrixWorldNeedsUpdate = false;
 			force = true;
@@ -320,6 +323,7 @@ class Object3D extends EventDispatcher {
 				if (parent === null) this._matrixWorld.copy(this._matrix);
 				else { this._matrixWorld.multiplyMatrices(parent._matrixWorld, this._matrix); this._parentWorldVersion = parent._worldVersion; }
 				this._worldVersion++;
+				if (this._countsWorld) epochs.world++;
 				changed = true;
 			}
 			this.matrixWorldNeedsUpdate = false;
@@ -363,6 +367,23 @@ class Object3D extends EventDispatcher {
 		}
 		return this;
 	}
+}
+
+// `visible`, `renderOrder`, `frustumCulled` and `receiveShadow` decide what the renderer draws, so changing them invalidates cached render lists.
+trackRenderProperty(Object3D.prototype, 'visible');
+trackRenderProperty(Object3D.prototype, 'renderOrder');
+trackRenderProperty(Object3D.prototype, 'frustumCulled');
+trackRenderProperty(Object3D.prototype, 'receiveShadow');
+
+// Render hooks: the first assignment on an object (which turns it from batchable into hooked) bumps the epoch and then
+// becomes an ordinary own data property. Subclass methods shadow these accessors as before.
+function noopHook() {}
+for (const hook of ['onBeforeRender', 'onAfterRender']) {
+	Object.defineProperty(Object3D.prototype, hook, {
+		configurable: true, enumerable: false,
+		get() { return noopHook; },
+		set(fn) { epochs.structure++; Object.defineProperty(this, hook, { value: fn, writable: true, configurable: true, enumerable: true }); },
+	});
 }
 
 Object3D.DEFAULT_UP = /*@__PURE__*/ new Vector3(0, 1, 0);
