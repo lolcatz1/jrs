@@ -166,9 +166,14 @@ space, sRGB output, physically based light units):
   three.js and builds 2–13x faster (pre-sized typed arrays).
 * **Math:** `Vector2/3/4`, `Matrix3/4`, `Quaternion`, `Euler`, `Color` + `ColorManagement`,
   `Box3`, `Sphere`, `Plane`, `Ray`, `Frustum`, `Triangle`, `Line3`, `Spherical`, `MathUtils`.
-* **Textures & loaders:** `Texture`, `CanvasTexture`, `DataTexture`, `Data3DTexture`,
-  `DataArrayTexture` (with `layerUpdates`), `CubeTexture`, `DepthTexture`, `TextureLoader`,
-  `ImageLoader`, `FileLoader`, `LoadingManager`, `Cache`.
+* **Textures & loaders:** `Texture`, `CanvasTexture`, `VideoTexture`, `DataTexture`, `Data3DTexture`,
+  `DataArrayTexture` (with `layerUpdates`), `CubeTexture`, `DepthTexture`, `FramebufferTexture`,
+  `CompressedTexture`, `CompressedArrayTexture`, `CompressedCubeTexture` (S3TC / ETC / ASTC / BPTC / RGTC when the
+  GPU exposes the extension), `TextureLoader`, `CubeTextureLoader`, `CompressedTextureLoader`, `DataTextureLoader`,
+  `ImageLoader`, `FileLoader`, `LoadingManager`, `Cache`, `DataUtils`, `TextureUtils`; `renderer.copyTextureToTexture`,
+  `copyFramebufferToTexture`, `initTexture`, `initRenderTarget`. Uploads follow three r186's `WebGLTextures`
+  (shared GL textures per `Source`, per-class storage paths); `node bench/textures.mjs` compares ~340 texture cases pixel for
+  pixel with three (see ARCHITECTURE.md §12 and `bench/results/swarm/texture-formats.md`).
 * **Helpers & addon support:** `AxesHelper`, `GridHelper`, `BoxHelper`; `Controls` base class, draw-mode
   constants and `InterleavedBuffer`/`InterleavedBufferAttribute` so three's `examples/jsm` addons such as
   `OrbitControls` and `BufferGeometryUtils` import and run unchanged through an import map

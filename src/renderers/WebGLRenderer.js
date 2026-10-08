@@ -339,6 +339,8 @@ class WebGLRenderer {
 	setClearColor(color, alpha = 1) { this._clearColor.set(color); this._clearAlpha = alpha; this._applyClearColor(); }
 	getClearAlpha() { return this._clearAlpha; }
 	setClearAlpha(alpha) { this._clearAlpha = alpha; this._applyClearColor(); }
+	/** Colour space of colours written straight to the framebuffer (clear colour, background): the output colour space on screen, the working (linear) space in a render target, as in three.js. */
+	_unlitColorSpace() { return this._currentRenderTarget === null ? this._outputColorSpace : ColorManagement.workingColorSpace; }
 	_applyClearColor() {
 		let a = this._clearAlpha;
 		_color.copy(this._clearColor);
@@ -434,11 +436,151 @@ class WebGLRenderer {
 		return new Set();
 	}
 	async compileAsync(scene, camera, targetScene = null) { this.compile(scene, camera, targetScene); }
+	/** Copies a region of the current framebuffer into `texture` (a FramebufferTexture or any 2D texture) at mip `level`. */
 	copyFramebufferToTexture(texture, position = null, level = 0) {
 		const gl = this._gl;
+		const levelScale = Math.pow(2, -level);
+		const width = Math.floor(texture.image.width * levelScale);
+		const height = Math.floor(texture.image.height * levelScale);
+		const x = position !== null ? position.x : 0;
+		const y = position !== null ? position.y : 0;
 		this.textures.setTexture2D(texture, 0);
-		const x = position !== null ? position.x : 0, y = position !== null ? position.y : 0;
-		gl.copyTexSubImage2D(gl.TEXTURE_2D, level, 0, 0, x, y, texture.image.width, texture.image.height);
+		gl.copyTexSubImage2D(gl.TEXTURE_2D, level, 0, 0, x, y, width, height);
+		this.state.unbindTexture();
+	}
+
+	/**
+	 * Copies data of `srcTexture` into `dstTexture` (2D, 2D array, 3D, compressed, render target textures). Same algorithm as three.js r186
+	 * (r186 has one method for 2D and 3D copies; `copyTextureToTexture3D` no longer exists).
+	 */
+	copyTextureToTexture(srcTexture, dstTexture, srcRegion = null, dstPosition = null, srcLevel = 0, dstLevel = 0) {
+		const gl = this._gl, state = this.state, textures = this.textures;
+		// gather the necessary dimensions to copy
+		let width, height, depth, minX, minY, minZ;
+		let dstX, dstY, dstZ;
+		const image = srcTexture.isCompressedTexture ? srcTexture.mipmaps[dstLevel] : srcTexture.image;
+		if (srcRegion !== null) {
+			width = srcRegion.max.x - srcRegion.min.x;
+			height = srcRegion.max.y - srcRegion.min.y;
+			depth = srcRegion.isBox3 ? srcRegion.max.z - srcRegion.min.z : 1;
+			minX = srcRegion.min.x;
+			minY = srcRegion.min.y;
+			minZ = srcRegion.isBox3 ? srcRegion.min.z : 0;
+		} else {
+			const levelScale = Math.pow(2, -srcLevel);
+			width = Math.floor(image.width * levelScale);
+			height = Math.floor(image.height * levelScale);
+			if (srcTexture.isDataArrayTexture) depth = image.depth;
+			else if (srcTexture.isData3DTexture) depth = Math.floor(image.depth * levelScale);
+			else depth = 1;
+			minX = 0; minY = 0; minZ = 0;
+		}
+		if (dstPosition !== null) { dstX = dstPosition.x; dstY = dstPosition.y; dstZ = dstPosition.z; } else { dstX = 0; dstY = 0; dstZ = 0; }
+
+		// set up the destination target
+		const glFormat = textures.convert(dstTexture.format);
+		const glType = textures.convert(dstTexture.type);
+		let glTarget;
+		if (dstTexture.isData3DTexture) { textures.setTexture3D(dstTexture, 0); glTarget = gl.TEXTURE_3D; }
+		else if (dstTexture.isDataArrayTexture || dstTexture.isCompressedArrayTexture) { textures.setTexture2DArray(dstTexture, 0); glTarget = gl.TEXTURE_2D_ARRAY; }
+		else { textures.setTexture2D(dstTexture, 0); glTarget = gl.TEXTURE_2D; }
+
+		state.activeTexture(0);
+		state.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, dstTexture.flipY);
+		state.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, dstTexture.premultiplyAlpha);
+		state.pixelStorei(gl.UNPACK_ALIGNMENT, dstTexture.unpackAlignment);
+
+		// used for copying data from cpu
+		const currentUnpackRowLen = state.getParameter(gl.UNPACK_ROW_LENGTH);
+		const currentUnpackImageHeight = state.getParameter(gl.UNPACK_IMAGE_HEIGHT);
+		const currentUnpackSkipPixels = state.getParameter(gl.UNPACK_SKIP_PIXELS);
+		const currentUnpackSkipRows = state.getParameter(gl.UNPACK_SKIP_ROWS);
+		const currentUnpackSkipImages = state.getParameter(gl.UNPACK_SKIP_IMAGES);
+		state.pixelStorei(gl.UNPACK_ROW_LENGTH, image.width);
+		state.pixelStorei(gl.UNPACK_IMAGE_HEIGHT, image.height);
+		state.pixelStorei(gl.UNPACK_SKIP_PIXELS, minX);
+		state.pixelStorei(gl.UNPACK_SKIP_ROWS, minY);
+		state.pixelStorei(gl.UNPACK_SKIP_IMAGES, minZ);
+
+		// set up the src texture
+		const isSrc3D = srcTexture.isDataArrayTexture || srcTexture.isData3DTexture;
+		const isDst3D = dstTexture.isDataArrayTexture || dstTexture.isData3DTexture;
+		const previousFramebuffer = state.currentFramebuffer;
+		if (srcTexture.isDepthTexture) {
+			const srcRenderTargetProperties = textures.properties.get(srcTexture.renderTarget);
+			const dstRenderTargetProperties = textures.properties.get(dstTexture.renderTarget);
+			gl.bindFramebuffer(gl.READ_FRAMEBUFFER, srcRenderTargetProperties.framebuffer);
+			gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, dstRenderTargetProperties.framebuffer);
+			for (let i = 0; i < depth; i++) {
+				// if the source or destination are a 3d target then a layer needs to be bound
+				if (isSrc3D) {
+					gl.framebufferTextureLayer(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, textures.get(srcTexture).webglTexture, srcLevel, minZ + i);
+					gl.framebufferTextureLayer(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, textures.get(dstTexture).webglTexture, dstLevel, dstZ + i);
+				}
+				gl.blitFramebuffer(minX, minY, width, height, dstX, dstY, width, height, gl.DEPTH_BUFFER_BIT, gl.NEAREST);
+			}
+			gl.bindFramebuffer(gl.FRAMEBUFFER, previousFramebuffer);
+		} else if (srcLevel !== 0 || srcTexture.isRenderTargetTexture || textures.properties.has(srcTexture)) {
+			// get the appropriate frame buffers
+			const srcTextureProperties = textures.get(srcTexture);
+			const dstTextureProperties = textures.get(dstTexture);
+			if (this._srcFramebuffer === undefined) { this._srcFramebuffer = gl.createFramebuffer(); this._dstFramebuffer = gl.createFramebuffer(); }
+			gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this._srcFramebuffer);
+			gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this._dstFramebuffer);
+			for (let i = 0; i < depth; i++) {
+				// assign the correct layers and mip maps to the frame buffers
+				if (isSrc3D) gl.framebufferTextureLayer(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, srcTextureProperties.webglTexture, srcLevel, minZ + i);
+				else gl.framebufferTexture2D(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, srcTextureProperties.webglTexture, srcLevel);
+				if (isDst3D) gl.framebufferTextureLayer(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, dstTextureProperties.webglTexture, dstLevel, dstZ + i);
+				else gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, dstTextureProperties.webglTexture, dstLevel);
+				// copy the data using the fastest function that can achieve the copy
+				if (srcLevel !== 0) gl.blitFramebuffer(minX, minY, width, height, dstX, dstY, width, height, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+				else if (isDst3D) gl.copyTexSubImage3D(glTarget, dstLevel, dstX, dstY, dstZ + i, minX, minY, width, height);
+				else gl.copyTexSubImage2D(glTarget, dstLevel, dstX, dstY, minX, minY, width, height);
+			}
+			// restore the framebuffer that was bound before (three.js leaves the default framebuffer bound here)
+			gl.bindFramebuffer(gl.FRAMEBUFFER, previousFramebuffer);
+		} else if (isDst3D) {
+			// copy data into the 3d texture
+			if (srcTexture.isDataTexture || srcTexture.isData3DTexture) gl.texSubImage3D(glTarget, dstLevel, dstX, dstY, dstZ, width, height, depth, glFormat, glType, image.data);
+			else if (dstTexture.isCompressedArrayTexture) gl.compressedTexSubImage3D(glTarget, dstLevel, dstX, dstY, dstZ, width, height, depth, glFormat, image.data);
+			else gl.texSubImage3D(glTarget, dstLevel, dstX, dstY, dstZ, width, height, depth, glFormat, glType, image);
+		} else if (srcTexture.isDataTexture) {
+			gl.texSubImage2D(gl.TEXTURE_2D, dstLevel, dstX, dstY, width, height, glFormat, glType, image.data);
+		} else if (srcTexture.isCompressedTexture) {
+			gl.compressedTexSubImage2D(gl.TEXTURE_2D, dstLevel, dstX, dstY, image.width, image.height, glFormat, image.data);
+		} else {
+			gl.texSubImage2D(gl.TEXTURE_2D, dstLevel, dstX, dstY, width, height, glFormat, glType, image);
+		}
+
+		// reset values
+		state.pixelStorei(gl.UNPACK_ROW_LENGTH, currentUnpackRowLen);
+		state.pixelStorei(gl.UNPACK_IMAGE_HEIGHT, currentUnpackImageHeight);
+		state.pixelStorei(gl.UNPACK_SKIP_PIXELS, currentUnpackSkipPixels);
+		state.pixelStorei(gl.UNPACK_SKIP_ROWS, currentUnpackSkipRows);
+		state.pixelStorei(gl.UNPACK_SKIP_IMAGES, currentUnpackSkipImages);
+
+		// generate mipmaps only when copying level 0
+		if (dstLevel === 0 && dstTexture.generateMipmaps) gl.generateMipmap(glTarget);
+		state.unbindTexture();
+	}
+
+	/** Allocates the GPU memory of a render target (so that copyTextureToTexture can write into it before it was rendered to). */
+	initRenderTarget(target) {
+		if (this.textures.get(target).framebuffer === undefined) {
+			const previous = this.state.currentFramebuffer;
+			this.textures.setupRenderTarget(target);
+			this.state.bindFramebuffer(previous);
+		}
+	}
+
+	/** Uploads `texture` now instead of at its first use. */
+	initTexture(texture) {
+		if (texture.isCubeTexture) this.textures.setTextureCube(texture, 0);
+		else if (texture.isData3DTexture) this.textures.setTexture3D(texture, 0);
+		else if (texture.isDataArrayTexture || texture.isCompressedArrayTexture) this.textures.setTexture2DArray(texture, 0);
+		else this.textures.setTexture2D(texture, 0);
+		this.state.unbindTexture();
 	}
 
 	// ------------------------------------------------------------------ render
@@ -832,12 +974,13 @@ class WebGLRenderer {
 	/** Detects changes in frame-wide shader-affecting state and bumps the env version. */
 	_updateEnv(scene) {
 		const target = this._currentRenderTarget;
-		const cs = target === null ? this._outputColorSpace : target.texture.colorSpace;
+		const cs = this._unlitColorSpace();
 		const fog = scene.fog == null ? 0 : (scene.fog.isFogExp2 ? 2 : 1);
 		let csId = this._colorSpaceIds.get(cs);
 		if (csId === undefined) { csId = this._colorSpaceIds.size; this._colorSpaceIds.set(cs, csId); }
 		const shadowKind = this.shadowMap.enabled ? (this.shadowMap.type === BasicShadowMap ? 2 : (this.shadowMap.type === VSMShadowMap ? 3 : 1)) : 0;
-		const key = ((this.toneMapping * 64 + csId) * 4 + shadowKind) * 3 + fog;
+		// like three.js, tone mapping and output encoding only apply when rendering to the screen
+		const key = (((target === null ? this.toneMapping : NoToneMapping) * 64 + csId) * 4 + shadowKind) * 3 + fog;
 		let id = this._envKeyIds.get(key);
 		if (id === undefined) { id = this._envKeyIds.size % 65536; this._envKeyIds.set(key, id); }
 		if (id !== this._envKeyId) { this._envKeyId = id; this._envVersion = this._lightsEpoch * 65536 + id; }

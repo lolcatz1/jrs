@@ -2,7 +2,7 @@ import {
 	MATERIAL_BASIC, MATERIAL_LAMBERT, MATERIAL_PHONG, MATERIAL_STANDARD, MATERIAL_NORMAL, MATERIAL_DEPTH, MATERIAL_LINE, MATERIAL_POINTS,
 	MATERIAL_SPRITE, MATERIAL_SHADER, MATERIAL_SHADOW_DEPTH, TEXTURE_UNITS, pointShadowUnit, buildBuiltinShader, buildCustomShader
 } from '../shaders/ShaderLib.js';
-import { DoubleSide, BackSide, NoToneMapping, SRGBColorSpace, BasicShadowMap, CubeUVReflectionMapping, CubeRefractionMapping } from '../../constants.js';
+import { DoubleSide, BackSide, NoToneMapping, SRGBColorSpace, BasicShadowMap, CubeUVReflectionMapping, CubeRefractionMapping, NormalBlending } from '../../constants.js';
 import { OBJ_ELIGIBLE, OBJ_USES_MODEL } from '../shaders/ShaderMaterialBatching.js';
 
 export const BLOCK_FRAME = 0;
@@ -300,10 +300,10 @@ class WebGLPrograms {
 		const numSpotShadows = receiveShadow ? lights.numSpotShadows : 0;
 		const numPointShadows = receiveShadow ? lights.numPointShadows : 0;
 		const pointShadowBasic = numPointShadows > 0 && renderer.shadowMap.type === BasicShadowMap;
-		const toneMapping = (material.toneMapped && renderer.toneMapping !== NoToneMapping && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH && materialType !== MATERIAL_NORMAL) ? renderer.toneMapping : NoToneMapping;
 		const currentRenderTarget = renderer.getRenderTarget();
-		// three.js: shaders encode to the output colour space only when rendering to the canvas; a render target
+		// three.js: tone mapping and the output colour space encoding only apply when rendering to the canvas; a render target
 		// is written in the working (linear) space (an sRGB render target encodes in hardware)
+		const toneMapping = (material.toneMapped && currentRenderTarget === null && renderer.toneMapping !== NoToneMapping && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH && materialType !== MATERIAL_NORMAL) ? renderer.toneMapping : NoToneMapping;
 		const sRGBOutput = currentRenderTarget === null && renderer.outputColorSpace === SRGBColorSpace && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH && materialType !== MATERIAL_NORMAL;
 		// skinning and morph targets are object / geometry features (same rule as three.js: the program follows the object)
 		const skinning = object.isSkinnedMesh === true;
@@ -341,7 +341,10 @@ class WebGLPrograms {
 			alphaTest: material.alphaTest > 0,
 			sizeAttenuation: (materialType === MATERIAL_POINTS || materialType === MATERIAL_SPRITE) && material.sizeAttenuation === true,
 			premultipliedAlpha: material.premultipliedAlpha === true,
+			// three.js: opaque = not transparent, normal blending, no alpha-to-coverage -> the output alpha is forced to 1
+			opaque: material.transparent === false && material.blending === NormalBlending && material.alphaToCoverage === false,
 			dithering: material.dithering === true,
+			depthPacking: materialType === MATERIAL_DEPTH && material.depthPacking !== undefined ? material.depthPacking : 3200,
 			vertexUv1s: hasUv1,
 			toneMapped: toneMapping !== NoToneMapping,
 			toneMapping,
@@ -372,6 +375,7 @@ class WebGLPrograms {
 		key = key * 4 + morphTextureStride; key = key * 256 + morphTargetsCount;
 		key = key * 2 + (hasEnvMap ? 1 : 0); key = key * 2 + (envMapCubeUV ? 1 : 0); key = key * 2 + (p.envMapRefraction ? 1 : 0);
 		key = key * 4 + (p.combine & 3); key = key * 16 + (envMapCubeUV ? (Math.log2(p.envMapCubeUVHeight) | 0) & 15 : 0);
+		key = key * 2 + (p.opaque ? 1 : 0); key = key * 4 + (p.depthPacking - 3200);
 		p.key = key;
 		return p;
 	}

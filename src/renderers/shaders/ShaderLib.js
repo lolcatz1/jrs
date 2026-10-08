@@ -1,7 +1,7 @@
 import { ShaderChunk } from './ShaderChunk.js';
 import {
 	NoToneMapping as _NoToneMapping, LinearToneMapping, ReinhardToneMapping, CineonToneMapping, ACESFilmicToneMapping, AgXToneMapping, NeutralToneMapping,
-	SRGBColorSpace as _SRGBColorSpace
+	SRGBColorSpace as _SRGBColorSpace, NormalBlending
 } from '../../constants.js';
 /**
  * Shader library.
@@ -251,6 +251,9 @@ out vec2 vUv;
 #ifdef USE_UV1
 out vec2 vUv1;
 #endif
+#ifdef IS_DEPTH
+out vec2 vHighPrecisionZW;
+#endif
 #if defined( USE_COLOR ) || defined( USE_INSTANCING_COLOR )
 out vec4 vColor;
 #endif
@@ -380,6 +383,9 @@ void main() {
 		#endif
 	#endif
 	gl_Position = projectionMatrix * mvPosition;
+	#ifdef IS_DEPTH
+	vHighPrecisionZW = gl_Position.zw;
+	#endif
 	#ifdef USE_FOG
 	vFogDepth = - mvPosition.z;
 	#endif
@@ -445,6 +451,9 @@ in vec2 vUv;
 #endif
 #ifdef USE_UV1
 in vec2 vUv1;
+#endif
+#ifdef IS_DEPTH
+in vec2 vHighPrecisionZW;
 #endif
 #if defined( USE_COLOR ) || defined( USE_INSTANCING_COLOR )
 in vec4 vColor;
@@ -782,7 +791,8 @@ vec4 sRGBTransferOETF( in vec4 value ) {
 
 void main() {
 	#ifdef IS_POINTS
-	vec2 pointUv = gl_PointCoord;
+	// three.js map_particle_fragment: the point sprite's y axis points down, the uv transform applies to the flipped coordinate
+	vec2 pointUv = ( mat3( uvTransform0.xyz, uvTransform1.xyz, uvTransform2.xyz ) * vec3( gl_PointCoord.x, 1.0 - gl_PointCoord.y, 1.0 ) ).xy;
 	#endif
 	vec4 diffuseColor = vec4( diffuse.rgb, diffuse.a );
 	#ifdef IS_SPRITE
@@ -792,7 +802,7 @@ void main() {
 	#endif
 	#ifdef USE_MAP
 		#ifdef IS_POINTS
-		vec4 sampledDiffuseColor = texture( map, ( mat3( uvTransform0.xyz, uvTransform1.xyz, uvTransform2.xyz ) * vec3( pointUv, 1.0 ) ).xy );
+		vec4 sampledDiffuseColor = texture( map, pointUv );
 		#else
 		vec4 sampledDiffuseColor = texture( map, vUv );
 		#endif
@@ -810,7 +820,17 @@ void main() {
 	#endif
 
 	#ifdef IS_DEPTH
-	fragColor = vec4( vec3( 1.0 - gl_FragCoord.z ), diffuseColor.a );
+	// three.js depth_frag: the depth comes from the interpolated clip-space z / w, the alpha is the material opacity
+	float fragCoordZ = 0.5 * vHighPrecisionZW[ 0 ] / vHighPrecisionZW[ 1 ] + 0.5;
+	#if DEPTH_PACKING == 3201
+	fragColor = packDepthToRGBA( fragCoordZ );
+	#elif DEPTH_PACKING == 3202
+	fragColor = vec4( packDepthToRGB( fragCoordZ ), 1.0 );
+	#elif DEPTH_PACKING == 3203
+	fragColor = vec4( packDepthToRG( fragCoordZ ), 0.0, 1.0 );
+	#else
+	fragColor = vec4( vec3( 1.0 - fragCoordZ ), diffuse.a );
+	#endif
 	return;
 	#endif
 
@@ -836,6 +856,9 @@ void main() {
 
 	#ifdef IS_NORMAL_MATERIAL
 	fragColor = vec4( normalize( ( viewMatrix * vec4( normal, 0.0 ) ).xyz ) * 0.5 + 0.5, diffuseColor.a );
+	#ifdef OPAQUE
+	fragColor.a = 1.0;
+	#endif
 	return;
 	#endif
 
@@ -1046,6 +1069,9 @@ void main() {
 	}
 	#endif
 
+	#ifdef OPAQUE
+	diffuseColor.a = 1.0;
+	#endif
 	fragColor = vec4( outgoingLight, diffuseColor.a );
 	#if TONE_MAPPING > 0 && defined( TONE_MAPPED )
 	fragColor.rgb = toneMapping( fragColor.rgb );
@@ -1132,6 +1158,7 @@ export function buildBuiltinShader(p) {
 		case MATERIAL_SPRITE: d('IS_SPRITE'); break;
 	}
 	if (p.leanShadow) d('SHADOW_LEAN');
+	if (p.materialType === MATERIAL_DEPTH || p.materialType === MATERIAL_SHADOW_DEPTH) d('DEPTH_PACKING', p.depthPacking | 0);
 	if (p.map) d('USE_MAP');
 	if (p.alphaMap) d('USE_ALPHAMAP');
 	if (p.emissiveMap) d('USE_EMISSIVEMAP');
@@ -1165,6 +1192,7 @@ export function buildBuiltinShader(p) {
 	if (p.alphaTest) d('USE_ALPHATEST');
 	if (p.sizeAttenuation) d('SIZE_ATTENUATION');
 	if (p.premultipliedAlpha) d('PREMULTIPLIED_ALPHA');
+	if (p.opaque) d('OPAQUE');
 	if (p.dithering) d('DITHERING');
 	if (p.toneMapped) d('TONE_MAPPED');
 	if (p.sRGBOutput) d('SRGB_OUTPUT');
@@ -1183,6 +1211,8 @@ export function buildBuiltinShader(p) {
 	// insert shadow helper functions after sampleShadow definition
 	if (_resolvedFragment === null) _resolvedFragment = resolveIncludes(fragmentShader);
 	let fs = _resolvedFragment;
+	// the depth packing helpers of three.js (packDepthToRGBA ...) for MeshDepthMaterial.depthPacking
+	if (p.materialType === MATERIAL_DEPTH && p.depthPacking !== 3200) fs = fs.replace('out vec4 fragColor;\n', 'out vec4 fragColor;\n' + ShaderChunk.packing);
 	const helpers = shadowFactorFunctions(p.numDirShadows | 0, p.numSpotShadows | 0, p.numPointShadows | 0);
 	if (helpers !== '') fs = fs.replace('#ifdef USE_NORMALMAP\nvec3 perturbNormal2Arb', helpers + '#ifdef USE_NORMALMAP\nvec3 perturbNormal2Arb');
 	return { vertexShader: vs, fragmentShader: prefix + fs };
@@ -1355,7 +1385,7 @@ export function buildCustomShader(material, p) {
 			(toneMapping !== _NoToneMapping) ? ShaderChunk['tonemapping_pars_fragment'] : '',
 			(toneMapping !== _NoToneMapping) ? `vec3 toneMapping( vec3 color ) { return ${toneMappingFunctions[toneMapping] || 'Linear'}ToneMapping( color ); }` : '',
 			p.dithering ? '#define DITHERING' : '',
-			material.transparent === false ? '#define OPAQUE' : '',
+			(material.transparent === false && material.blending === NormalBlending && material.alphaToCoverage === false) ? '#define OPAQUE' : '',
 			ShaderChunk['colorspace_pars_fragment'],
 			`vec4 linearToOutputTexel( vec4 value ) {\n	return ${colorSpaceFn}( vec4( value.rgb * ${encodingMatrix}, value.a ) );\n}`,
 			'\n'
