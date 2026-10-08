@@ -24,8 +24,9 @@ export const LOCAL_OFFSET = 0;
 export const WORLD_OFFSET = 16;
 export const NORMAL_OFFSET = 32;
 export const SPHERE_OFFSET = 41;
-/** Doubles per record in the page's change-detection snapshot (px py pz qx qy qz qw sx sy sz). */
-export const SNAPSHOT_SIZE = 10;
+/** Doubles per record in the page's snapshot: change detection (px py pz qx qy qz qw sx sy sz) + cull cache (radius, cx, cy, cz). */
+export const SNAPSHOT_SIZE = 14;
+export const CULL_SNAPSHOT_OFFSET = 10;
 
 const PAGE_RECORDS = 1024;
 
