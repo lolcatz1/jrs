@@ -8,6 +8,147 @@ function grid(i, n, spacing) {
 }
 
 export const scenarios = {
+	// Large per-frame vertex uploads: 8 meshes of 16 641 vertices plus 4 of 66 049, positions rewritten every frame
+	// (~3.7 MB/frame in total). Checks that big bufferSubData uploads do not hit the transfer-buffer stall seen
+	// with large texSubImage2D uploads. Only 600 indices of each mesh are drawn (so these meshes are not batched).
+	'dynamic-geometry-large': {
+		n: 12,
+		compareFrames: 5,
+		build(T, n) {
+			const scene = new T.Scene();
+			const camera = new T.PerspectiveCamera(60, 4 / 3, 0.1, 500);
+			camera.position.set(0, 0, 30); camera.lookAt(0, 0, 0);
+			scene.add(new T.AmbientLight(0xffffff, 0.6));
+			const sun = new T.DirectionalLight(0xffffff, 2); sun.position.set(1, 2, 3); scene.add(sun);
+			const material = new T.MeshLambertMaterial({ color: 0x99ddaa, side: T.DoubleSide });
+			const sheet = (seg) => {
+				const vc = (seg + 1) * (seg + 1);
+				const pos = new Float32Array(vc * 3), nor = new Float32Array(vc * 3), idx = new (vc > 65535 ? Uint32Array : Uint16Array)(seg * seg * 6);
+				let k = 0;
+				for (let y = 0; y < seg; y++) for (let x = 0; x < seg; x++) { const a = y * (seg + 1) + x, c = a + seg + 1; idx[k++] = a; idx[k++] = c; idx[k++] = a + 1; idx[k++] = a + 1; idx[k++] = c; idx[k++] = c + 1; }
+				for (let i = 0; i < vc; i++) nor[i * 3 + 2] = 1;
+				const g = new T.BufferGeometry();
+				const position = new T.BufferAttribute(pos, 3); position.setUsage(T.DynamicDrawUsage);
+				g.setAttribute('position', position); g.setAttribute('normal', new T.BufferAttribute(nor, 3)); g.setIndex(new T.BufferAttribute(idx, 1));
+				return g;
+			};
+			const states = [];
+			const meshes = [];
+			for (let i = 0; i < n; i++) {
+				const seg = i < 8 ? 128 : 256;
+				const g = sheet(seg);
+				g.setDrawRange(0, 600); // rasterising 800k triangles on a software GL would hide the upload cost; draw a few
+				const m = new T.Mesh(g, material);
+				m.position.set(((i % 4) - 1.5) * 8, (Math.floor(i / 4) - 1) * 8, 0);
+				m.scale.setScalar(3);
+				m.frustumCulled = false;
+				scene.add(m); meshes.push(m);
+				// two precomputed vertex states per mesh, alternated each frame (the CPU cost of animating is not what is measured)
+				const vc = (seg + 1) * (seg + 1), s = [new Float32Array(vc * 3), new Float32Array(vc * 3)];
+				for (let st = 0; st < 2; st++) for (let v = 0; v < vc; v++) {
+					const x = v % (seg + 1), y = (v / (seg + 1)) | 0;
+					s[st][v * 3] = x / seg - 0.5; s[st][v * 3 + 1] = y / seg - 0.5; s[st][v * 3 + 2] = Math.sin(x * 0.15 + y * 0.1 + st * 1.5 + i) * 0.05;
+				}
+				states.push(s);
+				g.attributes.position.array.set(s[0]);
+			}
+			const update = (f) => {
+				for (let i = 0; i < n; i++) { const a = meshes[i].geometry.attributes.position; a.array.set(states[i][f & 1]); a.needsUpdate = true; }
+			};
+			return { scene, camera, update };
+		}
+	},
+	// Dynamic geometry: 200 meshes with a position attribute rewritten every frame (150 whole-array
+	// needsUpdate, 50 via updateRanges on a small sub-range), 3 meshes whose drawRange changes, 3 that
+	// grow (setAttribute with a larger array every 10 frames) and one geometry rebuilt from scratch every
+	// 10 frames. Normals/uvs/index never change (they must not be re-uploaded). Output depends only on the frame number.
+	'dynamic-geometry': {
+		n: 200,
+		compareFrames: 25,
+		build(T, n) {
+			const scene = new T.Scene();
+			const camera = new T.PerspectiveCamera(60, 4 / 3, 0.1, 500);
+			camera.position.set(0, 0, 40); camera.lookAt(0, 0, 0);
+			scene.add(new T.AmbientLight(0xffffff, 0.6));
+			const sun = new T.DirectionalLight(0xffffff, 2); sun.position.set(1, 2, 3); scene.add(sun);
+			const material = new T.MeshLambertMaterial({ color: 0x66ccff, side: T.DoubleSide });
+			const SEG = 8; // (SEG+1)^2 = 81 vertices per sheet
+			const sheet = (seg) => {
+				const vc = (seg + 1) * (seg + 1);
+				const pos = new Float32Array(vc * 3), nor = new Float32Array(vc * 3), uv = new Float32Array(vc * 2);
+				const idx = [];
+				for (let y = 0; y <= seg; y++) for (let x = 0; x <= seg; x++) {
+					const i = y * (seg + 1) + x;
+					nor[i * 3 + 2] = 1; uv[i * 2] = x / seg; uv[i * 2 + 1] = y / seg;
+				}
+				for (let y = 0; y < seg; y++) for (let x = 0; x < seg; x++) {
+					const a = y * (seg + 1) + x, b = a + 1, c = a + seg + 1, d = c + 1;
+					idx.push(a, c, b, b, c, d);
+				}
+				const g = new T.BufferGeometry();
+				const position = new T.BufferAttribute(pos, 3); position.setUsage(T.DynamicDrawUsage);
+				g.setAttribute('position', position);
+				g.setAttribute('normal', new T.BufferAttribute(nor, 3));
+				g.setAttribute('uv', new T.BufferAttribute(uv, 2));
+				g.setIndex(idx);
+				return g;
+			};
+			const fill = (pos, seg, f, from, to) => {
+				for (let i = from; i < to; i++) {
+					const x = i % (seg + 1), y = (i / (seg + 1)) | 0;
+					pos[i * 3] = (x / seg - 0.5) * 2; pos[i * 3 + 1] = (y / seg - 0.5) * 2;
+					pos[i * 3 + 2] = Math.sin(f * 0.2 + x * 0.7 + y * 0.5) * 0.25;
+				}
+			};
+			const meshes = [];
+			for (let i = 0; i < n; i++) {
+				const g = sheet(SEG);
+				fill(g.attributes.position.array, SEG, 0, 0, (SEG + 1) * (SEG + 1));
+				const m = new T.Mesh(g, material);
+				const p = grid(i, n, 2.6); m.position.set(p[0], p[1], p[2]);
+				m.frustumCulled = false;
+				scene.add(m); meshes.push(m);
+			}
+			const FULL = 150, vcount = (SEG + 1) * (SEG + 1);
+			const GROW = [0, 1, 2].map((k) => meshes[FULL - 1 - k]); // last three of the full-update group: grow every 10 frames
+			const DRAW = [3, 4, 5].map((k) => meshes[k]);
+			const REBUILD = meshes[6];
+			const update = (f) => {
+				for (let i = 0; i < n; i++) {
+					const m = meshes[i], g = m.geometry, pa = g.attributes.position;
+					if (m.userData.seg === undefined) m.userData.seg = SEG;
+					const seg = m.userData.seg, count = (seg + 1) * (seg + 1);
+					if (i < FULL) {
+						fill(pa.array, seg, f + i, 0, count);
+						pa.needsUpdate = true;
+					} else {
+						// sub-range: first quarter of the vertices
+						const to = count >> 2;
+						fill(pa.array, seg, f + i, 0, to);
+						pa.addUpdateRange(0, to * 3);
+						pa.needsUpdate = true;
+					}
+				}
+				for (let k = 0; k < DRAW.length; k++) DRAW[k].geometry.setDrawRange(0, 6 * (1 + ((f + k * 7) % 64)));
+				if (f % 10 === 0 && f > 0) {
+					for (let k = 0; k < GROW.length; k++) {
+						const m = GROW[k], seg = m.userData.seg === undefined ? SEG : m.userData.seg, next = Math.min(seg + 2, 24);
+						if (next === seg) continue;
+						const old = m.geometry, g = sheet(next);
+						m.userData.seg = next;
+						// grow in place: same geometry object gets larger attributes (three.js semantics: new attribute objects)
+						old.setAttribute('position', g.attributes.position); old.setAttribute('normal', g.attributes.normal); old.setAttribute('uv', g.attributes.uv); old.setIndex(g.index);
+						fill(old.attributes.position.array, next, f + FULL - 1 - k, 0, (next + 1) * (next + 1));
+					}
+					const old = REBUILD.geometry, g = sheet(SEG);
+					fill(g.attributes.position.array, SEG, f, 0, vcount);
+					REBUILD.geometry = g; old.dispose();
+					REBUILD.userData.seg = SEG;
+				}
+			};
+			return { scene, camera, update };
+		}
+	},
 	// Many objects, one geometry + one material. The common "lots of the same thing" case.
 	'shared-static': {
 		n: 10000,

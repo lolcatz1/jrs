@@ -1158,6 +1158,7 @@ class WebGLRenderer {
 					const it = list.itemFromKey(keys[k]);
 					batcher.addTex(it.object, multiMaterial ? this._materialRecordIndex(it.material, windowBase) : 0);
 					const rec = it.mdRecord;
+					this.megaBuffers.queue(rec, it.geometry);
 					if (rec.indexed) { this._mdCounts[mdN] = rec.indexCount; this._mdOffsets[mdN] = rec.byteOffset; }
 					else { this._mdCounts[mdN] = rec.vertexCount; this._mdOffsets[mdN] = rec.baseVertex; }
 					mdN++;
@@ -1187,6 +1188,7 @@ class WebGLRenderer {
 	}
 
 	_executeCommands(cmdN, scene, camera, shadowPass) {
+		this.megaBuffers.flush(); // queued page uploads (lazy, ranged) must land before the draws that read them
 		for (let c = 0; c < cmdN; c++) {
 			const item = this._cmdItem[c];
 			const kind = this._cmdKind[c];
@@ -1230,8 +1232,9 @@ class WebGLRenderer {
 		if (cache.texCount > 0 && (batcher.texture === null || batcher.textureHash !== cache.texHash || batcher.textureCount !== cache.texCount)) return false;
 		const geoms = cache.megaGeoms;
 		for (let i = 0; i < geoms.length; i++) {
-			const rec = this.megaBuffers.ensure(geoms[i]); // also uploads changed vertex data, as building the commands does
+			const rec = this.megaBuffers.ensure(geoms[i]);
 			if (rec !== cache.megaRecs[i] || (rec !== null && rec.page !== cache.megaPages[i])) return false;
+			if (rec !== null) this.megaBuffers.queue(rec, geoms[i]); // uploads are lazy: changed vertex data still has to reach the page before the replayed draws
 		}
 		const syncMats = cache.syncMats;
 		if (syncMats !== null) for (let i = 0; i < syncMats.length; i++) this._syncMaterialBlock(syncMats[i], this._materialProps(syncMats[i]));
