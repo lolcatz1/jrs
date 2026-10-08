@@ -4,6 +4,8 @@
 // follow their mesh in traversal order, matrixAutoUpdate / matrixWorldAutoUpdate = false, custom updateMatrixWorld
 // subclasses, user matrix updates between frames, reparenting in onBeforeRender, nested scenes, two renderers on one scene,
 // direct children edits) and requires pixel-identical output and the same onBeforeRender / onAfterRender order every frame.
+//   node bench/flat-check.mjs                 flat main renderer vs recursive reference
+//   node bench/flat-check.mjs main=recursive  both recursive (to tell a pre-existing verify mismatch from a flat-pass one)
 import { startServer } from './serve.mjs';
 import { launchBrowser } from './browser.mjs';
 

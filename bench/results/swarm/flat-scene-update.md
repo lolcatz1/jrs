@@ -113,13 +113,72 @@ layers, `frustumCulled` off, `renderOrder`, add / remove / `attach` / reparent, 
 during the draw, 24 adds (rebuild path), direct `children` push / splice, `scene.matrixWorldAutoUpdate` off / on,
 scene invisible, nested scene alternated and mutated, sprite move, `reuseRenderLists` off / on. Plus seven bench
 scenarios (1 500 objects) flat vs recursive. **328 frame pairs, all byte-identical, hook order identical, 0 verify
-mismatches attributable to the flat pass** (one verify mismatch in the shadows run at "hook removes itself" is
-reported by the recursive reference renderer too, i.e. a pre-existing list-reuse issue; the check classifies it as
-such). The run shows 70 merged / 50 split passes, 6 rebuilds and 42 patches per world.
+mismatches attributable to the flat pass** (one verify mismatch in the shadows run at "hook removes itself" also
+occurs with the main renderer in recursive mode, see Results). The run shows 70 merged / 50 split passes, 6 rebuilds and 42 patches per world.
 
 ## Results
 
-RESULTS_PLACEHOLDER
+All numbers: headless Chromium / SwiftShader on this (noisy) box; "paired" = `renderer.flatSceneUpdate` off vs on in
+the same harness, median frame over 60 frames after 30 warm-up, best of three fresh pages each (timer resolution
+0.1 ms). "frame" includes the scenario's own `update()` (shared-animated: 10k Euler → quaternion conversions, ~0.7 ms,
+the same work three.js does).
+
+| scenario | recursive walks: render / frame | flat pass: render / frame | frame delta |
+|---|---:|---:|---:|
+| shared-animated (10k, every object rotating) | 3.4 / 4.3 ms | 3.0 / 3.8 ms | **-12 %** (render -12 %) |
+| hierarchy-animated (200 chains × 40, roots rotating) | 3.6 / 3.7 ms | 2.9 / 3.0 ms | **-19 %** (render -19 %) |
+| shared-static (10k) | 0.8 / 0.8 ms | 0.5 / 0.5 ms | **-37 %** |
+
+`node bench/run.mjs shared-animated hierarchy-animated shared-static --frames=60`, medians, best of two runs
+(bench harness; three.js in the same runs 12.8-14.8 ms for the 10k scenes):
+
+| scenario | before (run 1 / 2) | after, pre-merge (run 1 / 2) | after, on the integration tip |
+|---|---:|---:|---:|
+| shared-animated | 4.2 / 4.9 | 4.0 / 4.2 | 4.0 |
+| hierarchy-animated | 4.2 / 3.8 | 3.1 / 3.5 | 3.3 |
+| shared-static | 0.9 / 0.9 | 0.6 / 0.6 | 0.6 |
+
+The 30 % target is met for the static scene and missed for the animated ones (-12 % / -19 % paired). Phase profile
+(`node bench/profile.mjs`, means over 30 frames, so a single upload stall inflates `drawList`):
+
+| scenario | before: `scene.updateMatrixWorld` + `_projectObject` | after: `flatPass` (now also computes the normal matrices the batcher used to) | `drawList` before → after | total before → after |
+|---|---:|---:|---:|---:|
+| shared-animated | 1.30 + 1.25 = 2.55 ms | 2.0 ms | 1.45 → 1.3 ms (1.9 in the post-merge run: one texImage2D stall) | 5.0 → 4.2 ms (4.9 with the stall) |
+| hierarchy-animated | 1.13 + 1.44 = 2.57 ms | 2.2 ms | ~1.2 → 1.0 ms | 5.9 (stall) → 3.5 ms |
+| shared-static | 0.75 ms | 0.51 ms (update-only loop, list reused) | 0.03 → 0.04 ms | 0.84 → 0.66 ms |
+
+Why the animated gain is smaller than hoped: with the two walks gone the loop still touches, per object, the
+`Object3D`, its `position` / `quaternion` / `scale` objects, the slab record, the snapshot and the render item, and
+reads ~25 polymorphic properties (`matrixAutoUpdate`, `matrixWorldNeedsUpdate`, `_worldVersion`, `geometry`,
+`material`, `frustumCulled`, ...); the update-only loop over 10k *unchanged* objects already costs 0.5 ms (50
+ns/object), i.e. the floor is loads and cache misses, not arithmetic or calls. Variants tried and dropped:
+keeping slab page / offsets per entry in typed arrays instead of reading them off the object (within noise,
+slightly slower), skipping the per-entry `children.length` check (≤ 0.1 ms). The CPU profile of the animated
+frame now splits as flat pass ~2.0, draw-list build + matrix-texture fill 0.9, texture upload 0.35-0.4, sort
+0.1, program resolve 0.05, app update 0.7 (shared-animated).
+
+Allocation (`node bench/alloc.mjs`, sampled bytes per frame): shared-static 7.3 KB → 12.5 KB, shared-animated 9.1 →
+13.2 KB, hierarchy-animated 9.5 → 12.7 KB. The whole difference is one site, `Matrix4.multiplyMatrices` (~3.4 KB /
+frame): it was called 10 000 times per frame by the recursive walk and therefore JIT-optimised; now it runs a handful
+of times per frame (camera / projection matrices) and stays in the interpreter, where `Float32Array` reads box
+doubles. Nothing in the pass allocates (no site in `_flatPass` / `FlatGraph` appears; an earlier 92 KB reading for
+shared-static was a one-off of the sampling profiler, two later runs gave 12.5 and 12.1 KB).
+
+Validation on the merged branch (integration tip ecf0290 merged in; the only conflict was `bench/results/latest.json`,
+taken from the integration branch): `npm test` 152 / 152; `node bench/conformance.mjs` 34 PASS, 0 FAIL;
+`node bench/addons.mjs` clean; `node bench/smoke.mjs` glError 0; `node bench/run.mjs --compare --frames=60`:
+meanAbsDiff / maxDiff equal to the integration tip's `latest.json` for all 17 scenarios (shared-animated 0 / 1,
+skinned-crowd 0 / 2, shadows-point-multi 0 / 1, all others 0 / 0), no median regressed beyond noise
+(shader-client 3.1-4.2 vs 3.2-4.5 three-side swings, shader-client-static 23.7-35 both libraries, dynamic-geometry
+1.1-2.0 ms on a 200-object scene whose three.js median swings the same way); `node bench/reuse-check.mjs` 602 frame
+pairs identical, 0 verify mismatches; `node bench/flat-check.mjs` 328 frame pairs identical, hook order identical;
+`node bench/fuzz.mjs --seeds=50 --continue`: seeds 8 23 27 28 35 fail **identically on the integration tip** (same
+worst meanAbsDiff 0.061 / maxDiff 167), i.e. pre-existing parity gaps unrelated to this branch.
+
+One `verifyListReuse` mismatch remains in `flat-check.mjs` (shadows run, step "hook removes itself", an
+`onBeforeRender` hook removing its own object while shadows are on): it reproduces with the main renderer in
+recursive mode (`node bench/flat-check.mjs main=recursive`), only ever on the first renderer instance created, so
+it is a pre-existing list-reuse issue and not the flat pass; pixels are identical in that step too.
 
 ## Risks / notes for the integrator
 
@@ -147,4 +206,23 @@ RESULTS_PLACEHOLDER
 
 ## Follow-up ideas
 
-FOLLOWUP_PLACEHOLDER
+* **Precomputed per-item batch flags** (scout #3): `_drawList` + `addTex` are now ~0.9 ms of the 3.0 ms animated
+  render; the item scan re-tests `_isBatchable` / `_isMultiDrawable` per item and copies 28 floats per object into
+  the matrix texture.
+* **Upload the slab instead of copying into the matrix texture**: make the matrix texture the slab pages
+  themselves (12 texels per record, world + normal matrix already adjacent) and give instances a slab-record index;
+  the per-frame fill (28 floats × 10k) and the hash disappear, uploads become per-page dirty ranges set by the pass.
+* **Dirty-range matrix-texture upload** (scout #16): the pass knows the first / last entry whose world matrix changed.
+* **Per-entry flags in typed arrays synced by the setters** (`visible`, `frustumCulled`, `layers.mask`,
+  `renderOrder` are accessors already): would remove 4 polymorphic loads per object from the projection half; the
+  update half would need `matrixAutoUpdate` / `matrixWorldAutoUpdate` / `matrixWorldNeedsUpdate` as accessors too.
+* **TRS in the slab**: the real floor of the update loop is the four heap objects per `Object3D`; storing
+  `position` / `quaternion` / `scale` components in the snapshot page (Vector3 views over it) would make the
+  change detection a contiguous compare, but changes `Vector3` storage for every object.
+* **Flatten the shadow pass** (`WebGLShadowMap._collect` / `_sigWalk` still recurse) over the same graph.
+* **Camera-only reuse under merged mode**: a scene whose only moving object is a group around the camera rebuilds
+  its list every frame; track "non-camera recompute" separately so level-1 reuse still applies.
+* `Matrix4.multiplyMatrices` boxing in the interpreter (3 KB / frame): a camera-specific unrolled path, or simply
+  accept it.
+* The two pre-existing issues found by `flat-check.mjs` (stale skinned pose on a second renderer; verify mismatch on
+  the first renderer with a self-removing hook under shadows) deserve their own look.

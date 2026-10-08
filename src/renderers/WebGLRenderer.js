@@ -1054,12 +1054,7 @@ class WebGLRenderer {
 					if (Array.isArray(material)) rec.reusable = false;
 				}
 				if (inside) {
-					if (sortObjects) {
-						// _itemDepth: view-space depth of the cull-sphere centre (or the origin when not culled)
-						let cx, cy, cz;
-						if (o._frustumCulled === false) { cx = s[lo + 28]; cy = s[lo + 29]; cz = s[lo + 30]; } else { cx = s[lo + 41]; cy = s[lo + 42]; cz = s[lo + 43]; }
-						zScratch[0] = -(ve[2] * cx + ve[6] * cy + ve[10] * cz + ve[14]);
-					} else zScratch[0] = 0;
+					if (sortObjects) this._itemDepth(o, ve, zScratch); else zScratch[0] = 0;
 					// the normal matrix every drawn item needs, computed while its world matrix is in cache
 					if (o._normalVersion !== o._worldVersion) { computeNormalMatrix(s, lo); o._normalVersion = o._worldVersion; }
 					if (Array.isArray(material)) {
