@@ -2,6 +2,10 @@
 
 Branch `swarm/per-draw-overhead`. Container: 4 cores, headless Chromium/SwiftShader. Scout items 11, 7 and (the safe part of) 19.
 
+## Merge note
+
+While this branch was in flight the integration branch gained its own skip of identical lights/frame-block uploads and an allocation-free `_updateEnv` (interned env key ids). On merging I kept theirs and dropped my duplicate (c) code, so after the merge this branch contains only items 11 and 7 plus the bench tooling. The (c) rows and the "before/after" numbers below were measured on my pre-merge tree (before = `9074c4e`); post-merge cpu-stubbed on the merged tree: shader-client 0.936 / 0.860, shader-client-static 0.268 / 0.284 ms.
+
 ## Changes
 
 | item | change | where |
