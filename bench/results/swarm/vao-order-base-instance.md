@@ -22,7 +22,7 @@ The other scenes' stubbed CPU times (skinned-crowd, shared-animated, unique-geom
 
 Pixels: `run.mjs --compare` meanAbsDiff/maxDiff are identical to the committed values for every scenario (shader-client and
 shader-client-static stay 0/0). `npm test` (139), `conformance` (34 PASS, includes a new test), `addons`, `smoke`, `reuse-check`
-(602 frame pairs identical) all pass. `bench/fuzz.mjs` does not exist in this tree.
+(602 frame pairs identical) all pass, re-run after merging the integration branch (conformance 35 PASS). `fuzz.mjs --seeds=50 --continue`: seeds 8 23 27 28 35 fail, **identically on the unmodified integration branch** (same seeds, same worst diffs), so they are pre-existing; no new failures.
 
 ## What changed
 
