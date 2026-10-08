@@ -15040,20 +15040,30 @@ var WebGLBatcher = class {
     this.texHash = h;
     return this.texCount++;
   }
-  /** Upload the frame's matrices into the matrix texture (unit `unit`) if they changed. The texture stays bound to `unit`. */
+  /**
+   * Upload the frame's matrices into the matrix texture (unit `unit`) if they changed. The texture stays bound to `unit`.
+   *
+   * The upload is a full `texImage2D` (re)definition rather than a `texSubImage2D` into immutable storage, on purpose.
+   * In Chromium, `texSubImage2D` with client data always goes through the command buffer's ring "transfer buffer"
+   * (64 KB minimum, resized by a heuristic) and an upload that does not fit is split into row chunks, each of which
+   * waits for the GPU process to release the previous chunk (TexSubImage2DImpl -> RingBuffer::Alloc -> WaitForToken).
+   * With a megabyte of matrices per frame that path degrades after a while into a multi-second stall followed by
+   * ~150 ms per upload. `texImage2D` instead falls back to mapped shared memory for uploads larger than the transfer
+   * buffer and sends them in one piece, so the same bytes cost the same as before and never block.
+   * Redefining the level with an unchanged size and format measured no more expensive per frame than the
+   * sub-image update it replaces (same median); the driver only reallocates when the row count changes.
+   */
   uploadTexture(state, unit) {
     const gl = this.gl;
     const rows = Math.max(1, Math.ceil(this.texCount / MATRICES_PER_ROW));
-    if (this.texture === null || rows > this.textureRows) {
-      if (this.texture !== null) gl.deleteTexture(this.texture);
+    if (this.texture === null) {
       this.texture = gl.createTexture();
-      let allocRows = 1;
-      while (allocRows < rows) allocRows *= 2;
       state.bindTexture(gl.TEXTURE_2D, this.texture, unit);
-      gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA32F, MATRIX_TEXTURE_WIDTH, allocRows);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-      this.textureRows = allocRows;
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      this.textureRows = 0;
       this.textureHash = 0;
     } else {
       state.bindTexture(gl.TEXTURE_2D, this.texture, unit);
@@ -15062,7 +15072,8 @@ var WebGLBatcher = class {
     if (this.textureHash === this.texHash && this.textureCount === this.texCount) return;
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, MATRIX_TEXTURE_WIDTH, rows, gl.RGBA, gl.FLOAT, this.texData, 0);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, MATRIX_TEXTURE_WIDTH, rows, 0, gl.RGBA, gl.FLOAT, this.texData, 0);
+    this.textureRows = rows;
     this.textureHash = this.texHash;
     this.textureCount = this.texCount;
   }
