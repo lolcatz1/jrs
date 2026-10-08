@@ -6399,6 +6399,7 @@ var WebGLTextures = class {
       texture.addEventListener("dispose", this._onTextureDispose);
     }
     state.bindTexture(gl.TEXTURE_CUBE_MAP, p.webglTexture, slot);
+    if (texture.isRenderTargetTexture === true || texture.isCubeDepthTexture === true) return;
     const images = texture.image;
     if (p.version === texture.version || !Array.isArray(images) || images.length < 6) return;
     for (let i = 0; i < 6; i++) {
@@ -6427,6 +6428,7 @@ var WebGLTextures = class {
   }
   /** Sets up (once) and binds a render target's framebuffer. */
   setupRenderTarget(renderTarget) {
+    if (renderTarget.isWebGLCubeRenderTarget === true) return this._setupCubeRenderTarget(renderTarget);
     const gl = this.gl, state = this.state;
     const p = this.get(renderTarget);
     const texture = renderTarget.texture;
@@ -6494,13 +6496,82 @@ var WebGLTextures = class {
     }
     return p.framebuffer;
   }
+  /** Framebuffer plus cube colour / cube depth storage of a WebGLCubeRenderTarget. Faces are attached by attachCubeFace(). */
+  _setupCubeRenderTarget(renderTarget) {
+    const gl = this.gl, state = this.state;
+    const p = this.get(renderTarget);
+    if (p.framebuffer !== void 0 && p.width === renderTarget.width) return p.framebuffer;
+    if (p.framebuffer !== void 0) {
+      this._onRenderTargetDispose({ target: renderTarget });
+      renderTarget.addEventListener("dispose", this._onRenderTargetDispose);
+      return this._setupCubeRenderTarget(renderTarget);
+    }
+    const size = renderTarget.width;
+    renderTarget.addEventListener("dispose", this._onRenderTargetDispose);
+    const texture = renderTarget.texture;
+    const tp = this.get(texture);
+    texture.isRenderTargetTexture = true;
+    p.framebuffer = gl.createFramebuffer();
+    state.bindFramebuffer(p.framebuffer);
+    p.cubeFace = -1;
+    if (renderTarget.depthOnly !== true) {
+      tp.webglTexture = gl.createTexture();
+      this.info.memory.textures++;
+      state.bindTexture(gl.TEXTURE_CUBE_MAP, tp.webglTexture, 0);
+      this._setTextureParameters(gl.TEXTURE_CUBE_MAP, texture);
+      const glFormat = this.glFormat(texture.format), glType = this.glType(texture.type);
+      const glInternalFormat = this.glInternalFormat(texture.internalFormat, glFormat, glType, texture.colorSpace);
+      for (let i = 0; i < 6; i++) gl.texImage2D(gl.TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, glInternalFormat, size, size, 0, glFormat, glType, null);
+      tp.version = texture.version;
+    } else {
+      gl.drawBuffers([gl.NONE]);
+      gl.readBuffer(gl.NONE);
+    }
+    const dt = renderTarget.depthTexture;
+    if (dt) {
+      const dp = this.get(dt);
+      if (dp.webglTexture !== void 0) gl.deleteTexture(dp.webglTexture);
+      else this.info.memory.textures++;
+      dp.webglTexture = gl.createTexture();
+      dt.isRenderTargetTexture = true;
+      state.bindTexture(gl.TEXTURE_CUBE_MAP, dp.webglTexture, 0);
+      this._setTextureParameters(gl.TEXTURE_CUBE_MAP, dt);
+      const glInternalFormat = this.glInternalFormat(null, this.glFormat(dt.format), this.glType(dt.type));
+      gl.texStorage2D(gl.TEXTURE_CUBE_MAP, 1, glInternalFormat, size, size);
+      dp.version = dt.version;
+    } else if (renderTarget.depthBuffer) {
+      p.depthbuffer = gl.createRenderbuffer();
+      gl.bindRenderbuffer(gl.RENDERBUFFER, p.depthbuffer);
+      gl.renderbufferStorage(gl.RENDERBUFFER, renderTarget.stencilBuffer ? gl.DEPTH24_STENCIL8 : gl.DEPTH_COMPONENT24, size, size);
+      gl.framebufferRenderbuffer(gl.FRAMEBUFFER, renderTarget.stencilBuffer ? gl.DEPTH_STENCIL_ATTACHMENT : gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, p.depthbuffer);
+      gl.bindRenderbuffer(gl.RENDERBUFFER, null);
+    }
+    p.width = size;
+    return p.framebuffer;
+  }
+  /** Attaches `face` of a cube render target's colour / depth textures to its (currently bound) framebuffer. */
+  attachCubeFace(renderTarget, face) {
+    const p = this.get(renderTarget);
+    if (p.cubeFace === face) return;
+    const gl = this.gl;
+    const target = gl.TEXTURE_CUBE_MAP_POSITIVE_X + face;
+    if (renderTarget.depthOnly !== true) gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, target, this.get(renderTarget.texture).webglTexture, 0);
+    const dt = renderTarget.depthTexture;
+    if (dt) gl.framebufferTexture2D(gl.FRAMEBUFFER, dt.format === DepthStencilFormat ? gl.DEPTH_STENCIL_ATTACHMENT : gl.DEPTH_ATTACHMENT, target, this.get(dt).webglTexture, 0);
+    if (p.cubeFace === -1) {
+      const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+      if (status !== gl.FRAMEBUFFER_COMPLETE) console.error("WebGLTextures: cube render target framebuffer incomplete: 0x" + status.toString(16));
+    }
+    p.cubeFace = face;
+  }
   /** Regenerates mipmaps for a render target texture after rendering to it. */
   updateRenderTargetMipmap(renderTarget) {
     const texture = renderTarget.texture;
     if (this._textureNeedsMipmaps(texture)) {
       const tp = this.get(texture);
-      this.state.bindTexture(this.gl.TEXTURE_2D, tp.webglTexture, 0);
-      this.gl.generateMipmap(this.gl.TEXTURE_2D);
+      const target = renderTarget.isWebGLCubeRenderTarget === true ? this.gl.TEXTURE_CUBE_MAP : this.gl.TEXTURE_2D;
+      this.state.bindTexture(target, tp.webglTexture, 0);
+      this.gl.generateMipmap(target);
     }
   }
 };
@@ -13409,6 +13480,7 @@ var MAX_DIR_LIGHTS = 4;
 var MAX_POINT_LIGHTS = 8;
 var MAX_SPOT_LIGHTS = 4;
 var MAX_HEMI_LIGHTS = 2;
+var MAX_POINT_SHADOWS = 4;
 var MATERIAL_BASIC = 1;
 var MATERIAL_LAMBERT = 2;
 var MATERIAL_PHONG = 3;
@@ -13439,9 +13511,17 @@ var TEXTURE_UNITS = {
   spotShadowMap1: 13,
   spotShadowMap2: 14,
   spotShadowMap3: 15,
+  // pointShadowMap[i] takes the free units of 8-14 after directional and spot shadow maps, see pointShadowUnit()
   objectMatrices: 15
   // multi-draw matrix texture (spot shadow maps are capped at 3 when it is used)
 };
+function pointShadowUnit(i, numDir, numSpot) {
+  for (let u = 8; u < 15; u++) {
+    if (u < 8 + numDir || u >= 12 && u < 12 + numSpot) continue;
+    if (i-- === 0) return u;
+  }
+  return -1;
+}
 var MATRIX_TEXTURE_WIDTH = 1024;
 var TEXELS_PER_OBJECT = 8;
 var FRAME_BLOCK = (
@@ -13476,10 +13556,12 @@ layout(std140) uniform Lights {
 	vec4 dirShadowParams[${MAX_DIR_LIGHTS}];   // bias, normalBias, radius, 1/mapSize
 	mat4 spotShadowMatrix[${MAX_SPOT_LIGHTS}];
 	vec4 spotShadowParams[${MAX_SPOT_LIGHTS}];
+	vec4 pointShadowParams[${MAX_POINT_SHADOWS}]; // bias, normalBias, radius, intensity
+	vec4 pointShadowInfo[${MAX_POINT_SHADOWS}];   // mapSize, camera near, camera far
 };
 `
 );
-var LIGHTS_BLOCK_SIZE = 16 + 16 + MAX_DIR_LIGHTS * 32 + MAX_POINT_LIGHTS * 48 + MAX_SPOT_LIGHTS * 64 + MAX_HEMI_LIGHTS * 48 + MAX_DIR_LIGHTS * 64 + MAX_DIR_LIGHTS * 16 + MAX_SPOT_LIGHTS * 64 + MAX_SPOT_LIGHTS * 16;
+var LIGHTS_BLOCK_SIZE = 16 + 16 + MAX_DIR_LIGHTS * 32 + MAX_POINT_LIGHTS * 48 + MAX_SPOT_LIGHTS * 64 + MAX_HEMI_LIGHTS * 48 + MAX_DIR_LIGHTS * 64 + MAX_DIR_LIGHTS * 16 + MAX_SPOT_LIGHTS * 64 + MAX_SPOT_LIGHTS * 16 + MAX_POINT_SHADOWS * 32;
 var FRAME_BLOCK_SIZE = 64 * 3 + 16 * 4;
 var MATERIAL_BLOCK = (
   /* glsl */
@@ -13519,7 +13601,7 @@ precision highp float;
 precision highp int;
 ${FRAME_BLOCK}
 ${MATERIAL_BLOCK}
-#if NUM_DIR_SHADOWS > 0 || NUM_SPOT_SHADOWS > 0
+#if NUM_DIR_SHADOWS > 0 || NUM_SPOT_SHADOWS > 0 || NUM_POINT_SHADOWS > 0
 ${LIGHTS_BLOCK}
 #endif
 uniform mat4 modelMatrix;
@@ -13591,6 +13673,9 @@ out vec4 vDirShadowCoord[ NUM_DIR_SHADOWS ];
 #endif
 #if NUM_SPOT_SHADOWS > 0
 out vec4 vSpotShadowCoord[ NUM_SPOT_SHADOWS ];
+#endif
+#if NUM_POINT_SHADOWS > 0
+out vec3 vPointShadowCoord[ NUM_POINT_SHADOWS ];
 #endif
 
 void main() {
@@ -13681,6 +13766,17 @@ void main() {
 		vSpotShadowCoord[ i ] = spotShadowMatrix[ i ] * shadowWorldPosition;
 	}
 	#endif
+	#if NUM_POINT_SHADOWS > 0
+	for ( int i = 0; i < NUM_POINT_SHADOWS; i ++ ) {
+		vec3 shadowWorldNormal = vec3( 0.0 );
+		#ifdef USE_NORMAL
+		shadowWorldNormal = vNormal;
+		#endif
+		vec4 shadowWorldPosition = worldPosition + vec4( shadowWorldNormal * pointShadowParams[ i ].y, 0.0 );
+		// the vector from the light to the shadowed position (three.js: translation matrix times position)
+		vPointShadowCoord[ i ] = shadowWorldPosition.xyz - pointLights[ i ].position.xyz;
+	}
+	#endif
 }
 `
 );
@@ -13690,6 +13786,7 @@ var fragmentShader = (
 precision highp float;
 precision highp int;
 precision highp sampler2DShadow;
+precision highp samplerCubeShadow;
 ${FRAME_BLOCK}
 ${LIGHTS_BLOCK}
 ${MATERIAL_BLOCK}
@@ -13742,6 +13839,14 @@ uniform sampler2DShadow dirShadowMap[ NUM_DIR_SHADOWS ];
 in vec4 vSpotShadowCoord[ NUM_SPOT_SHADOWS ];
 uniform sampler2DShadow spotShadowMap[ NUM_SPOT_SHADOWS ];
 #endif
+#if NUM_POINT_SHADOWS > 0
+in vec3 vPointShadowCoord[ NUM_POINT_SHADOWS ];
+#ifdef POINT_SHADOW_BASIC
+uniform samplerCube pointShadowMap[ NUM_POINT_SHADOWS ];
+#else
+uniform samplerCubeShadow pointShadowMap[ NUM_POINT_SHADOWS ];
+#endif
+#endif
 out vec4 fragColor;
 
 #if NUM_DIR_SHADOWS > 0 || NUM_SPOT_SHADOWS > 0
@@ -13765,6 +13870,69 @@ float sampleShadow( sampler2DShadow shadowMap, vec4 coord, vec4 params ) {
 	shadow += texture( shadowMap, c + vec3( texel, texel, 0.0 ) );
 	return shadow / 9.0;
 }
+#endif
+
+#if NUM_POINT_SHADOWS > 0
+#define PI2 6.283185307179586
+// three.js r186 shadowmap_pars_fragment: Vogel disk + interleaved gradient noise taps around the light-to-fragment direction
+#ifndef POINT_SHADOW_BASIC
+float interleavedGradientNoise( vec2 position ) {
+	return fract( 52.9829189 * fract( dot( position, vec2( 0.06711056, 0.00583715 ) ) ) );
+}
+vec2 vogelDiskSample( int sampleIndex, int samplesCount, float phi ) {
+	const float goldenAngle = 2.399963229728653;
+	float r = sqrt( ( float( sampleIndex ) + 0.5 ) / float( samplesCount ) );
+	float theta = float( sampleIndex ) * goldenAngle + phi;
+	return vec2( cos( theta ), sin( theta ) ) * r;
+}
+float getPointShadow( samplerCubeShadow shadowMap, vec4 params, vec4 info, vec3 lightToPosition ) {
+	float shadow = 1.0;
+	float shadowBias = params.x, shadowRadius = params.z, shadowIntensity = params.w;
+	float shadowMapSize = info.x, shadowCameraNear = info.y, shadowCameraFar = info.z;
+	vec3 bd3D = normalize( lightToPosition );
+	vec3 absVec = abs( lightToPosition );
+	float viewSpaceZ = max( max( absVec.x, absVec.y ), absVec.z );
+	if ( viewSpaceZ - shadowCameraFar <= 0.0 && viewSpaceZ - shadowCameraNear >= 0.0 ) {
+		float dp = ( shadowCameraFar * ( viewSpaceZ - shadowCameraNear ) ) / ( viewSpaceZ * ( shadowCameraFar - shadowCameraNear ) );
+		dp += shadowBias;
+		float texelSize = shadowRadius / shadowMapSize;
+		vec3 absDir = abs( bd3D );
+		vec3 tangent = absDir.x > absDir.z ? vec3( 0.0, 1.0, 0.0 ) : vec3( 1.0, 0.0, 0.0 );
+		tangent = normalize( cross( bd3D, tangent ) );
+		vec3 bitangent = cross( bd3D, tangent );
+		float phi = interleavedGradientNoise( gl_FragCoord.xy ) * PI2;
+		vec2 sample0 = vogelDiskSample( 0, 5, phi );
+		vec2 sample1 = vogelDiskSample( 1, 5, phi );
+		vec2 sample2 = vogelDiskSample( 2, 5, phi );
+		vec2 sample3 = vogelDiskSample( 3, 5, phi );
+		vec2 sample4 = vogelDiskSample( 4, 5, phi );
+		shadow = (
+			texture( shadowMap, vec4( bd3D + ( tangent * sample0.x + bitangent * sample0.y ) * texelSize, dp ) ) +
+			texture( shadowMap, vec4( bd3D + ( tangent * sample1.x + bitangent * sample1.y ) * texelSize, dp ) ) +
+			texture( shadowMap, vec4( bd3D + ( tangent * sample2.x + bitangent * sample2.y ) * texelSize, dp ) ) +
+			texture( shadowMap, vec4( bd3D + ( tangent * sample3.x + bitangent * sample3.y ) * texelSize, dp ) ) +
+			texture( shadowMap, vec4( bd3D + ( tangent * sample4.x + bitangent * sample4.y ) * texelSize, dp ) )
+		) * 0.2;
+	}
+	return mix( 1.0, shadow, shadowIntensity );
+}
+#else
+float getPointShadow( samplerCube shadowMap, vec4 params, vec4 info, vec3 lightToPosition ) {
+	float shadow = 1.0;
+	float shadowBias = params.x, shadowIntensity = params.w;
+	float shadowCameraNear = info.y, shadowCameraFar = info.z;
+	vec3 absVec = abs( lightToPosition );
+	float viewSpaceZ = max( max( absVec.x, absVec.y ), absVec.z );
+	if ( viewSpaceZ - shadowCameraFar <= 0.0 && viewSpaceZ - shadowCameraNear >= 0.0 ) {
+		float dp = ( shadowCameraFar * ( viewSpaceZ - shadowCameraNear ) ) / ( viewSpaceZ * ( shadowCameraFar - shadowCameraNear ) );
+		dp += shadowBias;
+		vec3 bd3D = normalize( lightToPosition );
+		float depth = texture( shadowMap, bd3D ).r;
+		shadow = step( dp, depth );
+	}
+	return mix( 1.0, shadow, shadowIntensity );
+}
+#endif
 #endif
 
 #ifdef USE_NORMALMAP
@@ -14011,6 +14179,11 @@ void main() {
 			float lightDistance = length( lVector );
 			dotNL = clamp( dot( normal, L ), 0.0, 1.0 );
 			irradiance = dotNL * pointLights[ i ].color.rgb * getDistanceAttenuation( lightDistance, pointLights[ i ].params.x, pointLights[ i ].params.y );
+			#if NUM_POINT_SHADOWS > 0
+			if ( i < NUM_POINT_SHADOWS ) {
+				irradiance *= pointShadowFactor( i );
+			}
+			#endif
 			directDiffuse += irradiance * BRDF_Lambert( diffuseBase );
 			#if defined( LIGHTING_STANDARD )
 			directSpecular += irradiance * BRDF_GGX( L, viewDir, normal, specularF0, 1.0, roughness );
@@ -14102,7 +14275,7 @@ void main() {
 }
 `
 );
-function shadowFactorFunctions(numDir, numSpot) {
+function shadowFactorFunctions(numDir, numSpot, numPoint) {
   let s = "";
   if (numDir > 0) {
     s += "float dirShadowFactor( int i ) {\n";
@@ -14113,6 +14286,12 @@ function shadowFactorFunctions(numDir, numSpot) {
   if (numSpot > 0) {
     s += "float spotShadowFactor( int i ) {\n";
     for (let i = 0; i < numSpot; i++) s += `	if ( i == ${i} ) return sampleShadow( spotShadowMap[ ${i} ], vSpotShadowCoord[ ${i} ], spotShadowParams[ ${i} ] );
+`;
+    s += "	return 1.0;\n}\n";
+  }
+  if (numPoint > 0) {
+    s += "float pointShadowFactor( int i ) {\n";
+    for (let i = 0; i < numPoint; i++) s += `	if ( i == ${i} ) return getPointShadow( pointShadowMap[ ${i} ], pointShadowParams[ ${i} ], pointShadowInfo[ ${i} ], vPointShadowCoord[ ${i} ] );
 `;
     s += "	return 1.0;\n}\n";
   }
@@ -14179,6 +14358,8 @@ function buildBuiltinShader(p) {
   d("TONE_MAPPING", p.toneMapping | 0);
   d("NUM_DIR_SHADOWS", p.numDirShadows | 0);
   d("NUM_SPOT_SHADOWS", p.numSpotShadows | 0);
+  d("NUM_POINT_SHADOWS", p.numPointShadows | 0);
+  if (p.pointShadowBasic) d("POINT_SHADOW_BASIC");
   const prefix = "#version 300 es\n" + defines.join("\n") + "\n";
   const vsExtra = (p.multiDraw ? "#extension GL_ANGLE_multi_draw : require\n" : "") + (p.materialType === MATERIAL_SPRITE ? spriteUniform : "");
   const vs = prefix + vsExtra + vertexShader;
@@ -14186,7 +14367,7 @@ function buildBuiltinShader(p) {
     return { vertexShader: vs, fragmentShader: "#version 300 es\nprecision mediump float;\nlayout(location = 0) out vec4 fragColor;\nvoid main() { fragColor = vec4( 0.0 ); }\n" };
   }
   let fs = fragmentShader;
-  const helpers = shadowFactorFunctions(p.numDirShadows | 0, p.numSpotShadows | 0);
+  const helpers = shadowFactorFunctions(p.numDirShadows | 0, p.numSpotShadows | 0, p.numPointShadows | 0);
   if (helpers !== "") fs = fs.replace("#ifdef USE_NORMALMAP\nvec3 perturbNormal2Arb", helpers + "#ifdef USE_NORMALMAP\nvec3 perturbNormal2Arb");
   return { vertexShader: vs, fragmentShader: prefix + fs };
 }
@@ -14466,6 +14647,15 @@ var WebGLProgram = class {
       u.isShadowSampler = u.type === gl.SAMPLER_2D_SHADOW || u.type === gl.SAMPLER_CUBE_SHADOW || u.type === gl.SAMPLER_2D_ARRAY_SHADOW;
       u.boundStamp = -1;
       let unit;
+      if (!isCustom && name === "pointShadowMap") {
+        const units = new Int32Array(u.size);
+        for (let k = 0; k < u.size; k++) units[k] = pointShadowUnit(k, parameters.numDirShadows | 0, parameters.numSpotShadows | 0);
+        u.unit = units[0];
+        u.units = units;
+        gl.uniform1iv(u.location, units);
+        this.samplerUniforms.push(u);
+        continue;
+      }
       if (!isCustom && (TEXTURE_UNITS[name] !== void 0 || TEXTURE_UNITS[name + "0"] !== void 0)) {
         unit = u.size > 1 ? TEXTURE_UNITS[name + "0"] : TEXTURE_UNITS[name];
       } else {
@@ -14579,6 +14769,8 @@ var WebGLPrograms = class {
     const receiveShadow = variant.receiveShadow && isLit && renderer.shadowMap.enabled;
     const numDirShadows = receiveShadow ? lights.numDirShadows : 0;
     const numSpotShadows = receiveShadow ? lights.numSpotShadows : 0;
+    const numPointShadows = receiveShadow ? lights.numPointShadows : 0;
+    const pointShadowBasic = numPointShadows > 0 && renderer.shadowMap.type === BasicShadowMap;
     const toneMapping = material.toneMapped && renderer.toneMapping !== NoToneMapping && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH && materialType !== MATERIAL_NORMAL ? renderer.toneMapping : NoToneMapping;
     const currentRenderTarget = renderer.getRenderTarget();
     const sRGBOutput = (currentRenderTarget === null ? renderer.outputColorSpace : currentRenderTarget.texture.colorSpace) === SRGBColorSpace && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH && materialType !== MATERIAL_NORMAL;
@@ -14614,7 +14806,9 @@ var WebGLPrograms = class {
       toneMapping,
       sRGBOutput,
       numDirShadows,
-      numSpotShadows
+      numSpotShadows,
+      numPointShadows,
+      pointShadowBasic
     };
     let key = materialType;
     key = key * 2 + (map ? 1 : 0);
@@ -14646,6 +14840,8 @@ var WebGLPrograms = class {
     key = key * 2 + (p.multiDraw ? 1 : 0);
     key = key * 2 + (p.objectTexture ? 1 : 0);
     key = key * 2 + (leanShadow ? 1 : 0);
+    key = key * 8 + numPointShadows;
+    key = key * 2 + (pointShadowBasic ? 1 : 0);
     p.key = key;
     return p;
   }
@@ -14964,6 +15160,8 @@ var OFF_DIR_SHADOW_MAT = OFF_HEMI + MAX_HEMI_LIGHTS * 48;
 var OFF_DIR_SHADOW_PARAMS = OFF_DIR_SHADOW_MAT + MAX_DIR_LIGHTS * 64;
 var OFF_SPOT_SHADOW_MAT = OFF_DIR_SHADOW_PARAMS + MAX_DIR_LIGHTS * 16;
 var OFF_SPOT_SHADOW_PARAMS = OFF_SPOT_SHADOW_MAT + MAX_SPOT_LIGHTS * 64;
+var OFF_POINT_SHADOW_PARAMS = OFF_SPOT_SHADOW_PARAMS + MAX_SPOT_LIGHTS * 16;
+var OFF_POINT_SHADOW_INFO = OFF_POINT_SHADOW_PARAMS + MAX_POINT_SHADOWS * 16;
 var WebGLLights = class {
   constructor() {
     this.data = new Float32Array(LIGHTS_BLOCK_SIZE / 4);
@@ -14975,8 +15173,10 @@ var WebGLLights = class {
     this.hemi = [];
     this.dirShadows = [];
     this.spotShadows = [];
+    this.pointShadows = [];
     this.numDirShadows = 0;
     this.numSpotShadows = 0;
+    this.numPointShadows = 0;
     this.version = 0;
     this.hash = "";
   }
@@ -14988,6 +15188,7 @@ var WebGLLights = class {
     this.hemi.length = 0;
     this.dirShadows.length = 0;
     this.spotShadows.length = 0;
+    this.pointShadows.length = 0;
   }
   push(light) {
     if (light.isAmbientLight) {
@@ -15001,7 +15202,10 @@ var WebGLLights = class {
         if (light.castShadow) this.dirShadows.push(light);
       }
     } else if (light.isPointLight) {
-      if (this.point.length < MAX_POINT_LIGHTS) this.point.push(light);
+      if (this.point.length < MAX_POINT_LIGHTS) {
+        this.point.push(light);
+        if (light.castShadow) this.pointShadows.push(light);
+      }
     } else if (light.isSpotLight) {
       if (this.spot.length < MAX_SPOT_LIGHTS) {
         this.spot.push(light);
@@ -15012,17 +15216,22 @@ var WebGLLights = class {
     }
   }
   /** Shadow-casting lights come first within their type so sampler indices line up. */
-  end(shadowsEnabled) {
+  end(shadowsEnabled, pointShadowsEnabled = true) {
     if (shadowsEnabled) {
       this.dir.sort(shadowCastingFirst);
       this.spot.sort(shadowCastingFirst);
+      this.point.sort(shadowCastingFirst);
       this.numDirShadows = Math.min(this.dirShadows.length, MAX_DIR_LIGHTS);
       this.numSpotShadows = Math.min(this.spotShadows.length, MAX_SPOT_LIGHTS - 1);
+      let n = pointShadowsEnabled ? Math.min(this.pointShadows.length, MAX_POINT_SHADOWS) : 0;
+      while (n > 0 && pointShadowUnit(n - 1, this.numDirShadows, this.numSpotShadows) < 0) n--;
+      this.numPointShadows = n;
     } else {
       this.numDirShadows = 0;
       this.numSpotShadows = 0;
+      this.numPointShadows = 0;
     }
-    const hash = this.numDirShadows + ":" + this.numSpotShadows;
+    const hash = this.numDirShadows + ":" + this.numSpotShadows + ":" + this.numPointShadows;
     if (hash !== this.hash) {
       this.hash = hash;
       this.version++;
@@ -15081,6 +15290,19 @@ var WebGLLights = class {
       d[o + 9] = light.decay;
       d[o + 10] = 0;
       d[o + 11] = 0;
+      if (i < this.numPointShadows) {
+        const shadow = light.shadow;
+        const po = (OFF_POINT_SHADOW_PARAMS + i * 16) / 4;
+        d[po] = shadow.bias;
+        d[po + 1] = shadow.normalBias;
+        d[po + 2] = shadow.radius;
+        d[po + 3] = shadow.intensity;
+        const io = (OFF_POINT_SHADOW_INFO + i * 16) / 4;
+        d[io] = shadow.mapSize.x;
+        d[io + 1] = shadow.camera.near;
+        d[io + 2] = shadow.camera.far;
+        d[io + 3] = 0;
+      }
     }
     for (let i = 0; i < this.spot.length; i++) {
       const light = this.spot[i], o = (OFF_SPOT + i * 64) / 4;
@@ -15455,6 +15677,7 @@ var WebGLBatcher = class {
     }
     if (this.texCount === 0) return;
     if (this.textureHash === this.texHash && this.textureCount === this.texCount) return;
+    state.activeTexture(unit);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, MATRIX_TEXTURE_WIDTH, rows, 0, gl.RGBA, gl.FLOAT, this.texData, 0);
@@ -15996,6 +16219,59 @@ var WebGLRenderTarget = class extends EventDispatcher {
   }
 };
 
+// src/textures/CubeTexture.js
+var CubeTexture = class extends Texture {
+  constructor(images = [], mapping = CubeReflectionMapping, wrapS, wrapT, magFilter, minFilter, format, type, anisotropy, colorSpace) {
+    super(images, mapping, wrapS, wrapT, magFilter, minFilter, format, type, anisotropy, colorSpace);
+    this.isCubeTexture = true;
+    this.flipY = false;
+  }
+  get images() {
+    return this.image;
+  }
+  set images(value) {
+    this.image = value;
+  }
+};
+
+// src/renderers/WebGLCubeRenderTarget.js
+var WebGLCubeRenderTarget = class extends WebGLRenderTarget {
+  constructor(size = 1, options = {}) {
+    super(size, size, options);
+    this.isWebGLCubeRenderTarget = true;
+    const image = { width: size, height: size, depth: 1 };
+    const old = this.texture;
+    const texture = new CubeTexture([image, image, image, image, image, image], options.mapping, options.wrapS, options.wrapT, options.magFilter, options.minFilter, options.format, options.type, options.anisotropy, options.colorSpace);
+    texture.generateMipmaps = old.generateMipmaps;
+    texture.internalFormat = old.internalFormat;
+    texture.isRenderTargetTexture = true;
+    texture.renderTarget = this;
+    this.texture = texture;
+    this.textures = [texture];
+  }
+  setSize(width, height) {
+    if (this.width !== width || this.height !== height) {
+      this.width = width;
+      this.height = height;
+      const image = { width, height, depth: 1 };
+      this.texture.image = [image, image, image, image, image, image];
+      if (this.depthTexture) this.depthTexture.image = [image, image, image, image, image, image];
+      this.dispose();
+    }
+    this.viewport.set(0, 0, width, height);
+    this.scissor.set(0, 0, width, height);
+  }
+  /** Clears every face. */
+  clear(renderer, color, depth, stencil) {
+    const previous = renderer.getRenderTarget();
+    for (let i = 0; i < 6; i++) {
+      renderer.setRenderTarget(this, i);
+      renderer.clear(color, depth, stencil);
+    }
+    renderer.setRenderTarget(previous);
+  }
+};
+
 // src/textures/DepthTexture.js
 var DepthTexture = class extends Texture {
   constructor(width, height, type, mapping, wrapS, wrapT, magFilter = NearestFilter, minFilter = NearestFilter, anisotropy, format = DepthFormat, depth = 1) {
@@ -16017,8 +16293,44 @@ var DepthTexture = class extends Texture {
   }
 };
 
+// src/textures/CubeDepthTexture.js
+var CubeDepthTexture = class extends DepthTexture {
+  constructor(size, type = UnsignedIntType, mapping = CubeReflectionMapping, wrapS, wrapT, magFilter = NearestFilter, minFilter = NearestFilter, anisotropy, format = DepthFormat) {
+    const image = { width: size, height: size, depth: 1 };
+    super(size, size, type, mapping, wrapS, wrapT, magFilter, minFilter, anisotropy, format);
+    this.image = [image, image, image, image, image, image];
+    this.isCubeDepthTexture = true;
+    this.isCubeTexture = true;
+  }
+  get images() {
+    return this.image;
+  }
+  set images(value) {
+    this.image = value;
+  }
+};
+
 // src/renderers/webgl/WebGLShadowMap.js
+var _cubeDirections = [
+  /* @__PURE__ */ new Vector3(1, 0, 0),
+  /* @__PURE__ */ new Vector3(-1, 0, 0),
+  /* @__PURE__ */ new Vector3(0, 1, 0),
+  /* @__PURE__ */ new Vector3(0, -1, 0),
+  /* @__PURE__ */ new Vector3(0, 0, 1),
+  /* @__PURE__ */ new Vector3(0, 0, -1)
+];
+var _cubeUps = [
+  /* @__PURE__ */ new Vector3(0, -1, 0),
+  /* @__PURE__ */ new Vector3(0, -1, 0),
+  /* @__PURE__ */ new Vector3(0, 0, 1),
+  /* @__PURE__ */ new Vector3(0, 0, -1),
+  /* @__PURE__ */ new Vector3(0, -1, 0),
+  /* @__PURE__ */ new Vector3(0, -1, 0)
+];
+var _lightPositionWorld = /* @__PURE__ */ new Vector3();
+var _lookTarget = /* @__PURE__ */ new Vector3();
 var _frustum = /* @__PURE__ */ new Frustum();
+var _projScreenMatrix = /* @__PURE__ */ new Matrix4();
 var _viewport = /* @__PURE__ */ new Vector4();
 var _f64 = /* @__PURE__ */ new Float64Array(1);
 var _i32 = /* @__PURE__ */ new Int32Array(_f64.buffer);
@@ -16040,6 +16352,8 @@ var WebGLShadowMap = class {
     this.needsUpdate = false;
     this.type = PCFShadowMap;
     this.lists = /* @__PURE__ */ new WeakMap();
+    this._shadowLights = [];
+    this._casters = [];
     this.records = /* @__PURE__ */ new WeakMap();
     this._sig = new Float64Array(4096);
     this._sigN = 0;
@@ -16056,12 +16370,14 @@ var WebGLShadowMap = class {
     const renderer = this.renderer;
     if (this.enabled === false) return;
     if (this.autoUpdate === false && this.needsUpdate === false) return;
-    const shadowLights = [];
+    const shadowLights = this._shadowLights;
+    shadowLights.length = 0;
     for (let i = 0; i < lights.numDirShadows; i++) shadowLights.push(lights.dir[i]);
     for (let i = 0; i < lights.numSpotShadows; i++) shadowLights.push(lights.spot[i]);
+    for (let i = 0; i < lights.numPointShadows; i++) shadowLights.push(lights.point[i]);
     if (shadowLights.length === 0) return;
     const state = renderer.state;
-    let previousTarget = null;
+    let previousTarget = null, previousFace = 0;
     let stateReady = false;
     let savedOrders = null, savedOrderList = null, savedLastNoted = NaN;
     for (let i = 0; i < shadowLights.length; i++) {
@@ -16075,7 +16391,11 @@ var WebGLShadowMap = class {
         record = { sig: new Float64Array(0), n: 0, valid: false, map: null, epoch: -1, misses: 0, cool: 0 };
         this.records.set(light, record);
       }
-      if (shadow.map === null) {
+      const isPoint = light.isPointLight === true;
+      if (isPoint) {
+        this._ensurePointMap(light, shadow, record);
+        this._poseFace(light, shadow, 0);
+      } else if (shadow.map === null) {
         const depthTexture = new DepthTexture(mapSize.x, mapSize.y, UnsignedIntType, void 0, void 0, void 0, LinearFilter, LinearFilter, void 0, DepthFormat);
         depthTexture.compareFunction = LessEqualStencilFunc;
         shadow.map = new WebGLRenderTarget(mapSize.x, mapSize.y, { depthTexture, depthOnly: true, minFilter: LinearFilter, magFilter: LinearFilter });
@@ -16086,7 +16406,7 @@ var WebGLShadowMap = class {
         shadow.map.depthTexture.image.width = mapSize.x;
         shadow.map.depthTexture.image.height = mapSize.y;
       }
-      shadow.updateMatrices(light);
+      if (!isPoint) shadow.updateMatrices(light);
       const forced = shadow.needsUpdate === true || this.needsUpdate === true;
       const unchanged = this._computeSignature(light, shadow, scene, record);
       if (unchanged && !forced) {
@@ -16097,6 +16417,7 @@ var WebGLShadowMap = class {
       if (stateReady === false) {
         stateReady = true;
         previousTarget = renderer.getRenderTarget();
+        previousFace = renderer.getActiveCubeFace();
         state.setDepthTest(true);
         state.setDepthMask(true);
         state.setScissorTest(false);
@@ -16105,6 +16426,11 @@ var WebGLShadowMap = class {
         savedLastNoted = renderer._lastNotedRenderOrder;
         renderer._renderOrders = this._renderOrders;
         renderer._renderOrderList = this._renderOrderList;
+      }
+      if (isPoint) {
+        this._renderPointFaces(light, shadow, scene);
+        shadow.needsUpdate = false;
+        continue;
       }
       _frustum.copy(shadow.getFrustum());
       renderer.setRenderTarget(shadow.map);
@@ -16131,8 +16457,91 @@ var WebGLShadowMap = class {
       renderer._renderOrders = savedOrders;
       renderer._renderOrderList = savedOrderList;
       renderer._lastNotedRenderOrder = savedLastNoted;
-      renderer.setRenderTarget(previousTarget);
+      renderer.setRenderTarget(previousTarget, previousFace);
     }
+  }
+  /** Creates (or recreates after a size / shadow map type change) the cube depth map of a point light. */
+  _ensurePointMap(light, shadow, record) {
+    const size = shadow.mapSize.x;
+    const basic = this.type === BasicShadowMap;
+    let map = shadow.map;
+    if (map !== null && (map.width !== size || record.basic !== basic)) {
+      if (map.depthTexture !== null) map.depthTexture.dispose();
+      map.dispose();
+      map = shadow.map = null;
+    }
+    if (map === null) {
+      map = new WebGLCubeRenderTarget(size, { depthOnly: true });
+      const depthTexture = new CubeDepthTexture(size, UnsignedIntType);
+      depthTexture.name = light.name + ".shadowMap";
+      if (basic === false) {
+        depthTexture.compareFunction = LessEqualStencilFunc;
+        depthTexture.minFilter = LinearFilter;
+        depthTexture.magFilter = LinearFilter;
+      }
+      map.depthTexture = depthTexture;
+      shadow.map = map;
+      record.basic = basic;
+      shadow.camera.updateProjectionMatrix();
+    }
+  }
+  /** Points the shared shadow camera along cube face `face` (three.js WebGLShadowMap, point light branch). */
+  _poseFace(light, shadow, face) {
+    const camera = shadow.camera;
+    const far = light.distance || camera.far;
+    if (far !== camera.far) {
+      camera.far = far;
+      camera.updateProjectionMatrix();
+    }
+    _lightPositionWorld.setFromMatrixPosition(light.matrixWorld);
+    camera.position.copy(_lightPositionWorld);
+    _lookTarget.copy(camera.position);
+    _lookTarget.add(_cubeDirections[face]);
+    camera.up.copy(_cubeUps[face]);
+    camera.lookAt(_lookTarget);
+    camera.updateMatrixWorld();
+    shadow.matrix.makeTranslation(-_lightPositionWorld.x, -_lightPositionWorld.y, -_lightPositionWorld.z);
+    _projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    shadow._frustum.setFromProjectionMatrix(_projScreenMatrix, camera.coordinateSystem, camera.reversedDepth);
+  }
+  /** Renders the six faces of a point light's cube depth map. Casters are gathered once and culled per face. */
+  _renderPointFaces(light, shadow, scene) {
+    const renderer = this.renderer, state = renderer.state;
+    const size = shadow.map.width;
+    const camera = shadow.camera;
+    const casters = this._casters;
+    casters.length = 0;
+    this._gather(scene, camera, casters);
+    let list = this.lists.get(light);
+    if (list === void 0) {
+      list = new WebGLRenderList();
+      this.lists.set(light, list);
+    }
+    for (let face = 0; face < 6; face++) {
+      this._poseFace(light, shadow, face);
+      _frustum.copy(shadow.getFrustum());
+      renderer.setRenderTarget(shadow.map, face);
+      renderer.clear(false, true, false);
+      state.viewport(0, 0, size, size);
+      list.init();
+      renderer._renderOrderReset();
+      for (let i = 0, n = casters.length; i < n; i++) {
+        const object = casters[i];
+        if (object.frustumCulled === false || renderer._cullTest(object, object.geometry, _frustum, true)) this._pushCaster(object, list);
+      }
+      if (list.count === 0) continue;
+      renderer._resolvePrograms(list, scene);
+      list.finish(true, renderer._rankOfRenderOrder);
+      renderer._uploadFrameBlock(camera, scene);
+      renderer._drawList(list, list.opaqueSorted, list.opaqueCount, scene, camera, true);
+      renderer._drawList(list, list.transparentSorted, list.transparentCount, scene, camera, true);
+    }
+  }
+  _gather(object, shadowCamera, out) {
+    if (object.visible === false) return;
+    if (object.castShadow && (object.isMesh || object.isLine || object.isPoints) && object.layers.test(shadowCamera.layers)) out.push(object);
+    const children = object.children;
+    for (let i = 0, l = children.length; i < l; i++) this._gather(children[i], shadowCamera, out);
   }
   /**
    * Walks the casters (no culling, no list building) and records everything the depth map depends on: the shadow
@@ -16306,24 +16715,26 @@ var WebGLShadowMap = class {
     const renderer = this.renderer;
     const visible = object.layers.test(shadowCamera.layers);
     if (visible && (object.isMesh || object.isLine || object.isPoints)) {
-      if (object.castShadow && (object.frustumCulled === false || renderer._cullTest(object, object.geometry, _frustum, true))) {
-        const geometry = object.geometry;
-        const material = object.material;
-        list.zScratch[0] = 0;
-        if (Array.isArray(material)) {
-          const groups = geometry.groups;
-          for (let k = 0, kl = groups.length; k < kl; k++) {
-            const group = groups[k];
-            const groupMaterial = material[group.materialIndex];
-            if (groupMaterial && groupMaterial.visible) renderer._pushItem(list, object, geometry, groupMaterial, group, true);
-          }
-        } else if (material.visible) {
-          renderer._pushItem(list, object, geometry, material, null, true);
-        }
-      }
+      if (object.castShadow && (object.frustumCulled === false || renderer._cullTest(object, object.geometry, _frustum, true))) this._pushCaster(object, list);
     }
     const children = object.children;
     for (let i = 0, l = children.length; i < l; i++) this._collect(children[i], shadowCamera, list);
+  }
+  _pushCaster(object, list) {
+    const renderer = this.renderer;
+    const geometry = object.geometry;
+    const material = object.material;
+    list.zScratch[0] = 0;
+    if (Array.isArray(material)) {
+      const groups = geometry.groups;
+      for (let k = 0, kl = groups.length; k < kl; k++) {
+        const group = groups[k];
+        const groupMaterial = material[group.materialIndex];
+        if (groupMaterial && groupMaterial.visible) renderer._pushItem(list, object, geometry, groupMaterial, group, true);
+      }
+    } else if (material.visible) {
+      renderer._pushItem(list, object, geometry, material, null, true);
+    }
   }
   /** Bind shadow depth textures to their fixed units for the main pass. */
   bindShadowMaps(lights) {
@@ -16336,11 +16747,15 @@ var WebGLShadowMap = class {
       const map = lights.spot[i].shadow.map;
       if (map) renderer.textures.setTexture2D(map.depthTexture, TEXTURE_UNITS.spotShadowMap0 + i);
     }
+    for (let i = 0; i < lights.numPointShadows; i++) {
+      const map = lights.point[i].shadow.map;
+      if (map) renderer.textures.setTextureCube(map.depthTexture, pointShadowUnit(i, lights.numDirShadows, lights.numSpotShadows));
+    }
   }
 };
 
 // src/renderers/WebGLRenderer.js
-var _projScreenMatrix = /* @__PURE__ */ new Matrix4();
+var _projScreenMatrix2 = /* @__PURE__ */ new Matrix4();
 var _color2 = /* @__PURE__ */ new Color();
 var _frustum2 = /* @__PURE__ */ new Frustum();
 var _emptyScene = { fog: null, environment: null, background: null, overrideMaterial: null, isScene: true, matrixWorldAutoUpdate: false, children: [], visible: true };
@@ -16408,6 +16823,7 @@ var WebGLRenderer = class {
     this._clearColor = new Color(0);
     this._clearAlpha = alpha ? 0 : 1;
     this._currentRenderTarget = null;
+    this._activeCubeFace = 0;
     this._renderCallDepth = 0;
     this._frameId = 0;
     this._cameraLayerMask = 1;
@@ -16704,17 +17120,19 @@ var WebGLRenderer = class {
     return this._currentRenderTarget;
   }
   getActiveCubeFace() {
-    return 0;
+    return this._activeCubeFace;
   }
   getActiveMipmapLevel() {
     return 0;
   }
-  setRenderTarget(renderTarget) {
+  setRenderTarget(renderTarget, activeCubeFace = 0) {
     this._currentRenderTarget = renderTarget;
+    this._activeCubeFace = activeCubeFace;
     const state = this.state;
     if (renderTarget !== null) {
       const framebuffer = this.textures.setupRenderTarget(renderTarget);
       state.bindFramebuffer(framebuffer);
+      if (renderTarget.isWebGLCubeRenderTarget === true) this.textures.attachCubeFace(renderTarget, activeCubeFace);
       this._currentViewport.copy(renderTarget.viewport);
       this._currentScissor.copy(renderTarget.scissor);
       state.setScissorTest(renderTarget.scissorTest);
@@ -16754,7 +17172,7 @@ var WebGLRenderer = class {
     targetScene.traverse((o) => {
       if (o.isLight) this.lights.push(o);
     });
-    this.lights.end(this.shadowMap.enabled);
+    this.lights.end(this.shadowMap.enabled, this.shadowMap.type !== VSMShadowMap);
     this.lights.fill();
     scene.traverse((o) => {
       if ((o.isMesh || o.isLine || o.isPoints || o.isSprite) && o.material) {
@@ -16798,15 +17216,15 @@ var WebGLRenderer = class {
     this._traceSeq = this._traceUniforms !== null ? [] : null;
     this._traceList = "o";
     this._updateEnv(scene);
-    _projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-    _frustum2.setFromProjectionMatrix(_projScreenMatrix, camera.coordinateSystem, camera.reversedDepth);
+    _projScreenMatrix2.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    _frustum2.setFromProjectionMatrix(_projScreenMatrix2, camera.coordinateSystem, camera.reversedDepth);
     const list = this.renderLists.get(scene, this._renderCallDepth - 1);
     list.init();
     this.lights.begin();
     this._renderOrderReset();
     this._cameraLayerMask = camera.layers.mask;
     this._projectObject(scene, camera, 0, this.sortObjects, list);
-    this.lights.end(this.shadowMap.enabled);
+    this.lights.end(this.shadowMap.enabled, this.shadowMap.type !== VSMShadowMap);
     if (this.lights.version !== this._lastLightsVersion) {
       this._lastLightsVersion = this.lights.version;
       this._lightsEpoch++;
@@ -16907,7 +17325,8 @@ var WebGLRenderer = class {
       csId = this._colorSpaceIds.size;
       this._colorSpaceIds.set(cs, csId);
     }
-    const key = ((this.toneMapping * 64 + csId) * 2 + (this.shadowMap.enabled ? 1 : 0)) * 3 + fog;
+    const shadowKind = this.shadowMap.enabled ? this.shadowMap.type === BasicShadowMap ? 2 : this.shadowMap.type === VSMShadowMap ? 3 : 1 : 0;
+    const key = ((this.toneMapping * 64 + csId) * 4 + shadowKind) * 3 + fog;
     let id = this._envKeyIds.get(key);
     if (id === void 0) {
       id = this._envKeyIds.size % 65536;
@@ -16925,8 +17344,8 @@ var WebGLRenderer = class {
       d[i] = pe[i];
       d[16 + i] = ve[i];
     }
-    _projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-    const pse = _projScreenMatrix.elements;
+    _projScreenMatrix2.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    const pse = _projScreenMatrix2.elements;
     for (let i = 0; i < 16; i++) d[32 + i] = pse[i];
     const we = camera.matrixWorld.elements;
     d[48] = we[12];
@@ -20258,21 +20677,6 @@ var DataArrayTexture = class extends Texture {
   }
 };
 
-// src/textures/CubeTexture.js
-var CubeTexture = class extends Texture {
-  constructor(images = [], mapping = CubeReflectionMapping, wrapS, wrapT, magFilter, minFilter, format, type, anisotropy, colorSpace) {
-    super(images, mapping, wrapS, wrapT, magFilter, minFilter, format, type, anisotropy, colorSpace);
-    this.isCubeTexture = true;
-    this.flipY = false;
-  }
-  get images() {
-    return this.image;
-  }
-  set images(value) {
-    this.image = value;
-  }
-};
-
 // src/geometries/internal.js
 function allocIndex(indexCount, vertexCount) {
   return vertexCount - 1 >= 65535 ? new Uint32Array(indexCount) : new Uint16Array(indexCount);
@@ -23325,9 +23729,9 @@ var Light = class extends Object3D {
 };
 
 // src/lights/LightShadow.js
-var _projScreenMatrix2 = /* @__PURE__ */ new Matrix4();
-var _lightPositionWorld = /* @__PURE__ */ new Vector3();
-var _lookTarget = /* @__PURE__ */ new Vector3();
+var _projScreenMatrix3 = /* @__PURE__ */ new Matrix4();
+var _lightPositionWorld2 = /* @__PURE__ */ new Vector3();
+var _lookTarget2 = /* @__PURE__ */ new Vector3();
 var LightShadow = class {
   constructor(camera) {
     this.camera = camera;
@@ -23356,15 +23760,18 @@ var LightShadow = class {
   }
   updateMatrices(light) {
     const shadowCamera = this.camera, shadowMatrix = this.matrix;
-    _lightPositionWorld.setFromMatrixPosition(light.matrixWorld);
-    shadowCamera.position.copy(_lightPositionWorld);
-    _lookTarget.setFromMatrixPosition(light.target.matrixWorld);
-    shadowCamera.lookAt(_lookTarget);
+    _lightPositionWorld2.setFromMatrixPosition(light.matrixWorld);
+    shadowCamera.position.copy(_lightPositionWorld2);
+    _lookTarget2.setFromMatrixPosition(light.target.matrixWorld);
+    shadowCamera.lookAt(_lookTarget2);
     shadowCamera.updateMatrixWorld();
-    _projScreenMatrix2.multiplyMatrices(shadowCamera.projectionMatrix, shadowCamera.matrixWorldInverse);
-    this._frustum.setFromProjectionMatrix(_projScreenMatrix2, shadowCamera.coordinateSystem, shadowCamera.reversedDepth);
+    _projScreenMatrix3.multiplyMatrices(shadowCamera.projectionMatrix, shadowCamera.matrixWorldInverse);
+    this._frustum.setFromProjectionMatrix(_projScreenMatrix3, shadowCamera.coordinateSystem, shadowCamera.reversedDepth);
     shadowMatrix.set(0.5, 0, 0, 0.5, 0, 0.5, 0, 0.5, 0, 0, 0.5, 0.5, 0, 0, 0, 1);
-    shadowMatrix.multiply(_projScreenMatrix2);
+    shadowMatrix.multiply(_projScreenMatrix3);
+  }
+  getCamera() {
+    return this.camera;
   }
   getViewport(viewportIndex) {
     return this._viewports[viewportIndex];
@@ -23641,15 +24048,6 @@ var PointLightShadow = class extends LightShadow {
   constructor() {
     super(new PerspectiveCamera(90, 1, 0.5, 500));
     this.isPointLightShadow = true;
-  }
-  updateMatrices(light) {
-    const camera = this.camera;
-    const far = light.distance || camera.far;
-    if (far !== camera.far) {
-      camera.far = far;
-      camera.updateProjectionMatrix();
-    }
-    super.updateMatrices(light);
   }
 };
 
@@ -24504,6 +24902,7 @@ export {
   ConstantAlphaFactor,
   ConstantColorFactor,
   Controls,
+  CubeDepthTexture,
   CubeReflectionMapping,
   CubeRefractionMapping,
   CubeTexture,
@@ -24736,6 +25135,7 @@ export {
   Vector3,
   Vector4,
   WebGLCoordinateSystem,
+  WebGLCubeRenderTarget,
   WebGLRenderTarget,
   WebGLRenderer,
   WebGPUCoordinateSystem,

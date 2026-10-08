@@ -1,8 +1,8 @@
 import {
 	MATERIAL_BASIC, MATERIAL_LAMBERT, MATERIAL_PHONG, MATERIAL_STANDARD, MATERIAL_NORMAL, MATERIAL_DEPTH, MATERIAL_LINE, MATERIAL_POINTS,
-	MATERIAL_SPRITE, MATERIAL_SHADER, MATERIAL_SHADOW_DEPTH, TEXTURE_UNITS, buildBuiltinShader, buildCustomShader
+	MATERIAL_SPRITE, MATERIAL_SHADER, MATERIAL_SHADOW_DEPTH, TEXTURE_UNITS, pointShadowUnit, buildBuiltinShader, buildCustomShader
 } from '../shaders/ShaderLib.js';
-import { DoubleSide, NoToneMapping, SRGBColorSpace } from '../../constants.js';
+import { DoubleSide, NoToneMapping, SRGBColorSpace, BasicShadowMap } from '../../constants.js';
 
 export const BLOCK_FRAME = 0;
 export const BLOCK_LIGHTS = 1;
@@ -104,6 +104,15 @@ class WebGLProgram {
 			u.isShadowSampler = u.type === gl.SAMPLER_2D_SHADOW || u.type === gl.SAMPLER_CUBE_SHADOW || u.type === gl.SAMPLER_2D_ARRAY_SHADOW;
 			u.boundStamp = -1;
 			let unit;
+			if (!isCustom && name === 'pointShadowMap') {
+				// point shadow cube maps take the units left free by the directional and spot shadow maps
+				const units = new Int32Array(u.size);
+				for (let k = 0; k < u.size; k++) units[k] = pointShadowUnit(k, parameters.numDirShadows | 0, parameters.numSpotShadows | 0);
+				u.unit = units[0]; u.units = units;
+				gl.uniform1iv(u.location, units);
+				this.samplerUniforms.push(u);
+				continue;
+			}
 			if (!isCustom && (TEXTURE_UNITS[name] !== undefined || TEXTURE_UNITS[name + '0'] !== undefined)) {
 				unit = u.size > 1 ? TEXTURE_UNITS[name + '0'] : TEXTURE_UNITS[name];
 			} else {
@@ -208,6 +217,8 @@ class WebGLPrograms {
 		const receiveShadow = variant.receiveShadow && isLit && renderer.shadowMap.enabled;
 		const numDirShadows = receiveShadow ? lights.numDirShadows : 0;
 		const numSpotShadows = receiveShadow ? lights.numSpotShadows : 0;
+		const numPointShadows = receiveShadow ? lights.numPointShadows : 0;
+		const pointShadowBasic = numPointShadows > 0 && renderer.shadowMap.type === BasicShadowMap;
 		const toneMapping = (material.toneMapped && renderer.toneMapping !== NoToneMapping && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH && materialType !== MATERIAL_NORMAL) ? renderer.toneMapping : NoToneMapping;
 		const currentRenderTarget = renderer.getRenderTarget();
 		const sRGBOutput = (currentRenderTarget === null ? renderer.outputColorSpace : currentRenderTarget.texture.colorSpace) === SRGBColorSpace && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH && materialType !== MATERIAL_NORMAL;
@@ -234,7 +245,7 @@ class WebGLPrograms {
 			toneMapped: toneMapping !== NoToneMapping,
 			toneMapping,
 			sRGBOutput,
-			numDirShadows, numSpotShadows,
+			numDirShadows, numSpotShadows, numPointShadows, pointShadowBasic,
 		};
 		let key = materialType;
 		key = key * 2 + (map ? 1 : 0); key = key * 2 + (alphaMap ? 1 : 0); key = key * 2 + (emissiveMap ? 1 : 0); key = key * 2 + (normalMap ? 1 : 0);
@@ -244,6 +255,7 @@ class WebGLPrograms {
 		key = key * 2 + (fog ? 1 : 0); key = key * 2 + (p.alphaTest ? 1 : 0); key = key * 2 + (p.sizeAttenuation ? 1 : 0); key = key * 2 + (p.premultipliedAlpha ? 1 : 0);
 		key = key * 2 + (p.dithering ? 1 : 0); key = key * 2 + (hasUv1 ? 1 : 0); key = key * 8 + toneMapping; key = key * 2 + (sRGBOutput ? 1 : 0);
 		key = key * 8 + numDirShadows; key = key * 8 + numSpotShadows; key = key * 2 + (p.multiDraw ? 1 : 0); key = key * 2 + (p.objectTexture ? 1 : 0); key = key * 2 + (leanShadow ? 1 : 0);
+		key = key * 8 + numPointShadows; key = key * 2 + (pointShadowBasic ? 1 : 0);
 		p.key = key;
 		return p;
 	}

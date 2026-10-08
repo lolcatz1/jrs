@@ -1,6 +1,7 @@
 export * from './constants.js';
 export { WebGLRenderer } from './renderers/WebGLRenderer.js';
 export { WebGLRenderTarget } from './renderers/WebGLRenderTarget.js';
+export { WebGLCubeRenderTarget } from './renderers/WebGLCubeRenderTarget.js';
 export { ShaderLib } from './renderers/shaders/ThreeShaderLib.js';
 export { ShaderChunk } from './renderers/shaders/ShaderChunk.js';
 export { UniformsLib } from './renderers/shaders/UniformsLib.js';
@@ -20,6 +21,7 @@ export { Texture } from './textures/Texture.js';
 export { CanvasTexture } from './textures/CanvasTexture.js';
 export { DataTexture } from './textures/DataTexture.js';
 export { DepthTexture } from './textures/DepthTexture.js';
+export { CubeDepthTexture } from './textures/CubeDepthTexture.js';
 export { Data3DTexture } from './textures/Data3DTexture.js';
 export { DataArrayTexture } from './textures/DataArrayTexture.js';
 export { CubeTexture } from './textures/CubeTexture.js';

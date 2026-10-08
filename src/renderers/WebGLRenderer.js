@@ -1,5 +1,5 @@
 import {
-	REVISION, NoToneMapping, SRGBColorSpace, LinearSRGBColorSpace, PCFShadowMap, FrontSide, BackSide, DoubleSide,
+	REVISION, NoToneMapping, SRGBColorSpace, LinearSRGBColorSpace, PCFShadowMap, BasicShadowMap, VSMShadowMap, FrontSide, BackSide, DoubleSide,
 	UnsignedByteType, RGBAFormat
 } from '../constants.js';
 import { Color } from '../math/Color.js';
@@ -105,6 +105,7 @@ class WebGLRenderer {
 		this._clearColor = new Color(0x000000);
 		this._clearAlpha = alpha ? 0 : 1;
 		this._currentRenderTarget = null;
+		this._activeCubeFace = 0;
 		this._renderCallDepth = 0;
 		this._frameId = 0;
 		this._cameraLayerMask = 1;
@@ -305,14 +306,16 @@ class WebGLRenderer {
 		if (this._animationLoop !== null) this._requestId = requestAnimationFrame(this._onAnimationFrame);
 	}
 	getRenderTarget() { return this._currentRenderTarget; }
-	getActiveCubeFace() { return 0; }
+	getActiveCubeFace() { return this._activeCubeFace; }
 	getActiveMipmapLevel() { return 0; }
-	setRenderTarget(renderTarget) {
+	setRenderTarget(renderTarget, activeCubeFace = 0) {
 		this._currentRenderTarget = renderTarget;
+		this._activeCubeFace = activeCubeFace;
 		const state = this.state;
 		if (renderTarget !== null) {
 			const framebuffer = this.textures.setupRenderTarget(renderTarget);
 			state.bindFramebuffer(framebuffer);
+			if (renderTarget.isWebGLCubeRenderTarget === true) this.textures.attachCubeFace(renderTarget, activeCubeFace);
 			this._currentViewport.copy(renderTarget.viewport);
 			this._currentScissor.copy(renderTarget.scissor);
 			state.setScissorTest(renderTarget.scissorTest);
@@ -341,7 +344,7 @@ class WebGLRenderer {
 		this._updateEnv(targetScene);
 		this.lights.begin();
 		targetScene.traverse((o) => { if (o.isLight) this.lights.push(o); });
-		this.lights.end(this.shadowMap.enabled);
+		this.lights.end(this.shadowMap.enabled, this.shadowMap.type !== VSMShadowMap);
 		this.lights.fill();
 		scene.traverse((o) => {
 			if ((o.isMesh || o.isLine || o.isPoints || o.isSprite) && o.material) {
@@ -386,7 +389,7 @@ class WebGLRenderer {
 		this._renderOrderReset();
 		this._cameraLayerMask = camera.layers.mask;
 		this._projectObject(scene, camera, 0, this.sortObjects, list);
-		this.lights.end(this.shadowMap.enabled);
+		this.lights.end(this.shadowMap.enabled, this.shadowMap.type !== VSMShadowMap);
 		if (this.lights.version !== this._lastLightsVersion) { this._lastLightsVersion = this.lights.version; this._lightsEpoch++; this._envVersion = this._lightsEpoch * 65536 + this._envKeyId; }
 		this._resolvePrograms(list, scene);
 
@@ -478,7 +481,8 @@ class WebGLRenderer {
 		const fog = scene.fog === null ? 0 : (scene.fog.isFogExp2 ? 2 : 1);
 		let csId = this._colorSpaceIds.get(cs);
 		if (csId === undefined) { csId = this._colorSpaceIds.size; this._colorSpaceIds.set(cs, csId); }
-		const key = ((this.toneMapping * 64 + csId) * 2 + (this.shadowMap.enabled ? 1 : 0)) * 3 + fog;
+		const shadowKind = this.shadowMap.enabled ? (this.shadowMap.type === BasicShadowMap ? 2 : (this.shadowMap.type === VSMShadowMap ? 3 : 1)) : 0;
+		const key = ((this.toneMapping * 64 + csId) * 4 + shadowKind) * 3 + fog;
 		let id = this._envKeyIds.get(key);
 		if (id === undefined) { id = this._envKeyIds.size % 65536; this._envKeyIds.set(key, id); }
 		if (id !== this._envKeyId) { this._envKeyId = id; this._envVersion = this._lightsEpoch * 65536 + id; }

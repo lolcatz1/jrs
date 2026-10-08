@@ -81,6 +81,7 @@ class WebGLBatcher {
 		}
 		if (this.texCount === 0) return;
 		if (this.textureHash === this.texHash && this.textureCount === this.texCount) return;
+		state.activeTexture(unit); // bindTexture above is a no-op on a state-cache hit and does not activate the unit; texImage2D targets the active one
 		gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
 		gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
 		gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, MATRIX_TEXTURE_WIDTH, rows, 0, gl.RGBA, gl.FLOAT, this.texData, 0);
