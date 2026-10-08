@@ -6,3 +6,4 @@ bench/results/full-run.log
 
 # raw CDP profiles from bench/profile-cpu.mjs (large; summaries are committed as JSON)
 bench/results/swarm/profiles/*.cpuprofile
+bench/results/swarm/chain.log
