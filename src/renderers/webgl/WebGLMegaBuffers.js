@@ -29,6 +29,9 @@ const NO_HOOK = BufferAttribute.prototype.onUploadCallback;
 
 const PAGE_VERTICES = 1 << 18; // 262,144 vertices per page per layout
 const PAGE_INDEX_RATIO = 4;
+// A page whose geometries are all gone is deleted after this many frames (a level swap that reallocates within the
+// grace period reuses it; a scene torn down for good gives the GPU memory back).
+const EMPTY_PAGE_GRACE_FRAMES = 30;
 const MAX_STAGE_BYTES = 1 << 20; // longest run merged into one upload
 // A geometry that keeps changing is drawn from its own buffers instead of a page: measured on ANGLE/SwiftShader,
 // per-frame bufferSubData into a shared page buffer stalls the main thread for ~1 s every few hundred frames
@@ -88,6 +91,7 @@ class Page {
 		this.bufferIds = {};
 		this.indexBufferId = ++bufferIdCounter;
 		this.vao = gl.createVertexArray();
+		this.emptySince = -1;
 		gl.bindVertexArray(this.vao);
 		for (const a of layout.attributes) {
 			const buffer = gl.createBuffer();
@@ -108,6 +112,7 @@ class Page {
 		gl.bindVertexArray(null);
 		gl.bindBuffer(gl.ARRAY_BUFFER, null);
 	}
+	isEmpty() { const v = this.vertexAlloc, i = this.indexAlloc; return v.starts.length === 1 && v.sizes[0] === this.capacity && i.starts.length === 1 && i.sizes[0] === this.indexCapacity; }
 	dispose() {
 		const gl = this.gl;
 		gl.deleteVertexArray(this.vao);
@@ -126,6 +131,7 @@ class WebGLMegaBuffers {
 		this.state = state;
 		this.info = info;
 		this.maxAttributes = gl.getParameter(gl.MAX_VERTEX_ATTRIBS);
+		this.pages = []; // every live page of every layout, for the per-frame reclaim sweep
 		this.layouts = new Map(); // signature -> { signature, attributes:[{name,itemSize,glType,bytes,normalized,location}], indexed, pages: [] }
 		this.records = new WeakMap(); // geometry -> allocation record (page === null: not eligible for this layout version)
 		this._onGeometryDispose = this._onGeometryDispose.bind(this);
@@ -258,7 +264,7 @@ class WebGLMegaBuffers {
 		if (page === null) {
 			const cap = Math.max(PAGE_VERTICES, vertexCount), icap = Math.max(PAGE_VERTICES * PAGE_INDEX_RATIO, indexCount);
 			page = new Page(this.gl, layout, cap, icap);
-			layout.pages.push(page);
+			layout.pages.push(page); this.pages.push(page);
 			this.state.currentVAO = null; // Page constructor rebinds VAO
 			this.state.currentArrayBuffer = null;
 			baseVertex = page.vertexAlloc.alloc(vertexCount);
@@ -401,9 +407,26 @@ class WebGLMegaBuffers {
 		return pos + bytes;
 	}
 
+	/** Once per frame (outermost render call): deletes pages that have held no geometry for EMPTY_PAGE_GRACE_FRAMES frames. */
+	sweep(frame) {
+		const pages = this.pages;
+		for (let i = pages.length - 1; i >= 0; i--) {
+			const page = pages[i];
+			if (!page.isEmpty()) { page.emptySince = -1; continue; }
+			if (page.emptySince < 0) { page.emptySince = frame; continue; }
+			if (frame - page.emptySince < EMPTY_PAGE_GRACE_FRAMES) continue;
+			const list = page.layout.pages, at = list.indexOf(page);
+			if (at !== -1) list.splice(at, 1);
+			pages.splice(i, 1);
+			page.dispose();
+			if (this.state.currentVAO !== null) { this.gl.bindVertexArray(null); this.state.currentVAO = null; }
+			this.state.currentArrayBuffer = null;
+		}
+	}
+
 	dispose() {
 		for (const layout of this.layouts.values()) for (const p of layout.pages) p.dispose();
-		this.layouts.clear();
+		this.layouts.clear(); this.pages.length = 0;
 		this.records = new WeakMap();
 		this._segs.length = 0; this._notify.length = 0; this._idxStageN = 0;
 	}
