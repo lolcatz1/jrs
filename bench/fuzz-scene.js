@@ -42,10 +42,10 @@ export const FEATURES = {
 	// off by default: known differences, see bench/results/swarm/parity-fuzzer.md
 	shaderFog: 'ShaderMaterial with fog: true (three fog chunks)',
 	agx: 'AgX tone mapping (not implemented in jrs)',
-	points: 'Points objects (point size rasterisation)',
-	lines: 'Line / LineSegments objects',
+	points: 'Points objects (PointsMaterial, size / sizeAttenuation, vertex colours; hidden on overrideMaterial frames)',
+	lines: 'Line / LineSegments objects (LineBasicMaterial, vertex colours)',
 };
-export const DEFAULT_OFF = ['agx', 'shaderFog', 'points', 'lines'];
+export const DEFAULT_OFF = ['agx', 'shaderFog'];
 
 export function defaultFeatures() {
 	const f = {};
@@ -706,11 +706,13 @@ export function buildFuzzScene(T, seed, features = defaultFeatures(), opts = {})
 		}
 	}
 
-	// ---------- points / lines (off by default) ----------
+	// ---------- points / lines ----------
+	let pointsObject = null;
 	if (features.points && rng.chance(0.5)) {
 		const g = rng.pick(geometries);
 		const pm = new T.PointsMaterial({ color: randomColor(), size: rng.range(2, 8), sizeAttenuation: rng.chance(0.5), vertexColors: !!g.attributes.color });
 		const pts = new T.Points(g, pm); pts.position.set(rng.range(-3, 3), rng.range(-2, 2), rng.range(-3, 3)); scene.add(pts); note('Points');
+		pointsObject = pts;
 	}
 	if (features.lines && rng.chance(0.5)) {
 		const g = rng.pick(geometries);
@@ -820,6 +822,9 @@ export function buildFuzzScene(T, seed, features = defaultFeatures(), opts = {})
 			renderer.setRenderTarget(null);
 		}
 		scene.overrideMaterial = overrideFrames && overrideFrames[f] >= 0 ? overrideMaterials[overrideFrames[f]] : null;
+		// a mesh material never writes gl_PointSize, so points under an overrideMaterial have an undefined size in
+		// GLSL ES (three.js renders them differently from run to run): hide them on override frames
+		if (pointsObject !== null) pointsObject.visible = scene.overrideMaterial === null;
 		renderer.render(scene, camera);
 	};
 	const dispose = (renderer) => {
