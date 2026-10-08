@@ -469,7 +469,9 @@ export function buildFuzzScene(T, seed, features = defaultFeatures(), opts = {})
 		if (features.maps && textures.length) {
 			// with perMapTransform every extra map is an independent texture (own transform); without it every
 			// extra map is the same texture object as the first map
-			const extra = () => (features.perMapTransform || !params.map) ? rng.pick(textures) : (rng(), params.map);
+			const isRt = (t) => renderTarget !== null && t === renderTarget.texture;
+			// independent extra maps never sample a render target (its content differs slightly between the libraries, and alpha tests / emissive amplify that)
+			const extra = () => { if (!(features.perMapTransform || !params.map)) { rng(); return params.map; } const t = rng.pick(textures); return isRt(t) ? (textures.find((u) => !isRt(u)) || t) : t; };
 			if (rng.chance(0.2)) params.alphaMap = extra();
 			if ((kind === 'lambert' || kind === 'phong' || kind === 'standard') && rng.chance(0.25)) { params.emissive = randomColor(); params.emissiveIntensity = rng.range(0.1, 1); if (rng.chance(0.5)) params.emissiveMap = extra(); }
 			if (kind === 'phong' && rng.chance(0.3)) params.specularMap = extra();

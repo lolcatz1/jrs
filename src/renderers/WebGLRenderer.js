@@ -217,7 +217,7 @@ class WebGLRenderer {
 		this._lightsBuffer = gl.createBuffer();
 		gl.bindBuffer(gl.UNIFORM_BUFFER, this._lightsBuffer);
 		gl.bufferData(gl.UNIFORM_BUFFER, LIGHTS_BLOCK_SIZE, gl.DYNAMIC_DRAW);
-		this._materialStride = Math.max(MATERIAL_BLOCK_SIZE, this.state.uboAlignment);
+		this._materialStride = Math.ceil(MATERIAL_BLOCK_SIZE / this.state.uboAlignment) * this.state.uboAlignment; // bindBufferRange offsets must be multiples of the alignment
 		// Material-index batching binds a window of `_materialWindow` consecutive material records as one
 		// block; the window must fit MAX_UNIFORM_BLOCK_SIZE (16 KB on some mobile GPUs -> 64 records of
 		// 256 B) and is capped so the shader's array stays small. Records are padded to the buffer stride.

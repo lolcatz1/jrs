@@ -21980,7 +21980,7 @@ var WebGLRenderer = class {
     this._lightsBuffer = gl.createBuffer();
     gl.bindBuffer(gl.UNIFORM_BUFFER, this._lightsBuffer);
     gl.bufferData(gl.UNIFORM_BUFFER, LIGHTS_BLOCK_SIZE, gl.DYNAMIC_DRAW);
-    this._materialStride = Math.max(MATERIAL_BLOCK_SIZE, this.state.uboAlignment);
+    this._materialStride = Math.ceil(MATERIAL_BLOCK_SIZE / this.state.uboAlignment) * this.state.uboAlignment;
     this._materialWindow = Math.max(1, Math.min(256, Math.floor(gl.getParameter(gl.MAX_UNIFORM_BLOCK_SIZE) / this._materialStride)));
     this._materialPad = (this._materialStride - MATERIAL_BLOCK_SIZE) / 16;
     this._materialArrayOk = probeMaterialArray(gl);
