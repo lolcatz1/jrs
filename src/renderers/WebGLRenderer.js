@@ -161,6 +161,10 @@ class WebGLRenderer {
 
 		// uniform buffers
 		this._frameData = new Float32Array(FRAME_BLOCK_SIZE / 4);
+		// copies of what the GPU buffers currently hold: an unchanged block is not re-uploaded
+		this._frameUploaded = new Float32Array(FRAME_BLOCK_SIZE / 4);
+		this._lightsUploaded = new Float32Array(LIGHTS_BLOCK_SIZE / 4);
+		this._blocksValid = false;
 		this._frameBuffer = gl.createBuffer();
 		gl.bindBuffer(gl.UNIFORM_BUFFER, this._frameBuffer);
 		gl.bufferData(gl.UNIFORM_BUFFER, FRAME_BLOCK_SIZE, gl.DYNAMIC_DRAW);
@@ -284,7 +288,7 @@ class WebGLRenderer {
 		this.setAnimationLoop(null);
 	}
 	_onContextLost(event) { event.preventDefault(); this._isContextLost = true; }
-	_onContextRestore() { this._isContextLost = false; this.state.reset(); this.programs.dispose(); this._materialProperties = new WeakMap(); }
+	_onContextRestore() { this._isContextLost = false; this._blocksValid = false; this.state.reset(); this.programs.dispose(); this._materialProperties = new WeakMap(); }
 	setAnimationLoop(callback) {
 		this._animationLoop = callback;
 		if (this._requestId !== null) { cancelAnimationFrame(this._requestId); this._requestId = null; }
@@ -386,10 +390,14 @@ class WebGLRenderer {
 
 		// per-frame blocks (light data is filled after the shadow pass so shadow matrices are current)
 		this.lights.fill();
-		gl.bindBuffer(gl.UNIFORM_BUFFER, this._lightsBuffer);
-		gl.bufferSubData(gl.UNIFORM_BUFFER, 0, this.lights.data);
-		this.state.currentUniformBuffer = this._lightsBuffer;
+		if (!this._blocksValid || !sameFloats(this.lights.data, this._lightsUploaded)) {
+			this._lightsUploaded.set(this.lights.data);
+			gl.bindBuffer(gl.UNIFORM_BUFFER, this._lightsBuffer);
+			gl.bufferSubData(gl.UNIFORM_BUFFER, 0, this.lights.data);
+			this.state.currentUniformBuffer = this._lightsBuffer;
+		}
 		this._uploadFrameBlock(camera, scene);
+		this._blocksValid = true;
 		this.shadowMap.bindShadowMaps(this.lights);
 
 		list.finish(this.sortObjects, this._rankOfRenderOrder);
@@ -473,6 +481,8 @@ class WebGLRenderer {
 		d[59] = this.toneMappingExposure;
 		const v = this._currentViewport;
 		d[60] = v.x; d[61] = v.y; d[62] = v.z; d[63] = v.w;
+		if (this._blocksValid && sameFloats(d, this._frameUploaded)) return;
+		this._frameUploaded.set(d);
 		gl.bindBuffer(gl.UNIFORM_BUFFER, this._frameBuffer);
 		gl.bufferSubData(gl.UNIFORM_BUFFER, 0, d);
 		this.state.currentUniformBuffer = this._frameBuffer;
@@ -1167,6 +1177,12 @@ function bindTextureUniform(renderer, u, value, unit) {
 	else renderer.textures.setTexture2D(value, unit);
 }
 /** True if `u.cache` already holds these components; otherwise stores them. */
+/** Bitwise-equal compare of two same-length float images (NaN-safe: a NaN never equals, so it just re-uploads). */
+function sameFloats(a, b) {
+	for (let i = 0, n = a.length; i < n; i++) if (a[i] !== b[i]) return false;
+	return true;
+}
+
 function cacheVec(u, a, b, c, d) {
 	let k = u.cache;
 	if (k === undefined) { k = u.cache = new Float64Array(4); k[0] = NaN; }
