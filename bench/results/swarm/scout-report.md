@@ -37,8 +37,10 @@ Two `npm run bench` runs are in `baseline-bench-1.txt` / `baseline-bench-2.txt`.
 2. **The one-to-two-second stalls are GPU-process stalls.** Every multi-hundred-ms frame in every
    run, for both libraries, is a single native GL call that did not return (12–15 s inside
    `uniformMatrix4fv` / `texSubImage2D` / `drawElementsInstanced` happened in the profiled runs). JS
-   heap did not move during them (heap delta 0 KB, no GC). They cluster in the first ~20 frames after a
-   pause (JIT/first-use work in the GPU process) and recur sporadically. Section 6 has the trace.
+   heap did not move during them (heap delta 0 KB, no GC). The traces in section 6 show the GPU process
+   draining a queue of frames at a sync point (the headless compositor's swap readback, a texture staging
+   flush, a shared-image destroy): the faster the JS side, the longer the queue and the longer the drain,
+   which is why jrs sees them more than three.
 3. **Noise.** Medians move 10–20 % between runs on this box (the GPU process steals cores from the
    renderer unpredictably). Treat < 15 % as noise, not 5 %. The profiler itself (50 µs sampling) makes
    frames ~1.5–1.8x slower; phase *shares* are what to read, scaled onto the unprofiled "draws stubbed"
