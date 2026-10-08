@@ -21,6 +21,7 @@ class RenderListCache {
 		this.sortObjects = true; this.override = null;
 		this.layers = 0; this.coordinateSystem = 0; this.reversedDepth = false;
 		this.view = new Float32Array(16); this.pv = new Float32Array(16);
+		this.itemZ = null;           // Float64Array: depth of each item index as of the last build / re-cull
 		this.resort = false;         // set by a camera-only reuse when a transparent depth changed
 
 		this.resetDeps();
