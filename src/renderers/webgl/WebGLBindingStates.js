@@ -124,8 +124,9 @@ class WebGLBindingStates {
 			}
 		}
 		// remember the validated state for the fast path
-		const list = [];
-		for (const name in geometryAttributes) list.push(geometryAttributes[name]);
+		const list = entry.attrList !== null ? entry.attrList : [];
+		list.length = 0;
+		for (const name in geometryAttributes) { const a = geometryAttributes[name]; list.push(a.isInterleavedBufferAttribute === true ? a.data : a); } // owners of `version`
 		let sum = 0;
 		for (let i = 0; i < list.length; i++) sum += list[i].version;
 		if (geometry.index !== null) sum += geometry.index.version;
@@ -190,10 +191,12 @@ class WebGLBindingStates {
 		gl.bindBuffer(gl.ARRAY_BUFFER, data.buffer);
 		gl.enableVertexAttribArray(location);
 		const integer = data.type === gl.INT || data.type === gl.UNSIGNED_INT || attribute.gpuType === 1013;
+		let stride = 0, offset = 0;
+		if (attribute.isInterleavedBufferAttribute === true) { stride = attribute.data.stride * data.bytesPerElement; offset = attribute.offset * data.bytesPerElement; }
 		if (integer && data.type !== gl.FLOAT && !attribute.normalized) {
-			gl.vertexAttribIPointer(location, attribute.itemSize, data.type, 0, 0);
+			gl.vertexAttribIPointer(location, attribute.itemSize, data.type, stride, offset);
 		} else {
-			gl.vertexAttribPointer(location, attribute.itemSize, data.type, attribute.normalized, 0, 0);
+			gl.vertexAttribPointer(location, attribute.itemSize, data.type, attribute.normalized, stride, offset);
 		}
 	}
 

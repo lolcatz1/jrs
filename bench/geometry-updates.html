@@ -1,0 +1,26 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>jrs geometry updates</title></head>
+<body style="margin:0;background:#222">
+<script type="module">
+import * as JRS from '/src/index.js';
+import * as THREE from '/node_modules/three/build/three.module.js';
+import { runGeometryUpdateCase } from '/bench/geometry-updates-case.js';
+
+// Runs the same scripted sequence of dynamic-geometry operations with both libraries and compares
+// the rendered pixels and the observable API state (updateRanges, onUpload counts, version) after every step.
+window.runGeometryUpdates = () => {
+	const out = {};
+	for (const [name, T] of [['jrs', JRS], ['three', THREE]]) out[name] = runGeometryUpdateCase(T);
+	const steps = [];
+	for (let i = 0; i < out.three.steps.length; i++) {
+		const a = out.jrs.steps[i], b = out.three.steps[i];
+		let maxDiff = 0, differing = 0;
+		for (let k = 0; k < a.px.length; k++) { const d = Math.abs(a.px[k] - b.px[k]); if (d > maxDiff) maxDiff = d; if (d) differing++; }
+		const apiSame = JSON.stringify(a.api) === JSON.stringify(b.api);
+		steps.push({ name: b.name, maxDiff, differing, apiSame, jrsApi: a.api, threeApi: b.api, painted: b.painted });
+	}
+	return { steps, jrsErrors: out.jrs.glErrors, threeErrors: out.three.glErrors };
+};
+window.ready = true;
+</script>
+</body></html>

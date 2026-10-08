@@ -15,6 +15,7 @@ class InterleavedBuffer {
 		this.usage = StaticDrawUsage;
 		this.updateRanges = [];
 		this.version = 0;
+		this._uploadSeq = 0;
 		this.uuid = generateUUID();
 	}
 	onUploadCallback() {}

@@ -861,6 +861,7 @@ class WebGLRenderer {
 					const it = list.itemFromKey(keys[k]);
 					batcher.addTex(it.object);
 					const rec = it.mdRecord;
+					this.megaBuffers.queue(rec, it.geometry);
 					if (rec.indexed) { this._mdCounts[mdN] = rec.indexCount; this._mdOffsets[mdN] = rec.byteOffset; }
 					else { this._mdCounts[mdN] = rec.vertexCount; this._mdOffsets[mdN] = rec.baseVertex; }
 					mdN++;
@@ -881,6 +882,7 @@ class WebGLRenderer {
 			i = j;
 		}
 		if (batcher.texCount > 0) batcher.uploadTexture(this.state, TEXTURE_UNITS.objectMatrices);
+		if (multi) this.megaBuffers.flush();
 		for (let c = 0; c < cmdN; c++) {
 			const item = this._cmdItem[c];
 			const kind = this._cmdKind[c];
