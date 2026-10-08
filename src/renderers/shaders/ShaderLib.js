@@ -69,7 +69,7 @@ layout(std140) uniform Lights {
 	SpotLight spotLights[${MAX_SPOT_LIGHTS}];
 	HemiLight hemiLights[${MAX_HEMI_LIGHTS}];
 	mat4 dirShadowMatrix[${MAX_DIR_LIGHTS}];
-	vec4 dirShadowParams[${MAX_DIR_LIGHTS}];   // bias, normalBias, radius, 1/mapSize
+	vec4 dirShadowParams[${MAX_DIR_LIGHTS}];   // bias, normalBias, radius / mapSize.x, intensity
 	mat4 spotShadowMatrix[${MAX_SPOT_LIGHTS}];
 	vec4 spotShadowParams[${MAX_SPOT_LIGHTS}];
 };
@@ -95,6 +95,7 @@ export const MATERIAL_BLOCK_SIZE = 16 * 8;
 
 const common = /* glsl */`
 #define PI 3.141592653589793
+#define PI2 6.283185307179586
 #define RECIPROCAL_PI 0.3183098861837907
 #define EPSILON 1e-6
 float pow2( const in float x ) { return x*x; }
@@ -219,6 +220,9 @@ void main() {
 		#else
 		vNormal = normalize( normalMatrix * normal );
 		#endif
+		#ifdef FLIP_SIDED
+		vNormal = - vNormal;
+		#endif
 	#endif
 	#ifdef USE_UV
 	vUv = ( mat3( uvTransform0.xyz, uvTransform1.xyz, uvTransform2.xyz ) * vec3( uv, 1.0 ) ).xy;
@@ -334,25 +338,35 @@ uniform sampler2DShadow spotShadowMap[ NUM_SPOT_SHADOWS ];
 out vec4 fragColor;
 
 #if NUM_DIR_SHADOWS > 0 || NUM_SPOT_SHADOWS > 0
-float sampleShadow( sampler2DShadow shadowMap, vec4 coord, vec4 params ) {
-	vec3 c = coord.xyz / coord.w;
-	c.z -= params.x;
-	bvec4 inFrustumVec = bvec4( c.x >= 0.0, c.x <= 1.0, c.y >= 0.0, c.y <= 1.0 );
-	bool inFrustum = all( inFrustumVec );
-	bvec2 frustumTestVec = bvec2( inFrustum, c.z <= 1.0 );
-	if ( ! all( frustumTestVec ) ) return 1.0;
-	float texel = params.w * params.z;
-	float shadow = 0.0;
-	shadow += texture( shadowMap, c + vec3( - texel, - texel, 0.0 ) );
-	shadow += texture( shadowMap, c + vec3( 0.0, - texel, 0.0 ) );
-	shadow += texture( shadowMap, c + vec3( texel, - texel, 0.0 ) );
-	shadow += texture( shadowMap, c + vec3( - texel, 0.0, 0.0 ) );
-	shadow += texture( shadowMap, c );
-	shadow += texture( shadowMap, c + vec3( texel, 0.0, 0.0 ) );
-	shadow += texture( shadowMap, c + vec3( - texel, texel, 0.0 ) );
-	shadow += texture( shadowMap, c + vec3( 0.0, texel, 0.0 ) );
-	shadow += texture( shadowMap, c + vec3( texel, texel, 0.0 ) );
-	return shadow / 9.0;
+// three.js r186 PCF shadows (shadowmap_pars_fragment): hardware-compared taps on a Vogel disk rotated per
+// pixel by interleaved gradient noise. params = ( bias, normalBias, radius / mapSize.x, intensity ).
+float interleavedGradientNoise( vec2 position ) {
+	return fract( 52.9829189 * fract( dot( position, vec2( 0.06711056, 0.00583715 ) ) ) );
+}
+vec2 vogelDiskSample( int sampleIndex, int samplesCount, float phi ) {
+	const float goldenAngle = 2.399963229728653;
+	float r = sqrt( ( float( sampleIndex ) + 0.5 ) / float( samplesCount ) );
+	float theta = float( sampleIndex ) * goldenAngle + phi;
+	return vec2( cos( theta ), sin( theta ) ) * r;
+}
+float sampleShadow( sampler2DShadow shadowMap, vec4 shadowCoord, vec4 params ) {
+	float shadow = 1.0;
+	shadowCoord.xyz /= shadowCoord.w;
+	shadowCoord.z += params.x;
+	bool inFrustum = shadowCoord.x >= 0.0 && shadowCoord.x <= 1.0 && shadowCoord.y >= 0.0 && shadowCoord.y <= 1.0;
+	bool frustumTest = inFrustum && shadowCoord.z <= 1.0;
+	if ( frustumTest ) {
+		float radius = params.z;
+		float phi = interleavedGradientNoise( gl_FragCoord.xy ) * PI2;
+		shadow = (
+			texture( shadowMap, vec3( shadowCoord.xy + vogelDiskSample( 0, 5, phi ) * radius, shadowCoord.z ) ) +
+			texture( shadowMap, vec3( shadowCoord.xy + vogelDiskSample( 1, 5, phi ) * radius, shadowCoord.z ) ) +
+			texture( shadowMap, vec3( shadowCoord.xy + vogelDiskSample( 2, 5, phi ) * radius, shadowCoord.z ) ) +
+			texture( shadowMap, vec3( shadowCoord.xy + vogelDiskSample( 3, 5, phi ) * radius, shadowCoord.z ) ) +
+			texture( shadowMap, vec3( shadowCoord.xy + vogelDiskSample( 4, 5, phi ) * radius, shadowCoord.z ) )
+		) * 0.2;
+	}
+	return mix( 1.0, shadow, params.w );
 }
 #endif
 
@@ -786,6 +800,7 @@ export function buildBuiltinShader(p) {
 	if (p.multiDraw) d('USE_MULTIDRAW');
 	if (p.flatShading) d('FLAT_SHADED');
 	if (p.doubleSided) d('DOUBLE_SIDED');
+	if (p.flipSided) d('FLIP_SIDED');
 	if (p.fog) d('USE_FOG');
 	if (p.alphaTest) d('USE_ALPHATEST');
 	if (p.sizeAttenuation) d('SIZE_ATTENUATION');
@@ -894,6 +909,7 @@ export function buildCustomShader(material, p) {
 			p.vertexUv1s ? '#define USE_UV1' : '',
 			p.flatShading ? '#define FLAT_SHADED' : '',
 			p.doubleSided ? '#define DOUBLE_SIDED' : '',
+			p.flipSided ? '#define FLIP_SIDED' : '',
 			p.sizeAttenuation ? '#define USE_SIZEATTENUATION' : '',
 			'uniform mat4 modelMatrix;',
 			'uniform mat4 modelViewMatrix;',
@@ -941,6 +957,7 @@ export function buildCustomShader(material, p) {
 			p.vertexUv1s ? '#define USE_UV1' : '',
 			p.flatShading ? '#define FLAT_SHADED' : '',
 			p.doubleSided ? '#define DOUBLE_SIDED' : '',
+			p.flipSided ? '#define FLIP_SIDED' : '',
 			p.premultipliedAlpha ? '#define PREMULTIPLIED_ALPHA' : '',
 			'uniform mat4 viewMatrix;',
 			'uniform vec3 cameraPosition;',

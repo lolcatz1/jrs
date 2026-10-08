@@ -84,7 +84,7 @@ class WebGLLights {
 				const me = shadow.matrix.elements;
 				for (let k2 = 0; k2 < 16; k2++) d[mo + k2] = me[k2];
 				const po = (OFF_DIR_SHADOW_PARAMS + i * 16) / 4;
-				d[po] = shadow.bias; d[po + 1] = shadow.normalBias; d[po + 2] = shadow.radius; d[po + 3] = 1 / shadow.mapSize.x;
+				d[po] = shadow.bias; d[po + 1] = shadow.normalBias; d[po + 2] = shadow.radius / shadow.mapSize.x; d[po + 3] = shadow.intensity;
 			}
 		}
 		for (let i = 0; i < this.point.length; i++) {
@@ -111,7 +111,7 @@ class WebGLLights {
 				const me = shadow.matrix.elements;
 				for (let k2 = 0; k2 < 16; k2++) d[mo + k2] = me[k2];
 				const po = (OFF_SPOT_SHADOW_PARAMS + i * 16) / 4;
-				d[po] = shadow.bias; d[po + 1] = shadow.normalBias; d[po + 2] = shadow.radius; d[po + 3] = 1 / shadow.mapSize.x;
+				d[po] = shadow.bias; d[po + 1] = shadow.normalBias; d[po + 2] = shadow.radius / shadow.mapSize.x; d[po + 3] = shadow.intensity;
 			}
 		}
 		for (let i = 0; i < this.hemi.length; i++) {

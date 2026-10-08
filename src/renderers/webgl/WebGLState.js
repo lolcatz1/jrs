@@ -123,13 +123,15 @@ class WebGLState {
 						case NormalBlending: gl.blendFuncSeparate(gl.ONE, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA); break;
 						case AdditiveBlending: gl.blendFunc(gl.ONE, gl.ONE); break;
 						case SubtractiveBlending: gl.blendFuncSeparate(gl.ZERO, gl.ONE_MINUS_SRC_COLOR, gl.ZERO, gl.ONE); break;
-						case MultiplyBlending: gl.blendFuncSeparate(gl.ZERO, gl.SRC_COLOR, gl.ZERO, gl.SRC_ALPHA); break;
+						case MultiplyBlending: gl.blendFuncSeparate(gl.DST_COLOR, gl.ONE_MINUS_SRC_ALPHA, gl.ZERO, gl.ONE); break;
 						default: console.error('WebGLState: Invalid blending: ', blending);
 					}
 				} else {
 					switch (blending) {
 						case NormalBlending: gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA); break;
-						case AdditiveBlending: gl.blendFunc(gl.SRC_ALPHA, gl.ONE); break;
+						case AdditiveBlending: gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE, gl.ONE, gl.ONE); break;
+						// three.js only logs an error for Subtractive/Multiply without premultipliedAlpha (and keeps the
+						// previous blend function); jrs applies the documented non-premultiplied equivalents instead
 						case SubtractiveBlending: gl.blendFuncSeparate(gl.ZERO, gl.ONE_MINUS_SRC_COLOR, gl.ZERO, gl.ONE); break;
 						case MultiplyBlending: gl.blendFunc(gl.ZERO, gl.SRC_COLOR); break;
 						default: console.error('WebGLState: Invalid blending: ', blending);

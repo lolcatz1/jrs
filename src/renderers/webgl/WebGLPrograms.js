@@ -2,7 +2,7 @@ import {
 	MATERIAL_BASIC, MATERIAL_LAMBERT, MATERIAL_PHONG, MATERIAL_STANDARD, MATERIAL_NORMAL, MATERIAL_DEPTH, MATERIAL_LINE, MATERIAL_POINTS,
 	MATERIAL_SPRITE, MATERIAL_SHADER, MATERIAL_SHADOW_DEPTH, TEXTURE_UNITS, buildBuiltinShader, buildCustomShader
 } from '../shaders/ShaderLib.js';
-import { DoubleSide, NoToneMapping, SRGBColorSpace } from '../../constants.js';
+import { DoubleSide, BackSide, NoToneMapping, SRGBColorSpace } from '../../constants.js';
 
 export const BLOCK_FRAME = 0;
 export const BLOCK_LIGHTS = 1;
@@ -221,6 +221,7 @@ class WebGLPrograms {
 			multiDraw: variant.multiDraw === true,
 			flatShading: isLit && material.flatShading === true,
 			doubleSided: material.side === DoubleSide,
+			flipSided: material.side === BackSide,
 			fog, fogExp2: fog && scene.fog.isFogExp2 === true,
 			alphaTest: material.alphaTest > 0,
 			sizeAttenuation: (materialType === MATERIAL_POINTS || materialType === MATERIAL_SPRITE) && material.sizeAttenuation === true,
@@ -236,7 +237,7 @@ class WebGLPrograms {
 		key = key * 2 + (map ? 1 : 0); key = key * 2 + (alphaMap ? 1 : 0); key = key * 2 + (emissiveMap ? 1 : 0); key = key * 2 + (normalMap ? 1 : 0);
 		key = key * 2 + (roughnessMap ? 1 : 0); key = key * 2 + (metalnessMap ? 1 : 0); key = key * 2 + (aoMap ? 1 : 0); key = key * 2 + (specularMap ? 1 : 0);
 		key = key * 2 + (useUv ? 1 : 0); key = key * 2 + (useUv1 ? 1 : 0); key = key * 2 + (vertexColors ? 1 : 0); key = key * 2 + (p.vertexAlphas ? 1 : 0);
-		key = key * 2 + (p.instancing ? 1 : 0); key = key * 2 + (p.instancingColor ? 1 : 0); key = key * 2 + (p.flatShading ? 1 : 0); key = key * 2 + (p.doubleSided ? 1 : 0);
+		key = key * 2 + (p.instancing ? 1 : 0); key = key * 2 + (p.instancingColor ? 1 : 0); key = key * 2 + (p.flatShading ? 1 : 0); key = key * 2 + (p.doubleSided ? 1 : 0); key = key * 2 + (p.flipSided ? 1 : 0);
 		key = key * 2 + (fog ? 1 : 0); key = key * 2 + (p.alphaTest ? 1 : 0); key = key * 2 + (p.sizeAttenuation ? 1 : 0); key = key * 2 + (p.premultipliedAlpha ? 1 : 0);
 		key = key * 2 + (p.dithering ? 1 : 0); key = key * 2 + (hasUv1 ? 1 : 0); key = key * 8 + toneMapping; key = key * 2 + (sRGBOutput ? 1 : 0);
 		key = key * 8 + numDirShadows; key = key * 8 + numSpotShadows; key = key * 2 + (p.multiDraw ? 1 : 0); key = key * 2 + (p.objectTexture ? 1 : 0);

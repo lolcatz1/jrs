@@ -91,7 +91,7 @@ window.runFuzz = async function (seed, opts = {}) {
 	for (let f = 0; f < frames; f++) {
 		const r = comparePixels(A.pixels[f], B.pixels[f], width, height);
 		r.frame = f;
-		r.pass = withinTolerance(r);
+		r.pass = withinTolerance(r, opts.tolerance || TOLERANCE);
 		result.frames.push(r);
 		if (!r.pass && result.firstBad < 0) {
 			result.firstBad = f; result.failure = 'pixels';

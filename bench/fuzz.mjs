@@ -9,6 +9,8 @@
 //   node bench/fuzz.mjs --enable=shaderFog,agx --disable=shadows
 //   node bench/fuzz.mjs --only=standard,lights   (everything else off)
 //   node bench/fuzz.mjs --selfcheck          render each library against ITSELF (determinism check)
+//   node bench/fuzz.mjs --strict             no allowance for isolated edge pixels (default: 8 per frame)
+//   node bench/fuzz.mjs --bad-pixels=N       allowance for pixels over maxDiff before a frame fails
 //   node bench/fuzz.mjs --frames=10 --size=320x240 --list-features
 //
 // Tolerances are those of bench/results/latest.json: a frame fails when maxDiff > 33 or
@@ -20,6 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { startServer } from './serve.mjs';
 import { launchBrowser } from './browser.mjs';
 import { FEATURES, DEFAULT_OFF, defaultFeatures } from './fuzz-scene.js';
+import { TOLERANCE } from './pixel-compare.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
@@ -42,6 +45,7 @@ const keepGoing = flag('continue');
 const selfcheck = flag('selfcheck');
 const quiet = flag('quiet');
 const pagesEvery = Number(opt('fresh-page-every', 20));
+const tolerance = { ...TOLERANCE, badPixels: flag('strict') ? 0 : Number(opt('bad-pixels', TOLERANCE.badPixels)) };
 
 const features = defaultFeatures();
 const only = opt('only', null);
@@ -68,7 +72,7 @@ async function getPage() {
 }
 const savePng = (file, dataUrl) => fs.writeFileSync(file, Buffer.from(dataUrl.split(',')[1], 'base64'));
 
-console.log(`fuzz: seeds ${start}..${start + count - 1}, ${frames} frames each, ${width}x${height}, tolerance maxDiff>33 or meanAbsDiff>0.4${offList.length ? `, features off: ${offList.join(', ')}` : ''}${selfcheck ? ' [SELF-CHECK: each library vs itself]' : ''}`);
+console.log(`fuzz: seeds ${start}..${start + count - 1}, ${frames} frames each, ${width}x${height}, tolerance meanAbsDiff>${tolerance.meanAbsDiff} or maxDiff>${tolerance.maxDiff} on more than ${tolerance.badPixels} pixels${offList.length ? `, features off: ${offList.join(', ')}` : ''}${selfcheck ? ' [SELF-CHECK: each library vs itself]' : ''}`);
 const failures = [];
 const summary = { date: new Date().toISOString(), start, count, frames, width, height, featuresOff: offList, seeds: [] };
 const t0 = Date.now();
@@ -79,16 +83,16 @@ for (let i = 0; i < count; i++) {
 	const runs = selfcheck ? [['three', 'three'], ['jrs', 'jrs']] : [['three', 'jrs']];
 	for (const libs of runs) {
 		const p = await getPage();
-		const r = await p.evaluate(([seed, o]) => window.runFuzz(seed, o), [seed, { frames, width, height, features, libs, images: single !== null, allFrames: single !== null }]);
+		const r = await p.evaluate(([seed, o]) => window.runFuzz(seed, o), [seed, { frames, width, height, features, libs, tolerance, images: single !== null, allFrames: single !== null }]);
 		const label = selfcheck ? `${libs[0]} vs ${libs[0]}` : 'three vs jrs';
-		const worst = r.frames.reduce((w, f) => (f.maxDiff > w.maxDiff || (f.maxDiff === w.maxDiff && f.meanAbsDiff > w.meanAbsDiff)) ? f : w, { maxDiff: -1, meanAbsDiff: -1, frame: -1 });
+		const worst = r.frames.reduce((w, f) => (f.meanAbsDiff > w.meanAbsDiff || (f.meanAbsDiff === w.meanAbsDiff && f.pixelsOverMax > w.pixelsOverMax)) ? f : w, { maxDiff: -1, meanAbsDiff: -1, pixelsOverMax: -1, frame: -1 });
 		if (worst.meanAbsDiff > worstMean) { worstMean = worst.meanAbsDiff; worstMeanSeed = seed; }
 		if (worst.maxDiff > worstMax) { worstMax = worst.maxDiff; worstMaxSeed = seed; }
 		const row = { seed, libs, firstBad: r.firstBad, failure: r.failure || null, worstFrame: worst.frame, worstMaxDiff: worst.maxDiff, worstMeanAbsDiff: worst.meanAbsDiff, drawCalls: r.drawCalls, notes: r.notes, errors: r.errors, glErrors: r.glErrors };
 		summary.seeds.push(row);
 		const ok = r.firstBad < 0;
 		if (!quiet || !ok) {
-			const stats = r.frames.length ? `worst frame ${worst.frame}: maxDiff ${String(worst.maxDiff).padStart(3)} mean ${worst.meanAbsDiff.toFixed(3).padStart(6)}` : 'no frames';
+			const stats = r.frames.length ? `worst frame ${worst.frame}: mean ${worst.meanAbsDiff.toFixed(3).padStart(6)} maxDiff ${String(worst.maxDiff).padStart(3)} on ${String(worst.pixelsOverMax).padStart(5)} px` : 'no frames';
 			console.log(`${ok ? 'ok  ' : 'FAIL'} seed ${String(seed).padStart(6)} ${label.padEnd(14)} ${stats}  draws ${(r.drawCalls.three || r.drawCalls.jrs || [])[0]}->${(r.drawCalls.jrs || [])[0]}  ${r.notes.join('; ')}`);
 		}
 		if (Object.keys(r.glErrors).length) console.log(`      GL errors: ${JSON.stringify(r.glErrors)}`);
@@ -99,7 +103,7 @@ for (let i = 0; i < count; i++) {
 				fs.writeFileSync(`${base}-error.txt`, JSON.stringify(r.errors, null, 2));
 			} else {
 				const f = r.frames[r.firstBad];
-				console.log(`      frame ${r.firstBad}: maxDiff ${f.maxDiff} meanAbsDiff ${f.meanAbsDiff} fractionOver32 ${f.fractionOver32} differingPixels ${f.differingPixels}` + (f.samples.length ? ' e.g. ' + f.samples.map((s) => `(${s.x},${s.y}) ${libs[0]} ${s.a} ${libs[1]} ${s.b}`).join('; ') : ''));
+				console.log(`      frame ${r.firstBad}: maxDiff ${f.maxDiff} meanAbsDiff ${f.meanAbsDiff} pixelsOverMax ${f.pixelsOverMax} fractionOver32 ${f.fractionOver32} differingPixels ${f.differingPixels}` + (f.samples.length ? ' e.g. ' + f.samples.map((s) => `(${s.x},${s.y}) ${libs[0]} ${s.a} ${libs[1]} ${s.b}`).join('; ') : ''));
 				savePng(`${base}-${libs[0]}.png`, r.images[libs[0]]); savePng(`${base}-${libs[1]}.png`, r.images[libs[1]]); savePng(`${base}-diff.png`, r.images.diff);
 				console.log(`      images: ${path.relative(process.cwd(), base)}-{${libs[0]},${libs[1]},diff}.png`);
 			}

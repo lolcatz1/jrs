@@ -258,7 +258,9 @@ class WebGLRenderer {
 	_applyClearColor() {
 		let a = this._clearAlpha;
 		_color.copy(this._clearColor);
-		ColorManagement.fromWorkingColorSpace(_color, this._currentRenderTarget === null ? this._outputColorSpace : this._currentRenderTarget.texture.colorSpace);
+		// three.js converts clear/background colours to the output colour space only for the canvas; render
+		// targets are cleared with the working-space (linear) value (an sRGB render target encodes in hardware)
+		if (this._currentRenderTarget === null) ColorManagement.fromWorkingColorSpace(_color, this._outputColorSpace);
 		let r = _color.r, g = _color.g, b = _color.b;
 		if (this._premultipliedAlpha) { r *= a; g *= a; b *= a; }
 		this.state.setClearColor(r, g, b, a);
@@ -266,7 +268,7 @@ class WebGLRenderer {
 	clear(color = true, depth = true, stencil = true) {
 		const gl = this._gl;
 		let bits = 0;
-		if (color) bits |= gl.COLOR_BUFFER_BIT;
+		if (color) { bits |= gl.COLOR_BUFFER_BIT; this.state.setColorMask(true); } // a colorWrite=false material may have left the mask off (three.js resets it before clearing)
 		if (depth) { bits |= gl.DEPTH_BUFFER_BIT; this.state.setDepthMask(true); }
 		if (stencil) { bits |= gl.STENCIL_BUFFER_BIT; this.state.setStencilMask(0xffffffff); }
 		gl.clear(bits);
@@ -399,11 +401,12 @@ class WebGLRenderer {
 		const background = scene.background;
 		if (background !== null && background.isColor) {
 			_color.copy(background);
-			ColorManagement.fromWorkingColorSpace(_color, this._currentRenderTarget === null ? this._outputColorSpace : this._currentRenderTarget.texture.colorSpace);
+			if (this._currentRenderTarget === null) ColorManagement.fromWorkingColorSpace(_color, this._outputColorSpace);
 			this.state.setClearColor(_color.r, _color.g, _color.b, 1);
 			if (this.autoClear || this.autoClearColor) this.clear(true, this.autoClearDepth, this.autoClearStencil);
 			this._applyClearColor();
 		} else if (this.autoClear) {
+			this._applyClearColor(); // the conversion depends on the current render target
 			this.clear(this.autoClearColor, this.autoClearDepth, this.autoClearStencil);
 		}
 
@@ -466,7 +469,11 @@ class WebGLRenderer {
 		d[48] = we[12]; d[49] = we[13]; d[50] = we[14]; d[51] = camera.isOrthographicCamera ? 1 : 0;
 		const fog = scene.fog;
 		if (fog !== null && fog !== undefined) {
-			d[52] = fog.color.r; d[53] = fog.color.g; d[54] = fog.color.b; d[55] = fog.isFogExp2 ? 2 : 1;
+			// three.js uploads the fog colour in the "unlit uniform colour space": the output colour space when
+			// rendering to the canvas, the (linear) working colour space when rendering to a render target
+			_color.copy(fog.color);
+			if (this._currentRenderTarget === null) ColorManagement.fromWorkingColorSpace(_color, this._outputColorSpace);
+			d[52] = _color.r; d[53] = _color.g; d[54] = _color.b; d[55] = fog.isFogExp2 ? 2 : 1;
 			d[56] = fog.near !== undefined ? fog.near : 0; d[57] = fog.far !== undefined ? fog.far : 0; d[58] = fog.density !== undefined ? fog.density : 0;
 		} else {
 			d[52] = 0; d[53] = 0; d[54] = 0; d[55] = 0; d[56] = 0; d[57] = 0; d[58] = 0;
@@ -918,11 +925,15 @@ class WebGLRenderer {
 				for (let i = 0, l = position.count; i < l; i += 3) indices.push(i, i + 1, i + 1, i + 2, i + 2, i);
 			}
 			wf.setIndex(indices);
+			wf._isWireframe = true;
 			wf._sourceLayout = geometry._layoutVersion;
 			wf._sourceIndexVersion = index !== null ? index.version : 0;
 			wf.boundingSphere = geometry.boundingSphere;
 			this._wireframeGeometries.set(geometry, wf);
 		}
+		// three.js draws a wireframe over the source draw range scaled by 2 (one line pair per index)
+		const dr = geometry.drawRange;
+		wf.drawRange.start = dr.start * 2; wf.drawRange.count = dr.count === Infinity ? Infinity : dr.count * 2;
 		return wf;
 	}
 
@@ -1016,6 +1027,7 @@ class WebGLRenderer {
 		const index = geometry.index;
 		const drawRange = geometry.drawRange;
 		let drawStart, drawCount;
+		if (group !== null && geometry._isWireframe === true) { _wireGroup.start = group.start * 2; _wireGroup.count = group.count * 2; group = _wireGroup; }
 		if (index !== null) {
 			drawStart = drawRange.start; drawCount = drawRange.count === Infinity ? index.count : drawRange.count;
 			if (group !== null) {
@@ -1109,6 +1121,7 @@ function shadowSideOf(material) {
 	return material.side === FrontSide ? BackSide : (material.side === BackSide ? FrontSide : DoubleSide);
 }
 
+const _wireGroup = { start: 0, count: 0, materialIndex: 0 };
 const MAP_KEYS = ['map', 'alphaMap', 'normalMap', 'emissiveMap', 'roughnessMap', 'metalnessMap', 'aoMap', 'specularMap'];
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 

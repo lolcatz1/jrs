@@ -36,12 +36,13 @@ export const FEATURES = {
 	background: 'scene.background colour / clear colour',
 	toneMapping: 'tone mapping operators and exposure',
 	// off by default: known differences, see bench/results/swarm/parity-fuzzer.md
+	perMapTransform: 'different offset/repeat/rotation per map on one material (jrs applies the first map\'s transform to all)',
 	shaderFog: 'ShaderMaterial with fog: true (three fog chunks)',
 	agx: 'AgX tone mapping (not implemented in jrs)',
 	points: 'Points objects (point size rasterisation)',
 	lines: 'Line / LineSegments objects',
 };
-export const DEFAULT_OFF = ['agx', 'shaderFog', 'points', 'lines'];
+export const DEFAULT_OFF = ['perMapTransform', 'agx', 'shaderFog', 'points', 'lines'];
 
 export function defaultFeatures() {
 	const f = {};
@@ -403,20 +404,31 @@ export function buildFuzzScene(T, seed, features = defaultFeatures(), opts = {})
 				params.blendSrc = rng.pick(factors); params.blendDst = rng.pick(factors); params.blendEquation = rng.pick(equations);
 				if (rng.chance(0.5)) { params.blendSrcAlpha = rng.pick(factors); params.blendDstAlpha = rng.pick(factors); params.blendEquationAlpha = rng.pick(equations); }
 			}
-			if (rng.chance(0.3)) params.premultipliedAlpha = true;
+			// three.js only supports Subtractive/Multiply with premultipliedAlpha (it logs an error and leaves the
+			// previous blend function otherwise), so those modes always come premultiplied here
+			if (rng.chance(0.3) || params.blending === T.SubtractiveBlending || params.blending === T.MultiplyBlending) params.premultipliedAlpha = true;
 			if (features.depthState && rng.chance(0.4)) params.depthWrite = false;
 		} else if (features.transparency && rng.chance(0.08)) {
 			// blending on an opaque material: order-dependent
 			params.blending = rng.pick([T.AdditiveBlending, T.MultiplyBlending]);
+			if (params.blending === T.MultiplyBlending) params.premultipliedAlpha = true;
 			sensitive = true;
 		}
 		if (features.depthState && rng.chance(0.08)) { params.depthTest = false; sensitive = true; }
 		if (features.depthState && !transparent && rng.chance(0.08)) { params.depthWrite = false; sensitive = true; }
 		if (features.flatShading && kind !== 'basic' && kind !== 'shader' && rng.chance(0.3)) params.flatShading = true;
 		if (features.maps && textures.length) {
-			if (rng.chance(0.2)) params.alphaMap = rng.pick(textures);
-			if ((kind === 'lambert' || kind === 'phong' || kind === 'standard') && rng.chance(0.25)) { params.emissive = randomColor(); params.emissiveIntensity = rng.range(0.1, 1); if (rng.chance(0.5)) params.emissiveMap = rng.pick(textures); }
-			if (kind === 'phong' && rng.chance(0.3)) params.specularMap = rng.pick(textures);
+			// jrs has one uv transform per material (the first map's); unless perMapTransform is on, every
+			// extra map on a material is the same texture object as its first map
+			const extra = () => (features.perMapTransform || !params.map) ? rng.pick(textures) : (rng(), params.map);
+			if (rng.chance(0.2)) params.alphaMap = extra();
+			if ((kind === 'lambert' || kind === 'phong' || kind === 'standard') && rng.chance(0.25)) { params.emissive = randomColor(); params.emissiveIntensity = rng.range(0.1, 1); if (rng.chance(0.5)) params.emissiveMap = extra(); }
+			if (kind === 'phong' && rng.chance(0.3)) params.specularMap = extra();
+			if (!params.map && (params.alphaMap || params.emissiveMap || params.specularMap) && !features.perMapTransform) {
+				// no `map`: all extra maps share the first extra map's texture
+				const first = params.alphaMap || params.emissiveMap || params.specularMap;
+				if (params.alphaMap) params.alphaMap = first; if (params.emissiveMap) params.emissiveMap = first; if (params.specularMap) params.specularMap = first;
+			}
 		}
 		if (kind === 'phong') { params.shininess = rng.range(1, 120); params.specular = new T.Color().setHSL(rng(), 0.2, rng.range(0.05, 0.5)); }
 		if (kind === 'standard') { params.roughness = rng.range(0, 1); params.metalness = rng.range(0, 1); }
