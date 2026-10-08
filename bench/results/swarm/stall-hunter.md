@@ -116,12 +116,16 @@ Baseline = original code, this container, same session. "Better of two" medians 
 | shader-client-static | 34.7–37.9 | 23.9 / 21.7 | 23.3 / 37.9 | 619.4 / 655.8 | 631.5 / 731.3 |
 | shadows | 72.9–81.4 | 1.8 / 1.6 | 1.5 / 1.8 | 4.0 / 3.1 | 5.7 / 2.6 |
 
-Medians are unchanged within noise. (The 60-frame bench is too short to catch the multi-second stall reliably
-in either direction; the 300-frame harness table above is the meaningful before/after for the worst frame.)
+Medians are unchanged within noise. Two extra samples of the scenarios whose "better of two" moved most, all
+after the fix: shader-client-static 21.1 and 22.7 ms (it has no batching and swings 21–38 ms run to run),
+unique-geometries 1.3 and 1.4 ms, shared-animated 5.9 and 7.8 ms with worst frames 8.3 and 13.3 ms.
+(The 60-frame bench is too short to catch the multi-second stall reliably in either direction; the 300-frame
+harness table above is the meaningful before/after for the worst frame.)
 
 Pixel comparison after the change (`--compare`) is identical to the committed `bench/results/latest.json`:
 shared-static 0.347 / 8, shared-animated 0.346 / 9, shadows 0.134 / 33, every other scenario 0 / 0.
-`npm test` 100/100, `bench/conformance.mjs` all PASS, `bench/addons.mjs` and `bench/smoke.mjs` run clean (GL error 0).
+`npm test` 100/100, `bench/conformance.mjs` all PASS, `bench/addons.mjs` and `bench/smoke.mjs` exit 0 (GL error 0).
+`build/` bundles were rebuilt with `npm run build` (the only change in them is the batcher).
 The `bench/results/latest.json` reference was left as committed; the README's worst-frame column (2 120 / 1 128 / 1 173 ms
 for the three batched scenes) should be re-measured by the integrator after merging.
 
