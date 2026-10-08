@@ -191,12 +191,42 @@ compare). The main pass samples them through `sampler2DShadow` with 3x3 PCF. Sha
 go through the same sort + batch path as the main pass, so a thousand identical casters
 are one draw call in the shadow pass too.
 
+## 11. Skinning, morph targets and animation (`src/objects/Skeleton.js`, `src/renderers/webgl/WebGLMorphtargets.js`)
+
+The GPU side is three.js r186's: the built-in vertex shader includes the `skinning_*` and
+`morphtarget_*` chunks verbatim (bone matrices in an RGBA32F texture, four texels per bone;
+morph targets in an RGBA32F `DataArrayTexture`, one layer per target, position / normal / colour
+texels per vertex), `skinIndex` / `skinWeight` have fixed attribute locations 6 and 7, and the bone
+and morph textures live on fixed units 16 and 17 (above the 16 fragment units; WebGL2 guarantees
+32 combined). Output is pixel-identical to three.js. `ShaderMaterial` gets the same defines and
+uniforms, so custom shaders that `#include <skinning_pars_vertex>` work unchanged.
+
+What differs is the CPU side:
+
+* `Skeleton.update()` multiplies each bone's slab-resident world matrix with its inverse bind
+  matrix straight into the `boneMatrices` Float32Array (no `Matrix4` temporaries, no `toArray`),
+  and it remembers every bone's `_worldVersion`: when no bone moved the whole step, including
+  the texture upload, is skipped. Idle characters cost a few compares.
+* `SkinnedMesh.bindMatrixInverse` is recomputed only when the world matrix version changed, and
+  the renderer re-sends `bindMatrix` / `bindMatrixInverse` only when their values changed.
+* The bone texture is streamed with `texImage2D` (not `texSubImage2D` into immutable storage),
+  the upload path that does not stall Chromium's command buffer (§ stall-hunter report), and
+  its sampler parameters are set once. Unpack pixel-store state is cached in `WebGLState`.
+* The skeleton is updated once per `render()` call, from the render list build, so a mesh drawn
+  in the shadow pass and the main pass uploads its bones once.
+* Skinned and morphed meshes carry per-object GPU state (bone texture, influences) and are never
+  auto-batched; they go through the per-object path like `ShaderMaterial` meshes do.
+
+The animation system (`src/animation/`) is the three.js r186 code, which already runs without
+per-frame allocation; `AnimationMixer.update` writes into bone `position` / `quaternion` / `scale`
+and the change-detected `updateMatrix` picks it up.
+
 ## What is intentionally not there (yet)
 
 * Environment maps / image-based lighting, `MeshPhysicalMaterial`'s extra layers
   (the class exists; it renders as `MeshStandardMaterial`).
-* Point-light shadows (cube maps), VSM, `Scene.background` textures, skinning,
-  morph targets, clipping planes, WebGL1.
+* Point-light shadows (cube maps), VSM, `Scene.background` textures, `InstancedMesh`
+  morph targets (`morphTexture`), clipping planes, WebGL1.
 * `ShaderMaterial` with `lights: true`: three.js fills light uniforms from the scene in
   view space; here lighting data lives in the `Lights` block, which custom shaders do not
   see. Everything else about `ShaderMaterial` (prefix, chunks, `UniformsLib`, GLSL 1.00
