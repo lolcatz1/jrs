@@ -3938,10 +3938,38 @@ var Euler = class _Euler {
 };
 Euler.DEFAULT_ORDER = "XYZ";
 
+// src/core/epochs.js
+var epochs = { structure: 0, world: 0 };
+function trackRenderProperty(proto, name) {
+  const key = "_" + name;
+  Object.defineProperty(proto, name, {
+    configurable: true,
+    enumerable: true,
+    get() {
+      return this[key];
+    },
+    set(value) {
+      if (value !== this[key]) {
+        this[key] = value;
+        epochs.structure++;
+      }
+    }
+  });
+}
+
 // src/core/Layers.js
 var Layers = class {
   constructor() {
-    this.mask = 1 | 0;
+    this._mask = 1 | 0;
+  }
+  get mask() {
+    return this._mask;
+  }
+  set mask(value) {
+    if (value !== this._mask) {
+      this._mask = value;
+      epochs.structure++;
+    }
   }
   set(channel) {
     this.mask = (1 << channel | 0) >>> 0;
@@ -4124,11 +4152,12 @@ var Object3D = class _Object3D extends EventDispatcher {
     this.matrixWorldAutoUpdate = _Object3D.DEFAULT_MATRIX_WORLD_AUTO_UPDATE;
     this.matrixWorldNeedsUpdate = false;
     this.layers = new Layers();
-    this.visible = true;
+    this._visible = true;
+    this._receiveShadow = false;
+    this._frustumCulled = true;
+    this._renderOrder = 0;
+    this._countsWorld = true;
     this.castShadow = false;
-    this.receiveShadow = false;
-    this.frustumCulled = true;
-    this.renderOrder = 0;
     this.animations = [];
     this.customDepthMaterial = void 0;
     this.customDistanceMaterial = void 0;
@@ -4148,15 +4177,12 @@ var Object3D = class _Object3D extends EventDispatcher {
     if (m !== this._matrixWorld) {
       this._matrixWorld.copy(m);
       this._worldVersion++;
+      if (this._countsWorld) epochs.world++;
     }
   }
   onBeforeShadow() {
   }
   onAfterShadow() {
-  }
-  onBeforeRender() {
-  }
-  onAfterRender() {
   }
   applyMatrix4(matrix) {
     if (this.matrixAutoUpdate) this.updateMatrix();
@@ -4250,6 +4276,7 @@ var Object3D = class _Object3D extends EventDispatcher {
       object.removeFromParent();
       object.parent = this;
       this.children.push(object);
+      epochs.structure++;
       object.matrixWorldNeedsUpdate = true;
       object.dispatchEvent(_addedEvent);
       _childaddedEvent.child = object;
@@ -4269,6 +4296,7 @@ var Object3D = class _Object3D extends EventDispatcher {
     if (index !== -1) {
       object.parent = null;
       this.children.splice(index, 1);
+      epochs.structure++;
       object.dispatchEvent(_removedEvent);
       _childremovedEvent.child = object;
       this.dispatchEvent(_childremovedEvent);
@@ -4295,6 +4323,7 @@ var Object3D = class _Object3D extends EventDispatcher {
     object.removeFromParent();
     object.parent = this;
     this.children.push(object);
+    epochs.structure++;
     object.updateWorldMatrix(false, true);
     object.dispatchEvent(_addedEvent);
     _childaddedEvent.child = object;
@@ -4430,6 +4459,7 @@ var Object3D = class _Object3D extends EventDispatcher {
           this._parentWorldVersion = parent._worldVersion;
         }
         this._worldVersion++;
+        if (this._countsWorld) epochs.world++;
       }
       this.matrixWorldNeedsUpdate = false;
       force = true;
@@ -4453,6 +4483,7 @@ var Object3D = class _Object3D extends EventDispatcher {
           this._parentWorldVersion = parent._worldVersion;
         }
         this._worldVersion++;
+        if (this._countsWorld) epochs.world++;
         changed = true;
       }
       this.matrixWorldNeedsUpdate = false;
@@ -4498,6 +4529,25 @@ var Object3D = class _Object3D extends EventDispatcher {
     return this;
   }
 };
+trackRenderProperty(Object3D.prototype, "visible");
+trackRenderProperty(Object3D.prototype, "renderOrder");
+trackRenderProperty(Object3D.prototype, "frustumCulled");
+trackRenderProperty(Object3D.prototype, "receiveShadow");
+function noopHook() {
+}
+for (const hook of ["onBeforeRender", "onAfterRender"]) {
+  Object.defineProperty(Object3D.prototype, hook, {
+    configurable: true,
+    enumerable: false,
+    get() {
+      return noopHook;
+    },
+    set(fn) {
+      epochs.structure++;
+      Object.defineProperty(this, hook, { value: fn, writable: true, configurable: true, enumerable: true });
+    }
+  });
+}
 Object3D.DEFAULT_UP = /* @__PURE__ */ new Vector3(0, 1, 0);
 Object3D.DEFAULT_MATRIX_AUTO_UPDATE = true;
 Object3D.DEFAULT_MATRIX_WORLD_AUTO_UPDATE = true;
@@ -15059,9 +15109,225 @@ var WebGLPrograms = class {
   }
 };
 
+// src/renderers/webgl/WebGLRenderListCache.js
+var RenderListCache = class {
+  constructor() {
+    this.hasSig = false;
+    this.ready = false;
+    this.structure = -1;
+    this.world = -1;
+    this.sortObjects = true;
+    this.override = null;
+    this.layers = 0;
+    this.coordinateSystem = 0;
+    this.reversedDepth = false;
+    this.view = new Float32Array(16);
+    this.pv = new Float32Array(16);
+    this.itemZ = null;
+    this.resort = false;
+    this.resetDeps();
+    this.cmdOpaque = new CommandCache();
+    this.cmdTransparent = new CommandCache();
+  }
+  resetDeps() {
+    this.reusable = true;
+    this.lights = [];
+    this.cand = [];
+    this.candIn = [];
+    this.candItem = [];
+    this.geomSet = /* @__PURE__ */ new Set();
+    this.geoms = [];
+    this.gLayout = [];
+    this.gBS = [];
+    this.gR = [];
+    this.gCx = [];
+    this.gCy = [];
+    this.gCz = [];
+    this.gIdx = [];
+    this.gRid = [];
+    this.matSet = /* @__PURE__ */ new Set();
+    this.mats = [];
+    this.mFlags = [];
+    this.instSet = /* @__PURE__ */ new Set();
+    this.inst = [];
+    this.iBS = [];
+    this.iR = [];
+    this.iCx = [];
+    this.iCy = [];
+    this.iCz = [];
+    this.iColor = [];
+    this.pairSet = /* @__PURE__ */ new Set();
+    this.pMat = [];
+    this.pVariant = [];
+    this.pObject = [];
+    this.pProgram = [];
+    this.pMatRid = [];
+    this.pProgRid = [];
+    this.pGroup = [];
+    this.pSlot = [];
+    this.renderOrders = [];
+    this.materialCounter = 0;
+    this.geometryCounter = 0;
+    this.programCounter = 0;
+    this.lastGeom = null;
+    this.lastMat = null;
+  }
+  // ---- recording (during a build) -------------------------------------------------------------------------
+  addCandidate(object, inside, itemIndex) {
+    this.cand.push(object);
+    this.candIn.push(inside ? 1 : 0);
+    this.candItem.push(itemIndex);
+  }
+  regGeometry(geometry) {
+    if (geometry === this.lastGeom) return;
+    this.lastGeom = geometry;
+    if (!this.geomSet.has(geometry)) {
+      this.geomSet.add(geometry);
+      this.geoms.push(geometry);
+    }
+  }
+  regMaterial(material) {
+    if (material === this.lastMat) return;
+    this.lastMat = material;
+    if (!this.matSet.has(material)) {
+      this.matSet.add(material);
+      this.mats.push(material);
+    }
+  }
+  regInstanced(object) {
+    if (!this.instSet.has(object)) {
+      this.instSet.add(object);
+      this.inst.push(object);
+    }
+  }
+  regPair(material, variant, object) {
+    const key = material.id * 1024 + variant;
+    if (!this.pairSet.has(key)) {
+      this.pairSet.add(key);
+      this.pMat.push(material);
+      this.pVariant.push(variant);
+      this.pObject.push(object);
+    }
+  }
+  /** Snapshot every recorded dependency (call once the build, including program resolution, is done). */
+  snapshot(frameId) {
+    const geoms = this.geoms;
+    for (let i = 0; i < geoms.length; i++) {
+      const g = geoms[i], bs = g.boundingSphere;
+      this.gLayout.push(g._layoutVersion);
+      this.gBS.push(bs);
+      this.gIdx.push(g.index !== null);
+      if (bs !== null) {
+        this.gR.push(bs.radius);
+        this.gCx.push(bs.center.x);
+        this.gCy.push(bs.center.y);
+        this.gCz.push(bs.center.z);
+      } else {
+        this.gR.push(0);
+        this.gCx.push(0);
+        this.gCy.push(0);
+        this.gCz.push(0);
+      }
+      this.gRid.push(g._frameStamp === frameId ? g._frameRid : -1);
+    }
+    const mats = this.mats;
+    for (let i = 0; i < mats.length; i++) this.mFlags.push(materialFlags(mats[i]));
+    const inst = this.inst;
+    for (let i = 0; i < inst.length; i++) {
+      const o = inst[i], bs = o.boundingSphere;
+      this.iBS.push(bs);
+      this.iColor.push(o.instanceColor !== null);
+      if (bs !== null) {
+        this.iR.push(bs.radius);
+        this.iCx.push(bs.center.x);
+        this.iCy.push(bs.center.y);
+        this.iCz.push(bs.center.z);
+      } else {
+        this.iR.push(0);
+        this.iCx.push(0);
+        this.iCy.push(0);
+        this.iCz.push(0);
+      }
+    }
+  }
+  // ---- validation ---------------------------------------------------------------------------------------
+  /** True while every recorded geometry / material / instanced mesh still has the snapshotted values. */
+  depsValid() {
+    const geoms = this.geoms;
+    for (let i = 0; i < geoms.length; i++) {
+      const g = geoms[i], bs = g.boundingSphere;
+      if (g._layoutVersion !== this.gLayout[i] || bs !== this.gBS[i] || g.index !== null !== this.gIdx[i]) return false;
+      if (bs !== null) {
+        const c = bs.center;
+        if (bs.radius !== this.gR[i] || c.x !== this.gCx[i] || c.y !== this.gCy[i] || c.z !== this.gCz[i]) return false;
+      }
+    }
+    const mats = this.mats;
+    for (let i = 0; i < mats.length; i++) if (materialFlags(mats[i]) !== this.mFlags[i]) return false;
+    const inst = this.inst;
+    for (let i = 0; i < inst.length; i++) {
+      const o = inst[i], bs = o.boundingSphere;
+      if (bs !== this.iBS[i] || o.instanceColor !== null !== this.iColor[i]) return false;
+      if (bs !== null) {
+        const c = bs.center;
+        if (bs.radius !== this.iR[i] || c.x !== this.iCx[i] || c.y !== this.iCy[i] || c.z !== this.iCz[i]) return false;
+      }
+    }
+    return true;
+  }
+  /** Stores the camera the list was built (or re-culled) for. */
+  setCamera(camera, view, pv) {
+    this.view.set(view);
+    this.pv.set(pv);
+    this.layers = camera.layers.mask;
+    this.coordinateSystem = camera.coordinateSystem;
+    this.reversedDepth = camera.reversedDepth === true;
+  }
+  sameCamera(camera, view, pv) {
+    if (this.layers !== camera.layers.mask || this.coordinateSystem !== camera.coordinateSystem || this.reversedDepth !== (camera.reversedDepth === true)) return false;
+    const v = this.view, p = this.pv;
+    for (let i = 0; i < 16; i++) if (v[i] !== view[i] || p[i] !== pv[i]) return false;
+    return true;
+  }
+  sameCameraLayers(camera) {
+    return this.layers === camera.layers.mask && this.coordinateSystem === camera.coordinateSystem && this.reversedDepth === (camera.reversedDepth === true);
+  }
+};
+function materialFlags(m) {
+  return (m.visible ? 1 : 0) | (m.transparent === true ? 2 : 0) | (m.wireframe === true ? 4 : 0) | (m.vertexColors === true ? 8 : 0) | (m.allowOverride === true ? 16 : 0);
+}
+var CommandCache = class {
+  constructor() {
+    this.version = -1;
+    this.cmdN = 0;
+    this.mdN = 0;
+    this.items = null;
+    this.offset = null;
+    this.count = null;
+    this.kind = null;
+    this.mdStart = null;
+    this.mdCounts = null;
+    this.mdOffsets = null;
+    this.texCount = 0;
+    this.texHash = 0;
+    this.megaGeoms = [];
+    this.megaRecs = [];
+    this.megaPages = [];
+    this.syncMats = null;
+    this.autoBatch = false;
+    this.autoMultiDraw = false;
+    this.minimum = 0;
+    this.multi = false;
+  }
+  invalidate() {
+    this.version = -1;
+  }
+};
+
 // src/renderers/webgl/WebGLRenderLists.js
 var INDEX_BITS = 20;
 var INDEX_RANGE = 1 << INDEX_BITS;
+var MAX_LISTS_PER_SLOT = 8;
 var MAX_KEY = 4294967295;
 var scratchCap = 0;
 var keyA = new Uint32Array(0);
@@ -15213,6 +15479,10 @@ var WebGLRenderList = class {
     this.transparentSorted = null;
     this.minDepth = Infinity;
     this.maxDepth = -Infinity;
+    this.opaqueVersion = 0;
+    this.transparentVersion = 0;
+    this.camera = null;
+    this.cache = new RenderListCache();
     this.zScratch = new Float64Array(1);
   }
   init() {
@@ -15277,8 +15547,12 @@ var WebGLRenderList = class {
    * Build keys and sort. `rankOf(renderOrder)` maps a renderOrder value to 0..63.
    */
   finish(sortObjects, rankOf) {
+    const singleRank = rankOf(this.count > 0 ? this.items[0].renderOrder : 0) === 0 && rankOf(Infinity) === 0;
+    this._finishOpaque(sortObjects, rankOf, singleRank);
+    this._finishTransparent(sortObjects, rankOf, singleRank);
+  }
+  _finishOpaque(sortObjects, rankOf, singleRank) {
     const items = this.items;
-    const singleRank = rankOf(this.count > 0 ? items[0].renderOrder : 0) === 0 && rankOf(Infinity) === 0;
     const os = this.opaque, oids = os.ids, ohi = os.hi, on = os.n;
     for (let i = 0; i < on; i++) {
       const item = items[oids[i]];
@@ -15290,6 +15564,10 @@ var WebGLRenderList = class {
       ohi[i] = (((rank * 64 + program) * 1024 + mat) * 2 + indexed) * 512 + geo;
     }
     this.opaqueSorted = os.finish(sortObjects);
+    this.opaqueVersion++;
+  }
+  _finishTransparent(sortObjects, rankOf, singleRank) {
+    const items = this.items;
     const ts = this.transparent, tids = ts.ids, thi = ts.hi, tn = ts.n, td = this.transparentDepth;
     const range = this.maxDepth - this.minDepth;
     const scale = range > 0 ? 67108863 / range : 0;
@@ -15301,6 +15579,25 @@ var WebGLRenderList = class {
       thi[i] = key < 0 ? 0 : key > MAX_KEY ? MAX_KEY : key;
     }
     this.transparentSorted = ts.finish(sortObjects);
+    this.transparentVersion++;
+  }
+  /**
+   * Camera moved but the item set did not: recompute the transparent depth keys from fresh depths (`itemZ[item index]`)
+   * and re-order (the previous order is repaired in place). Identical to what a full rebuild produces.
+   */
+  resortTransparent(sortObjects, rankOf, itemZ) {
+    const ts = this.transparent, tids = ts.ids, tn = ts.n, td = this.transparentDepth;
+    let min = Infinity, max = -Infinity;
+    for (let i = 0; i < tn; i++) {
+      const z = itemZ[tids[i]];
+      td[i] = z;
+      if (z < min) min = z;
+      if (z > max) max = z;
+    }
+    this.minDepth = min;
+    this.maxDepth = max;
+    const singleRank = rankOf(this.count > 0 ? this.items[0].renderOrder : 0) === 0 && rankOf(Infinity) === 0;
+    this._finishTransparent(sortObjects, rankOf, singleRank);
   }
   /** Item for a sorted entry (an item index). */
   itemFromKey(key) {
@@ -15311,18 +15608,23 @@ var WebGLRenderLists = class {
   constructor() {
     this.lists = /* @__PURE__ */ new WeakMap();
   }
-  get(scene, renderCallDepth) {
-    const listArray = this.lists.get(scene);
-    let list;
-    if (listArray === void 0) {
-      list = new WebGLRenderList();
-      this.lists.set(scene, [list]);
-    } else {
-      if (renderCallDepth >= listArray.length) {
-        list = new WebGLRenderList();
-        listArray.push(list);
-      } else list = listArray[renderCallDepth];
+  /** One list per (scene, render call depth, camera) so alternating cameras each keep their own cached list. */
+  get(scene, renderCallDepth, camera = null) {
+    let byDepth = this.lists.get(scene);
+    if (byDepth === void 0) {
+      byDepth = [];
+      this.lists.set(scene, byDepth);
     }
+    let slot = byDepth[renderCallDepth];
+    if (slot === void 0) {
+      slot = [];
+      byDepth[renderCallDepth] = slot;
+    }
+    for (let i = 0; i < slot.length; i++) if (slot[i].camera === camera) return slot[i];
+    const list = new WebGLRenderList();
+    list.camera = camera;
+    if (slot.length >= MAX_LISTS_PER_SLOT) slot.shift();
+    slot.push(list);
     return list;
   }
   dispose() {
@@ -17100,7 +17402,7 @@ var WebGLRenderer = class {
     } = parameters;
     this.isWebGLRenderer = true;
     this.domElement = canvas;
-    this.debug = { checkShaderErrors: true, onShaderError: null, traceUniforms: false, uniformTrace: [] };
+    this.debug = { checkShaderErrors: true, onShaderError: null, traceUniforms: false, uniformTrace: [], verifyListReuse: false, listReuse: { rebuilt: 0, same: 0, cameraOnly: 0, commandsReplayed: 0, mismatches: 0 } };
     this._traceUniforms = null;
     this.autoClear = true;
     this.autoClearColor = true;
@@ -17255,6 +17557,11 @@ var WebGLRenderer = class {
     this._cmdKind = new Int8Array(this._cmdCapacity);
     this._cmdMdStart = new Int32Array(this._cmdCapacity);
     this._cmdN = 0;
+    this.reuseRenderLists = true;
+    this._zTmp = new Float64Array(1);
+    this._rec = null;
+    this._megaTouch = null;
+    this._verifyList = null;
     this._currentProgram = null;
     this._currentMaterial = null;
     this._currentCamera = null;
@@ -17423,6 +17730,7 @@ var WebGLRenderer = class {
     this.programs.dispose();
     this._materialProperties = /* @__PURE__ */ new WeakMap();
     this.shadowMap._epoch++;
+    this.renderLists.dispose();
   }
   setAnimationLoop(callback) {
     this._animationLoop = callback;
@@ -17538,19 +17846,9 @@ var WebGLRenderer = class {
     this._updateEnv(scene);
     _projScreenMatrix2.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     _frustum2.setFromProjectionMatrix(_projScreenMatrix2, camera.coordinateSystem, camera.reversedDepth);
-    const list = this.renderLists.get(scene, this._renderCallDepth - 1);
-    list.init();
-    this.lights.begin();
-    this._renderOrderReset();
-    this._cameraLayerMask = camera.layers.mask;
-    this._projectObject(scene, camera, 0, this.sortObjects, list);
-    this.lights.end(this.shadowMap.enabled, this.shadowMap.type !== VSMShadowMap);
-    if (this.lights.version !== this._lastLightsVersion) {
-      this._lastLightsVersion = this.lights.version;
-      this._lightsEpoch++;
-      this._envVersion = this._lightsEpoch * 65536 + this._envKeyId;
-    }
-    this._resolvePrograms(list, scene);
+    const list = this.renderLists.get(scene, this._renderCallDepth - 1, camera);
+    const cache = list.cache;
+    const level = this._prepareList(list, cache, scene, camera);
     if (this.info.autoReset === true && this._renderCallDepth === 1) {
       this.info.reset();
       this._traceDraws = 0;
@@ -17566,7 +17864,14 @@ var WebGLRenderer = class {
     this._uploadFrameBlock(camera, scene);
     this._blocksValid = true;
     this.shadowMap.bindShadowMaps(this.lights);
-    list.finish(this.sortObjects, this._rankOfRenderOrder);
+    if (level < 0) list.finish(this.sortObjects, this._rankOfRenderOrder);
+    else {
+      if (cache.resort === true) {
+        cache.resort = false;
+        list.resortTransparent(this.sortObjects, this._rankOfRenderOrder, cache.itemZ);
+      }
+      if (this.debug.verifyListReuse === true) this._verifyReuse(list, scene, camera, level);
+    }
     const background = scene.background;
     if (background !== null && background.isColor) {
       _color2.copy(background);
@@ -17578,8 +17883,8 @@ var WebGLRenderer = class {
       this.clear(this.autoClearColor, this.autoClearDepth, this.autoClearStencil);
     }
     if (scene.isScene === true) scene.onBeforeRender(this, scene, camera, this._currentRenderTarget);
-    this._drawList(list, list.opaqueSorted, list.opaqueCount, scene, camera, false);
-    this._drawList(list, list.transparentSorted, list.transparentCount, scene, camera, false);
+    this._drawList(list, list.opaqueSorted, list.opaqueCount, scene, camera, false, cache.ready === true ? cache.cmdOpaque : null, list.opaqueVersion);
+    this._drawList(list, list.transparentSorted, list.transparentCount, scene, camera, false, cache.ready === true ? cache.cmdTransparent : null, list.transparentVersion);
     if (scene.isScene === true) scene.onAfterRender(this, scene, camera);
     if (this._currentRenderTarget !== null) this.textures.updateRenderTargetMipmap(this._currentRenderTarget);
     this.state.bindVertexArray(null);
@@ -17604,6 +17909,206 @@ var WebGLRenderer = class {
     }
     this._renderCallDepth--;
     if (this._renderCallDepth === 0) this.info.render.frame++;
+  }
+  // ------------------------------------------------------------------ render-list reuse
+  /**
+   * Fills `list` for this frame: reuses the previous frame's list when nothing it was built from changed
+   * (level 0), when only the camera moved and no cull result flipped (level 1), else rebuilds it (-1).
+   * Either way the frame's lights, render-order ranks and per-frame ids end up as a rebuild would leave them.
+   */
+  _prepareList(list, cache, scene, camera) {
+    const stats = this.debug.listReuse;
+    this._cameraLayerMask = camera.layers.mask;
+    let level = -1;
+    const view = camera.matrixWorldInverse.elements, pv = _projScreenMatrix2.elements;
+    if (this.reuseRenderLists === true && cache.ready === true) level = this._reuseLevel(list, cache, scene, camera, view, pv);
+    if (level >= 0) {
+      this.lights.begin();
+      const lights = cache.lights;
+      for (let i = 0; i < lights.length; i++) this.lights.push(lights[i]);
+      this.lights.end(this.shadowMap.enabled, this.shadowMap.type !== VSMShadowMap);
+      if (this.lights.version !== this._lastLightsVersion) {
+        this._lastLightsVersion = this.lights.version;
+        this._lightsEpoch++;
+        this._envVersion = this._lightsEpoch * 65536 + this._envKeyId;
+      }
+      if (this._programsUnchanged(cache, scene)) {
+        this._replayFrameState(cache);
+        if (level === 0) stats.same++;
+        else stats.cameraOnly++;
+        return level;
+      }
+    }
+    stats.rebuilt++;
+    this._buildList(list, cache, scene, camera, view, pv);
+    return -1;
+  }
+  _reuseLevel(list, cache, scene, camera, view, pv) {
+    if (cache.structure !== epochs.structure || cache.world !== epochs.world) return -1;
+    const override = scene.overrideMaterial === void 0 ? null : scene.overrideMaterial;
+    if (cache.sortObjects !== this.sortObjects || cache.override !== override) return -1;
+    const same = cache.sameCamera(camera, view, pv);
+    if (!same && !cache.sameCameraLayers(camera)) return -1;
+    if (!cache.depsValid()) return -1;
+    if (same) return 0;
+    if (!this._recull(list, cache, camera)) return -1;
+    cache.setCamera(camera, view, pv);
+    return 1;
+  }
+  /** Camera-only change: true when every candidate keeps its cull result; refreshes the items' depth. */
+  _recull(list, cache, camera) {
+    const cand = cache.cand, inside = cache.candIn, candItem = cache.candItem, items = list.items, itemZ = cache.itemZ;
+    const ve = camera.matrixWorldInverse.elements, sortObjects = this.sortObjects;
+    cache.resort = false;
+    for (let i = 0, n = cand.length; i < n; i++) {
+      const object = cand[i];
+      let now2;
+      if (!object.frustumCulled) now2 = true;
+      else if (object.isSprite) now2 = _frustum2.intersectsSprite(object);
+      else now2 = this._cullTest(object, object.geometry, _frustum2, false);
+      if ((now2 ? 1 : 0) !== inside[i]) return false;
+      const index = candItem[i];
+      if (index >= 0 && (sortObjects || object.isSprite)) {
+        const item = items[index];
+        this._itemDepth(object, ve, this._zTmp);
+        const z = this._zTmp[0];
+        if (z !== itemZ[index]) {
+          itemZ[index] = z;
+          if (items[index].material.transparent === true) cache.resort = true;
+        }
+      }
+    }
+    return true;
+  }
+  /** Every recorded (material, variant) must still resolve to the program the list was sorted with. */
+  _programsUnchanged(cache, scene) {
+    const mats = cache.pMat, variants = cache.pVariant, objects = cache.pObject, programs = cache.pProgram, groups = cache.pGroup, slots = cache.pSlot;
+    for (let i = 0, n = mats.length; i < n; i++) {
+      const m = mats[i];
+      if (this._getProgram(m, objects[i], scene, variants[i]) !== programs[i]) return false;
+      if (this._batchGroupOf(m) !== groups[i] || this._materialProps(m).blockSlot !== slots[i]) return false;
+    }
+    return true;
+  }
+  /** Restore the per-frame state a rebuild would have produced: render-order ranks, dense ids and counters. */
+  _replayFrameState(cache) {
+    this._setRenderOrders(cache.renderOrders);
+    const frame = this._frameId;
+    const geoms = cache.geoms, gRid = cache.gRid;
+    for (let i = 0; i < geoms.length; i++) if (gRid[i] >= 0) {
+      geoms[i]._frameStamp = frame;
+      geoms[i]._frameRid = gRid[i];
+    }
+    const mats = cache.pMat, mRid = cache.pMatRid, programs = cache.pProgram, pRid = cache.pProgRid;
+    for (let i = 0; i < mats.length; i++) {
+      const m = mats[i];
+      m._frameStamp = frame;
+      m._frameRid = mRid[i];
+      const bg = cache.pGroup[i];
+      m._batchGroup = bg;
+      if (bg !== null) {
+        bg._frameStamp = frame;
+        bg._frameRid = mRid[i];
+      }
+      const p = programs[i];
+      p._frameStamp = frame;
+      p._frameRid = pRid[i];
+    }
+    this._materialCounter = cache.materialCounter;
+    this._geometryCounter = cache.geometryCounter;
+    this._programCounter = cache.programCounter;
+  }
+  _setRenderOrders(sorted) {
+    const l = this._renderOrderList;
+    l.length = 0;
+    this._lastNotedRenderOrder = NaN;
+    for (let i = 0; i < sorted.length; i++) l.push(sorted[i]);
+  }
+  /** Traverse the scene into `list`; when the frame before was identical, also record what the list depends on. */
+  _buildList(list, cache, scene, camera, view, pv) {
+    const override = scene.overrideMaterial === void 0 ? null : scene.overrideMaterial;
+    const structure = epochs.structure, world = epochs.world;
+    const record = this.reuseRenderLists === true && cache.hasSig && cache.structure === structure && cache.world === world && cache.sortObjects === this.sortObjects && cache.override === override;
+    cache.ready = false;
+    cache.resort = false;
+    cache.cmdOpaque.invalidate();
+    cache.cmdTransparent.invalidate();
+    cache.hasSig = true;
+    cache.structure = structure;
+    cache.world = world;
+    cache.sortObjects = this.sortObjects;
+    cache.override = override;
+    cache.setCamera(camera, view, pv);
+    if (record) cache.resetDeps();
+    this._rec = record ? cache : null;
+    this._cameraLayerMask = camera.layers.mask;
+    list.init();
+    this.lights.begin();
+    this._renderOrderReset();
+    this._projectObject(scene, camera, 0, this.sortObjects, list);
+    this._rec = null;
+    this.lights.end(this.shadowMap.enabled, this.shadowMap.type !== VSMShadowMap);
+    if (this.lights.version !== this._lastLightsVersion) {
+      this._lastLightsVersion = this.lights.version;
+      this._lightsEpoch++;
+      this._envVersion = this._lightsEpoch * 65536 + this._envKeyId;
+    }
+    this._resolvePrograms(list, scene);
+    if (record && cache.reusable === true && epochs.structure === structure && epochs.world === world) {
+      const pMat = cache.pMat;
+      for (let i = 0; i < pMat.length; i++) {
+        const program = this._getProgram(pMat[i], cache.pObject[i], scene, cache.pVariant[i]);
+        cache.pProgram.push(program);
+        cache.pProgRid.push(program._frameRid);
+        cache.pMatRid.push(pMat[i]._frameRid);
+        cache.pGroup.push(pMat[i]._batchGroup);
+        cache.pSlot.push(this._materialProps(pMat[i]).blockSlot);
+      }
+      cache.renderOrders = this._renderOrderList.slice();
+      cache.materialCounter = this._materialCounter;
+      cache.geometryCounter = this._geometryCounter;
+      cache.programCounter = this._programCounter;
+      cache.snapshot(this._frameId);
+      const itemZ = cache.itemZ = new Float64Array(list.count), ve = camera.matrixWorldInverse.elements, cand = cache.cand, candItem = cache.candItem;
+      for (let i = 0; i < cand.length; i++) {
+        if (candItem[i] < 0) continue;
+        if (this.sortObjects || cand[i].isSprite) {
+          this._itemDepth(cand[i], ve, this._zTmp);
+          itemZ[candItem[i]] = this._zTmp[0];
+        }
+      }
+      cache.ready = true;
+    }
+  }
+  /** Debug aid (`renderer.debug.verifyListReuse`): rebuild the list from scratch and compare it with the reused one. */
+  _verifyReuse(list, scene, camera, level) {
+    const scratch = this._verifyList === null ? this._verifyList = new WebGLRenderList() : this._verifyList;
+    const savedStamps = [this._materialCounter, this._geometryCounter, this._programCounter], savedRanks = this._renderOrderList.slice();
+    this._materialCounter = 0;
+    this._geometryCounter = 0;
+    this._programCounter = 0;
+    scratch.init();
+    this.lights.begin();
+    this._renderOrderReset();
+    this._projectObject(scene, camera, 0, this.sortObjects, scratch);
+    this.lights.end(this.shadowMap.enabled, this.shadowMap.type !== VSMShadowMap);
+    this._resolvePrograms(scratch, scene);
+    this._setRenderOrders(savedRanks);
+    scratch.finish(this.sortObjects, this._rankOfRenderOrder);
+    let ok = scratch.count === list.count && scratch.opaqueCount === list.opaqueCount && scratch.transparentCount === list.transparentCount;
+    for (let i = 0; ok && i < list.count; i++) {
+      const a = scratch.items[i], b = list.items[i];
+      ok = a.object === b.object && a.material === b.material && a.geometry === b.geometry && a.program === b.program && a.group === b.group;
+    }
+    for (let i = 0; ok && i < list.opaqueCount; i++) ok = scratch.opaqueSorted[i] === list.opaqueSorted[i];
+    for (let i = 0; ok && i < list.transparentCount; i++) ok = scratch.transparentSorted[i] === list.transparentSorted[i];
+    this._materialCounter = savedStamps[0];
+    this._geometryCounter = savedStamps[1];
+    this._programCounter = savedStamps[2];
+    if (!ok) {
+      this.debug.listReuse.mismatches++;
+      console.error("jrs: reused render list differs from a fresh build (level " + level + ")");
+    }
   }
   _renderOrderReset() {
     this._renderOrderList.length = 0;
@@ -17748,29 +18253,38 @@ var WebGLRenderer = class {
     object._cullVis0 = vis;
     return vis;
   }
+  /** View-space depth used for transparent sorting (the cached cull-sphere centre, or the object origin when not culled), written to out[0]. */
+  _itemDepth(object, ve, out) {
+    const s = object._slabData, o = object._slabOffset;
+    let cx, cy, cz;
+    if (object.frustumCulled && object.isSprite !== true) {
+      cx = s[o + 41];
+      cy = s[o + 42];
+      cz = s[o + 43];
+    } else {
+      cx = s[o + 28];
+      cy = s[o + 29];
+      cz = s[o + 30];
+    }
+    out[0] = -(ve[2] * cx + ve[6] * cy + ve[10] * cz + ve[14]);
+  }
   _projectObject(object, camera, groupOrder, sortObjects, list) {
     if (object.visible === false) return;
+    const rec = this._rec;
     if ((object.layers.mask & this._cameraLayerMask) !== 0) {
       if (object.isMesh === true || object.isLine === true || object.isPoints === true) {
         const geometry = object.geometry;
         const material = object.material;
-        if (!object.frustumCulled || this._cullTest(object, geometry, _frustum2, false)) {
-          let z = 0;
-          if (sortObjects) {
-            const s = object._slabData, o = object._slabOffset, ve = camera.matrixWorldInverse.elements;
-            let cx, cy, cz;
-            if (object.frustumCulled) {
-              cx = s[o + 41];
-              cy = s[o + 42];
-              cz = s[o + 43];
-            } else {
-              cx = s[o + 28];
-              cy = s[o + 29];
-              cz = s[o + 30];
-            }
-            z = -(ve[2] * cx + ve[6] * cy + ve[10] * cz + ve[14]);
-          }
-          list.zScratch[0] = z;
+        const inside = !object.frustumCulled || this._cullTest(object, geometry, _frustum2, false);
+        const first = list.count;
+        if (rec !== null) {
+          rec.regGeometry(geometry);
+          if (object.isInstancedMesh) rec.regInstanced(object);
+          if (Array.isArray(material)) rec.reusable = false;
+        }
+        if (inside) {
+          if (sortObjects) this._itemDepth(object, camera.matrixWorldInverse.elements, list.zScratch);
+          else list.zScratch[0] = 0;
           if (Array.isArray(material)) {
             const groups = geometry.groups;
             for (let i = 0, l = groups.length; i < l; i++) {
@@ -17778,25 +18292,32 @@ var WebGLRenderer = class {
               const groupMaterial = material[group.materialIndex];
               if (groupMaterial && groupMaterial.visible) this._pushItem(list, object, geometry, groupMaterial, group, false);
             }
-          } else if (material.visible) {
-            this._pushItem(list, object, geometry, material, null, false);
+          } else {
+            if (rec !== null) rec.regMaterial(material);
+            if (material.visible) this._pushItem(list, object, geometry, material, null, false);
           }
         }
+        if (rec !== null) rec.addCandidate(object, inside, list.count > first ? first : -1);
       } else if (object.isGroup) {
         groupOrder = object.renderOrder;
       } else if (object.isLOD) {
+        if (rec !== null) rec.reusable = false;
         if (object.autoUpdate === true) object.update(camera);
       } else if (object.isLight) {
+        if (rec !== null) rec.lights.push(object);
         this.lights.push(object);
       } else if (object.isSprite) {
-        if (!object.frustumCulled || _frustum2.intersectsSprite(object)) {
+        const inside = !object.frustumCulled || _frustum2.intersectsSprite(object);
+        const first = list.count;
+        if (inside) {
           const material = object.material;
+          if (rec !== null) rec.regMaterial(material);
           if (material.visible) {
-            const we = object.matrixWorld.elements, ve = camera.matrixWorldInverse.elements;
-            list.zScratch[0] = -(ve[2] * we[12] + ve[6] * we[13] + ve[10] * we[14] + ve[14]);
+            this._itemDepth(object, camera.matrixWorldInverse.elements, list.zScratch);
             this._pushItem(list, object, object.geometry, material, null, false);
           }
         }
+        if (rec !== null) rec.addCandidate(object, inside, list.count > first ? first : -1);
       }
     }
     const children = object.children;
@@ -17835,6 +18356,11 @@ var WebGLRenderer = class {
       geometry._frameRid = this._geometryCounter++;
     }
     list.push(object, geometry, material, group, material._frameRid, geometry._frameRid, variant, material._batchGroup);
+    const rec = this._rec;
+    if (rec !== null && shadowPass === false) {
+      rec.regMaterial(material);
+      rec.regPair(material, variant, object);
+    }
   }
   /**
    * The batch group of a built-in material: materials with the same GL state, the same texture objects
@@ -18193,6 +18719,7 @@ var WebGLRenderer = class {
     const object = item.object, material = item.material;
     if (object.isMesh !== true || material.wireframe === true || object.isSprite === true) return false;
     const rec = this.megaBuffers.ensure(item.geometry);
+    if (this._megaTouch !== null) this._megaTouch.set(item.geometry, rec);
     if (rec === null || rec.page === null) return false;
     item.mdRecord = rec;
     return true;
@@ -18202,15 +18729,21 @@ var WebGLRenderer = class {
    *   single draw, instanced batch (same geometry+material), or multi-draw batch
    *   (same material, any geometries from one mega-buffer page).
    */
-  _drawList(list, keys, n, scene, camera, shadowPass) {
+  _drawList(list, keys, n, scene, camera, shadowPass, commandCache = null, keysVersion = 0) {
     if (n === 0) return;
     this._currentScene = scene;
     if (this._traceSeq !== null) this._traceList = shadowPass ? "s" : keys === list.transparentSorted ? "t" : "o";
     const batcher = this.batcher;
-    batcher.begin();
-    let cmdN = 0, mdN = 0;
     const autoBatch = this.autoBatch, minimum = this.autoBatchMinimum;
     const multi = autoBatch && this.autoMultiDraw && this.megaBuffers !== null;
+    if (commandCache !== null && this._replayCommands(commandCache, keysVersion, multi)) {
+      this.debug.listReuse.commandsReplayed++;
+      this._executeCommands(commandCache.cmdN, scene, camera, shadowPass);
+      return;
+    }
+    batcher.begin();
+    let cmdN = 0, mdN = 0;
+    const touch = commandCache !== null ? this._megaTouch = /* @__PURE__ */ new Map() : null;
     let i = 0;
     while (i < n) {
       const item = list.itemFromKey(keys[i]);
@@ -18297,6 +18830,13 @@ var WebGLRenderer = class {
       i = j;
     }
     if (batcher.texCount > 0) batcher.uploadTexture(this.state, TEXTURE_UNITS.objectMatrices);
+    if (commandCache !== null) {
+      this._megaTouch = null;
+      this._saveCommands(commandCache, keysVersion, cmdN, mdN, multi, touch, list.cache.pMat);
+    }
+    this._executeCommands(cmdN, scene, camera, shadowPass);
+  }
+  _executeCommands(cmdN, scene, camera, shadowPass) {
     for (let c = 0; c < cmdN; c++) {
       const item = this._cmdItem[c];
       const kind = this._cmdKind[c];
@@ -18305,6 +18845,75 @@ var WebGLRenderer = class {
       else this._renderItem(item, scene, camera, shadowPass);
       this._cmdItem[c] = null;
     }
+  }
+  /** Remember the commands just built so an identical list can skip building them (see _replayCommands). */
+  _saveCommands(cache, keysVersion, cmdN, mdN, multi, touch, pairMats) {
+    cache.version = -1;
+    const batcher = this.batcher;
+    for (const [geometry, rec] of touch) if (rec !== null && rec.layoutVersion !== geometry._layoutVersion) return;
+    cache.items = this._cmdItem.slice(0, cmdN);
+    cache.offset = this._cmdOffset.slice(0, cmdN);
+    cache.count = this._cmdCount.slice(0, cmdN);
+    cache.kind = this._cmdKind.slice(0, cmdN);
+    cache.mdStart = this._cmdMdStart.slice(0, cmdN);
+    cache.mdCounts = this._mdCounts.slice(0, mdN);
+    cache.mdOffsets = this._mdOffsets.slice(0, mdN);
+    cache.cmdN = cmdN;
+    cache.mdN = mdN;
+    cache.texCount = batcher.texCount;
+    cache.texHash = batcher.texHash;
+    cache.megaGeoms.length = 0;
+    cache.megaRecs.length = 0;
+    cache.megaPages.length = 0;
+    for (const [geometry, rec] of touch) {
+      cache.megaGeoms.push(geometry);
+      cache.megaRecs.push(rec);
+      cache.megaPages.push(rec === null ? null : rec.page);
+    }
+    let spans = false;
+    for (let c = 0; c < cmdN; c++) if (this._cmdKind[c] >= 3) {
+      spans = true;
+      break;
+    }
+    cache.syncMats = spans ? pairMats : null;
+    cache.autoBatch = this.autoBatch;
+    cache.autoMultiDraw = this.autoMultiDraw;
+    cache.minimum = this.autoBatchMinimum;
+    cache.multi = multi;
+    cache.version = keysVersion;
+  }
+  /**
+   * Load previously built commands into the command arrays when they are still exactly what a rebuild would
+   * produce: same sorted keys, same batching settings, same mega-buffer records, and the matrix texture still
+   * holds this list's matrices (nobody drew another list through the batcher since).
+   */
+  _replayCommands(cache, keysVersion, multi) {
+    if (cache.version !== keysVersion || cache.cmdN === 0) return false;
+    if (cache.autoBatch !== this.autoBatch || cache.autoMultiDraw !== this.autoMultiDraw || cache.minimum !== this.autoBatchMinimum || cache.multi !== multi) return false;
+    const batcher = this.batcher;
+    if (cache.texCount > 0 && (batcher.texture === null || batcher.textureHash !== cache.texHash || batcher.textureCount !== cache.texCount)) return false;
+    const geoms = cache.megaGeoms;
+    for (let i = 0; i < geoms.length; i++) {
+      const rec = this.megaBuffers.ensure(geoms[i]);
+      if (rec !== cache.megaRecs[i] || rec !== null && rec.page !== cache.megaPages[i]) return false;
+    }
+    const syncMats = cache.syncMats;
+    if (syncMats !== null) for (let i = 0; i < syncMats.length; i++) this._syncMaterialBlock(syncMats[i], this._materialProps(syncMats[i]));
+    const cmdN = cache.cmdN;
+    while (cmdN > this._cmdCapacity) this._growCommands();
+    if (cache.mdN > this._mdCounts.length) this._growMultiDraw(cache.mdN);
+    const items = cache.items;
+    for (let c = 0; c < cmdN; c++) this._cmdItem[c] = items[c];
+    this._cmdOffset.set(cache.offset);
+    this._cmdCount.set(cache.count);
+    this._cmdKind.set(cache.kind);
+    this._cmdMdStart.set(cache.mdStart);
+    this._mdCounts.set(cache.mdCounts);
+    this._mdOffsets.set(cache.mdOffsets);
+    batcher.texCount = cache.texCount;
+    batcher.texHash = cache.texHash;
+    if (cache.texCount > 0) batcher.uploadTexture(this.state, TEXTURE_UNITS.objectMatrices);
+    return true;
   }
   /** Refreshes the material's record this frame and returns its index inside the Materials window starting at record `windowBase`. */
   _materialRecordIndex(material, windowBase) {
@@ -20110,6 +20719,8 @@ function transformVertex(vertexPosition, mvPosition, center, scale, sin, cos) {
   vertexPosition.y += _rotatedPosition.y;
   vertexPosition.applyMatrix4(_viewWorldMatrix);
 }
+trackRenderProperty(Sprite.prototype, "geometry");
+trackRenderProperty(Sprite.prototype, "material");
 
 // src/core/InstancedBufferAttribute.js
 var InstancedBufferAttribute = class extends BufferAttribute {
@@ -20698,6 +21309,8 @@ function checkGeometryIntersection(object, material, raycaster, ray, uv, uv1, no
   }
   return intersection;
 }
+trackRenderProperty(Mesh.prototype, "geometry");
+trackRenderProperty(Mesh.prototype, "material");
 
 // src/textures/DataTexture.js
 var DataTexture = class extends Texture {
@@ -21317,6 +21930,8 @@ function checkIntersection2(object, raycaster, ray, thresholdSq, a, b, positionA
     object
   };
 }
+trackRenderProperty(Line.prototype, "geometry");
+trackRenderProperty(Line.prototype, "material");
 
 // src/objects/LineSegments.js
 var _start = /* @__PURE__ */ new Vector3();
@@ -21466,6 +22081,8 @@ function testPoint(point, index, localThresholdSq, matrixWorld, raycaster, inter
     intersects.push({ distance, distanceToRay: Math.sqrt(rayPointDistanceSq), point: intersectPoint, index, face: null, faceIndex: null, barycoord: null, object });
   }
 }
+trackRenderProperty(Points.prototype, "geometry");
+trackRenderProperty(Points.prototype, "material");
 
 // src/objects/Group.js
 var Group = class extends Object3D {
@@ -24645,6 +25262,7 @@ var Camera = class extends Object3D {
   constructor() {
     super();
     this.isCamera = true;
+    this._countsWorld = false;
     this.type = "Camera";
     this.matrixWorldInverse = new Matrix4();
     this.projectionMatrix = new Matrix4();
