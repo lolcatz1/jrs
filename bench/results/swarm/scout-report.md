@@ -225,13 +225,76 @@ building does not run in steady state.
 of shader-client); 10 warm-up frames are too few (section 5); the "worst frame" column is a GPU-process
 artefact on this machine (section 6).
 
-## 5. Warm-up (first 240 frames, both libraries)
+## 5. Warm-up (first 240 frames, both libraries, `warmup-series.txt`)
 
-_pending: `warmup-series.txt`_
+Medians of 20-frame windows, ms:
 
-## 6. Stalls
+| window | shader-client three | shader-client jrs | shader-client-static three | shader-client-static jrs | shared-static three | shared-static jrs | many-materials three | many-materials jrs |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| frame 0 | 279 | 211 | 291 | 241 | 155 | 126 | 106 | 102 |
+| 1–9 | 9.6 6.8 4.3 4.3 4.9 6.7 4.3 4.4 4.9 | 6.8 5.1 5.6 2.6 3.7 3.3 2.6 3.3 2.6 | 9.0 8.0 2.1 3.0 1.8 2.7 2.5 3.8 2.6 | 12 4.8 5.9 4.5 3.6 2.6 1.7 1.4 1.5 | 28 23 18 16 16 21 17 16 16 | 23 10 8.8 12 5.4 5.5 5.7 7.1 9.2 | 29 15 277 16 13 13 24 31 19 | 16 9.6 6.5 5.8 6.0 8.2 5.4 4.8 4.7 |
+| 0–19 | 5.0 | 2.8 | 3.2 | 2.3 | 15.8 | 6.0 | 15.1 | 5.0 |
+| 20–39 | 5.8 | 4.3 | 3.3 | 2.8 | 20.5 | 5.1 | 10.5 | 5.4 |
+| 40–59 | 4.9 | 5.1 | **61.2** | **62.6** | 15.0 | 5.0 | 9.9 | 4.5 |
+| 60–79 | 6.5 | 5.7 | 58.8 | 64.0 | 14.5 | 7.8 | 10.8 | 7.6 |
+| 80–99 | 5.5 | 5.0 | 67.3 | 63.0 | 13.8 | 9.2 | 10.7 | 4.0 |
+| 100–139 | 5.7 / 6.2 | 4.9 / 4.4 | 61.5 / 67.0 | 58.9 / 60.8 | 16.4 / 15.7 | 7.7 / 7.9 | 10.4 / 11.1 | 3.8 / 3.8 |
+| 140–239 | 4.5 … 3.7 (then 25 with a 1.7 s stall) | 4.5 … 4.5 | 58–66 | 58–64 | 13–20 | 5.4 … | 9.5–16 | 3.7–4.3 |
 
-_pending: `stall-trace-*.txt`_
+What this shows:
+
+* **JS warm-up is short**: both libraries are within noise of steady state after ~10 frames (frame 0 is
+  shader compilation + first uploads, 100–290 ms; frames 1–5 are V8 tiering). The harness's 10 warm-up
+  frames are fine for the JS side.
+* **The GPU backlog is not**: `shader-client-static` costs 2–3 ms/frame for the first ~40 frames in both
+  libraries and 60 ms/frame afterwards. The command buffer lets the renderer queue ~40 frames (~2.4 s of
+  SwiftShader work) before flow control bites; the bench's frames 11–71 straddle that edge, which is
+  why `npm run bench` reports 22–34 ms (README) or 25–30 ms (run 1) or 60 ms (profile run) for the same
+  scene. **The number is the queue position, not the renderer.** The same edge is visible at smaller
+  scale in `shader-client` jrs (2.8 ms in frames 0–19, 4.3–5.7 afterwards; three 5.0 → 5.8/6.5) and
+  `shared-static` jrs (5.0 → 7.8–9.2 in frames 60–139 while the GPU process catches up on the queued
+  10 000-instance draws, then back to 5.4).
+* Why free-running frames cost *more* than `gl.finish()`-per-frame frames (shader-client jrs: 4.2 vs
+  1.8 ms): with a full queue the renderer thread spins/wakes in `WaitForGetOffset` and competes with
+  SwiftShader's worker threads for the 4 cores; when it waits in `finish()` SwiftShader gets all cores.
+  A CPU-side win in jrs therefore shows up twice on this machine (less JS and less contention).
+* Recommendation for the harness (not `src/`): report a second column measured with `gl.finish()` after
+  each frame (GPU-synced: JS + GPU per frame, no queue effects), keep the canvas out of the DOM during
+  timing (see section 6), and warm up until the GPU-synced time is stable rather than a fixed 10 frames.
+  `bench/profile-cpu.mjs` already prints both modes plus the draws-stubbed CPU-only time.
+
+## 6. Stalls (`stall-trace-*.txt/.json`)
+
+Chrome traces around 120 frames, renderer and GPU process together, slowest frames annotated:
+
+| run | frame | ms | renderer main thread was in | GPU process main thread was in |
+|---|---|---:|---|---|
+| shader-client / jrs | #9 | 2 477 | `CommandBufferHelper::WaitForAvailableEntries` → `CommandBufferProxyImpl::WaitForGetOffset` 2 418 ms (the GL call that happened to need ring space: `uniformMatrix4fv` in the CPU profiles) | `SkiaOutputSurfaceImplOnGpu::SwapBuffers` → `FramebufferVk::readPixelsImpl – CPU Readback` → `ContextVk::finishImpl` **2 403 ms**: the headless compositor presents the page by reading the frame back on the CPU, which is a full GPU finish of everything queued |
+| shared-static / three | #0 | 2 221 | `WaitForGetOffset` 2 162 ms | same `SwapBuffers` → `readPixelsImpl` → `finishImpl` 2 168 ms |
+| shared-animated / jrs | #116 | 12 025 | `CommandBufferProxyImpl::WaitForToken` 12 017 ms (texSubImage2D of the 1.28 MB matrix texture) | `CommandBufferService:PutChanged` → `ContextVk::onCopyUpdate` → `flushAndSubmitOutsideRenderPassCommands` **12 089 ms**: the texture-staging copy forces a submit that waits for the queued frames to finish |
+| shared-static / three | #108, #50 | 296, 267 | `WaitForGetOffset` 270 / 236 ms | `SharedImageStub::OnDestroySharedImage` / a 1 s-delayed `gr_cache` purge task → `ContextVk::flushAndSubmitCommands` → `SecondaryCommandBuffer::executeCommands` 298 / 254 ms (SwiftShader executing a backlog of draws) |
+| shader-client / jrs | #10, #105, #52 | 8–12 | `WaitForGetOffset` 2.8–5.5 ms | `CommandBufferStub::PerformWork` / `OnAsyncFlush` 2–5 ms (ordinary flow control) |
+| shared-animated / jrs | #0 | 15 (GC 49 ms on workers) | JS | – (V8 concurrent marking on worker threads, the only GC-related worst frame found) |
+
+So every multi-hundred-millisecond frame, in both libraries, is the **renderer blocked on the GPU process
+draining a backlog at a synchronisation point**: the compositor's swap (a CPU readback that finishes the
+whole queue), a texture-upload staging flush, a shared-image destroy, or Skia's periodic cache purge. The
+backlog exists because the bench loop never yields and the JS side is faster than SwiftShader; the
+faster the JS, the longer the queue and the longer the eventual drain. That is why the README saw
+"one-to-two-second stalls in jrs that three did not": it is a symptom of jrs being faster, not of a
+jrs bug, and the worst-frame column should be read that way until the harness syncs.
+
+What jrs can still do about it (ranked):
+1. Harness: time with `gl.finish()` per frame or a `fenceSync` wait every N frames, and keep the canvas
+   detached from the document while timing (no `SwapBuffers` readback at all).
+2. #16 (dirty-range matrix-texture upload, double-buffered textures): the upload is the sync point in
+   the animated scenes; smaller staging copies drain faster and double-buffering avoids waiting on the
+   draw that reads the previous texture.
+3. Nothing in `src/` can remove the compositor readback; a real GPU does not do it.
+
+No GC-caused stall was observed (heap deltas 0 KB in all worst frames; GC phase ≤ 0.32 ms/frame).
+The ordinary 8–14 ms "worst" frames in the jrs 10 k scenes are scavenges of the 1.2 MB/frame garbage
+(#1, #8) plus flow-control waits of a few ms.
 
 ## 7. Run-to-run noise
 
