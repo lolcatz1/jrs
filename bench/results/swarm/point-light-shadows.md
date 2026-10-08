@@ -82,12 +82,22 @@ exactly the value three compares against, so a depth-only caster program (the ex
 | shadows-point, run 2 | 94.4 | 0.9 |
 | shadows-point-animated | 88.0 / 83.5 | 1.9 / 2.9 |
 | shadows-point-multi | 66.2 / 63.9 | 0.6 / 0.6 |
+| shadows-point, final run after the last integration merge (skinning/morph) | 85.4 | 1.5 |
+
+The software-GL timer is noisy (the same scene measured 0.9-1.5 ms across runs); the better median of each pair is 90.6 vs 0.9 ms (three vs jrs) before the merge.
 
 Draw calls 4001 -> 2 (3 animated). The static scene skips the whole six-face pass via the signature, so 0.9 ms is the main pass; the
 animated scene (with the light above the grid, so nearly all casters fall in the -Y face and the other faces cull to a few) is the
 pass actually running: 1.9-2.9 ms. Allocation (`bench/alloc.mjs shadows-point-animated --lib=jrs`): 28 KB/frame, of which 14 KB is
 `Matrix4.invert` boxing doubles in cold code (six face cameras per frame); my own code allocates nothing per frame after the caster
 array is warm (the first version allocated 34 KB/frame through `array.length = 0`, fixed).
+
+## Program key
+
+The integer program key (`WebGLPrograms.getParameters`) reached 2^53 on the integration branch already (skinning + morph fields) and
+my point-shadow fields made it ~2^57, which would silently merge programs that differ only in their low bits (morph target count).
+The base part of the key (material type ... `leanShadow`, ~39 bits) is now interned to a small id (`_baseKeyIds`), and the remaining
+fields are packed under it; lookups are still `Map.get(number)`.
 
 ## Risks
 
