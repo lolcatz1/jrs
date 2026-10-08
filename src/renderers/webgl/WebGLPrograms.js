@@ -2,7 +2,7 @@ import {
 	MATERIAL_BASIC, MATERIAL_LAMBERT, MATERIAL_PHONG, MATERIAL_STANDARD, MATERIAL_NORMAL, MATERIAL_DEPTH, MATERIAL_LINE, MATERIAL_POINTS,
 	MATERIAL_SPRITE, MATERIAL_SHADER, MATERIAL_SHADOW_DEPTH, TEXTURE_UNITS, pointShadowUnit, buildBuiltinShader, buildCustomShader
 } from '../shaders/ShaderLib.js';
-import { DoubleSide, BackSide, NoToneMapping, SRGBColorSpace, BasicShadowMap } from '../../constants.js';
+import { DoubleSide, BackSide, NoToneMapping, SRGBColorSpace, BasicShadowMap, NormalBlending } from '../../constants.js';
 
 export const BLOCK_FRAME = 0;
 export const BLOCK_LIGHTS = 1;
@@ -268,6 +268,9 @@ class WebGLPrograms {
 			alphaTest: material.alphaTest > 0,
 			sizeAttenuation: (materialType === MATERIAL_POINTS || materialType === MATERIAL_SPRITE) && material.sizeAttenuation === true,
 			premultipliedAlpha: material.premultipliedAlpha === true,
+			// three.js (opaque_fragment): an opaque material writes alpha 1 whatever its map / vertex alpha says, so a
+			// later DST_ALPHA blend sees 1; depth materials write `opacity` instead and never take the define
+			opaque: material.transparent === false && material.blending === NormalBlending && material.alphaToCoverage === false && materialType !== MATERIAL_DEPTH && materialType !== MATERIAL_SHADOW_DEPTH,
 			dithering: material.dithering === true,
 			vertexUv1s: hasUv1,
 			toneMapped: toneMapping !== NoToneMapping,
@@ -294,7 +297,7 @@ class WebGLPrograms {
 		if (baseId === undefined) { baseId = this._baseKeyIds.size; this._baseKeyIds.set(key, baseId); }
 		key = baseId;
 		key = key * 8 + numPointShadows; key = key * 2 + (pointShadowBasic ? 1 : 0);
-		key = key * 2 + (p.materialArray ? 1 : 0);
+		key = key * 2 + (p.materialArray ? 1 : 0); key = key * 2 + (p.opaque ? 1 : 0);
 		key = key * 2 + (skinning ? 1 : 0); key = key * 2 + (p.morphTargets ? 1 : 0); key = key * 2 + (p.morphNormals ? 1 : 0); key = key * 2 + (p.morphColors ? 1 : 0);
 		key = key * 4 + morphTextureStride; key = key * 256 + morphTargetsCount;
 		p.key = key;

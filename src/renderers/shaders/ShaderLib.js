@@ -1,7 +1,7 @@
 import { ShaderChunk } from './ShaderChunk.js';
 import {
 	NoToneMapping as _NoToneMapping, LinearToneMapping, ReinhardToneMapping, CineonToneMapping, ACESFilmicToneMapping, AgXToneMapping, NeutralToneMapping,
-	SRGBColorSpace as _SRGBColorSpace
+	SRGBColorSpace as _SRGBColorSpace, NormalBlending
 } from '../../constants.js';
 /**
  * Shader library.
@@ -731,7 +731,7 @@ void main() {
 	#endif
 
 	#ifdef IS_DEPTH
-	fragColor = vec4( vec3( 1.0 - gl_FragCoord.z ), diffuseColor.a );
+	fragColor = vec4( vec3( 1.0 - gl_FragCoord.z ), diffuse.a ); // three.js: alpha is the opacity, not the mapped alpha
 	return;
 	#endif
 
@@ -757,6 +757,9 @@ void main() {
 
 	#ifdef IS_NORMAL_MATERIAL
 	fragColor = vec4( normalize( ( viewMatrix * vec4( normal, 0.0 ) ).xyz ) * 0.5 + 0.5, diffuseColor.a );
+		#ifdef OPAQUE
+		fragColor.a = 1.0;
+		#endif
 	return;
 	#endif
 
@@ -915,6 +918,9 @@ void main() {
 		#endif
 	#endif
 
+	#ifdef OPAQUE
+	diffuseColor.a = 1.0;
+	#endif
 	fragColor = vec4( outgoingLight, diffuseColor.a );
 	#if TONE_MAPPING > 0 && defined( TONE_MAPPED )
 	fragColor.rgb = toneMapping( fragColor.rgb );
@@ -1009,6 +1015,7 @@ export function buildBuiltinShader(p) {
 	if (p.alphaTest) d('USE_ALPHATEST');
 	if (p.sizeAttenuation) d('SIZE_ATTENUATION');
 	if (p.premultipliedAlpha) d('PREMULTIPLIED_ALPHA');
+	if (p.opaque) d('OPAQUE');
 	if (p.dithering) d('DITHERING');
 	if (p.toneMapped) d('TONE_MAPPED');
 	if (p.sRGBOutput) d('SRGB_OUTPUT');
@@ -1182,7 +1189,7 @@ export function buildCustomShader(material, p) {
 			(toneMapping !== _NoToneMapping) ? ShaderChunk['tonemapping_pars_fragment'] : '',
 			(toneMapping !== _NoToneMapping) ? `vec3 toneMapping( vec3 color ) { return ${toneMappingFunctions[toneMapping] || 'Linear'}ToneMapping( color ); }` : '',
 			p.dithering ? '#define DITHERING' : '',
-			material.transparent === false ? '#define OPAQUE' : '',
+			material.transparent === false && material.blending === NormalBlending && material.alphaToCoverage === false ? '#define OPAQUE' : '', // three.js's condition
 			ShaderChunk['colorspace_pars_fragment'],
 			`vec4 linearToOutputTexel( vec4 value ) {\n	return ${colorSpaceFn}( vec4( value.rgb * ${encodingMatrix}, value.a ) );\n}`,
 			'\n'
