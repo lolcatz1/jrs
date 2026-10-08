@@ -73,6 +73,11 @@ the 5% criterion could not be decided from the committed `latest.json` numbers. 
 this branch on the same machine: `many-materials` 0.9-1.2 ms vs 1.0-1.2 ms, still 3 draws and 11 GL calls per frame;
 `shared-static` 1.3-2.6 ms vs 1.4-3.2 ms (overlapping ranges, same draw count). Image comparison against three.js is at or
 below `latest.json` in every scenario (meanAbsDiff/maxDiff). `bench/results/latest.json` is not modified by this branch.
+Final `node bench/run.mjs --compare --frames=60` after the envmap merge: meanAbsDiff / maxDiff equal to `latest.json` in all 17
+existing scenarios (none worse; `pbr-envmap` 0 / 0), draw counts unchanged (`many-materials` 3). Medians on this box were
+1.3-2x the committed ones in every scenario, including ones that do not touch materials or maps (`shader-client-static`
+25 -> 49 ms, a ShaderMaterial scene), so that run measures machine load, not this change; the interleaved A/B runs above are
+the comparison to trust.
 
 ## Risks
 
