@@ -3,6 +3,7 @@ import { Mesh } from './Mesh.js';
 import { Box3 } from '../math/Box3.js';
 import { Matrix4 } from '../math/Matrix4.js';
 import { Sphere } from '../math/Sphere.js';
+import { rayMissesWorldSphere } from '../core/RaycastUtils.js';
 import { DataTexture } from '../textures/DataTexture.js';
 import { FloatType, RedFormat } from '../constants.js';
 
@@ -76,9 +77,14 @@ class InstancedMesh extends Mesh {
 		_sphere.copy(this.boundingSphere);
 		_sphere.applyMatrix4(matrixWorld);
 		if (raycaster.ray.intersectsSphere(_sphere) === false) return;
+		const instanceArray = this.instanceMatrix.array, ray = raycaster.ray;
+		let instanceSphere = this.geometry.boundingSphere;
+		if (instanceSphere === null) { this.geometry.computeBoundingSphere(); instanceSphere = this.geometry.boundingSphere; }
 		for (let instanceId = 0; instanceId < raycastTimes; instanceId++) {
-			this.getMatrixAt(instanceId, _instanceLocalMatrix);
+			_instanceLocalMatrix.fromArray(instanceArray, instanceId * 16);
 			_instanceWorldMatrix.multiplyMatrices(matrixWorld, _instanceLocalMatrix);
+			// per-instance world-sphere rejection on scalars, before the instance becomes a temporary mesh
+			if (rayMissesWorldSphere(ray, raycaster.near, raycaster.far, _instanceWorldMatrix.elements, 0, instanceSphere, 0, true)) continue;
 			_mesh.matrixWorld = _instanceWorldMatrix;
 			_mesh.raycast(raycaster, _instanceIntersects);
 			for (let i = 0, l = _instanceIntersects.length; i < l; i++) {
