@@ -140,6 +140,7 @@ class WebGLRenderer {
 		this.lights = new WebGLLights();
 		this.bindingStates = new WebGLBindingStates(gl, this.state, this.attributes, this.info);
 		this.batcher = new WebGLBatcher(gl);
+		this._maxLineWidth = gl.getParameter(gl.ALIASED_LINE_WIDTH_RANGE)[1];
 		this.multiDrawExt = gl.getExtension('WEBGL_multi_draw');
 		this.megaBuffers = this.multiDrawExt !== null ? new WebGLMegaBuffers(gl, this.state, this.info) : null;
 		this._mdCounts = new Int32Array(1024); this._mdOffsets = new Int32Array(1024); this._mdN = 0;
@@ -610,7 +611,15 @@ class WebGLRenderer {
 		const frame = this._frameId;
 		if (material._frameStamp !== frame) { material._frameStamp = frame; material._frameRid = this._materialCounter++; }
 		if (geometry._frameStamp !== frame) { geometry._frameStamp = frame; geometry._frameRid = this._geometryCounter++; }
-		list.push(object, geometry, material, group, material._frameRid, geometry._frameRid, variant);
+		list.push(object, geometry, material, group, material._frameRid, geometry._frameRid, variant, object.isMesh === true ? -1 : this._layoutNeeds(material) & geometry._attrMask);
+	}
+
+	/**
+	 * Attributes (bit 0 colour, 1 lineDistance, 2 uv) a lines / points material reads. Mega-buffer pages hold only those,
+	 * so geometries that differ in attributes the material ignores still share a page, and runs of them stay one draw.
+	 */
+	_layoutNeeds(material) {
+		return (material.vertexColors === true ? 1 : 0) | (material.isLineDashedMaterial === true ? 2 : 0) | (material.map || material.alphaMap ? 4 : 0);
 	}
 
 	/** Resolve the program of every item in the list. Runs after the frame's lights are collected. */
@@ -637,6 +646,8 @@ class WebGLRenderer {
 			if (attributes.uv1 !== undefined) a |= V_HAS_UV1;
 			if (attributes.color !== undefined) { a |= V_HAS_COLOR; if (attributes.color.itemSize === 4) a |= V_COLOR_ALPHA; }
 			geometry._attrBits = a; geometry._attrBitsVersion = geometry._layoutVersion;
+			// which of the attributes lines / points / sprites may use the geometry carries (see _layoutNeeds)
+			geometry._attrMask = (attributes.color !== undefined ? 1 : 0) | (attributes.lineDistance !== undefined ? 2 : 0) | (attributes.uv !== undefined ? 4 : 0);
 		}
 		let a = geometry._attrBits;
 		if (material.vertexColors !== true) a &= ~(V_HAS_COLOR | V_COLOR_ALPHA);
@@ -819,7 +830,7 @@ class WebGLRenderer {
 			a.stencilWrite === true || b.stencilWrite === true || a.vertexColors !== b.vertexColors || a.visible !== b.visible) return false;
 		if (a.blending === CustomBlending) return false;
 		if (a.polygonOffset === true && (a.polygonOffsetFactor !== b.polygonOffsetFactor || a.polygonOffsetUnits !== b.polygonOffsetUnits)) return false;
-		if (a.linewidth !== b.linewidth) return false;
+		if (a.linewidth !== b.linewidth && this._maxLineWidth > 1) return false; // WebGL on ANGLE ignores widths above 1: then the width cannot split a run
 		return a.isSpriteMaterial === true || a.isPointsMaterial === true || a.isLineBasicMaterial === true;
 	}
 
@@ -838,7 +849,7 @@ class WebGLRenderer {
 		if (!this._isBatchable(item)) return false;
 		const object = item.object, material = item.material;
 		if (object.isMesh === true ? material.wireframe === true : object.isSprite === true) return false;
-		const rec = this.megaBuffers.ensure(item.geometry, this._batchKind(object));
+		const rec = this.megaBuffers.ensure(item.geometry, this._batchKind(object), this._layoutNeeds(material));
 		if (rec === null || rec.page === null) return false;
 		item.mdRecord = rec;
 		return true;

@@ -16,7 +16,7 @@
  *      are skipped). The input is in ascending item order, so stability gives the
  *      same order as the index tie-break.
  *
- * Opaque key:      [renderOrder rank:6][program:6][material:10][indexed:1][geometry:9]
+ * Opaque key:      [renderOrder rank:6][program:6][material:10][indexed:1][geometry:9]  (lines / points / sprites: [layout class:4][geometry:6])
  * Transparent key: [renderOrder rank:6][depth back-to-front:26]
  */
 const INDEX_BITS = 20;
@@ -158,7 +158,7 @@ class WebGLRenderList {
 	_getItem(object, geometry, material, group, variant) {
 		let item = this.items[this.count];
 		if (item === undefined) {
-			item = { id: object.id, object, geometry, material, program: null, group, renderOrder: object.renderOrder, materialRid: 0, geometryRid: 0, variant, mdRecord: null };
+			item = { id: object.id, object, geometry, material, program: null, group, renderOrder: object.renderOrder, materialRid: 0, geometryRid: 0, variant, mdRecord: null, layoutClass: -1 };
 			this.items[this.count] = item;
 		} else {
 			item.id = object.id; item.object = object; item.geometry = geometry; item.material = material; item.program = null;
@@ -170,10 +170,10 @@ class WebGLRenderList {
 	/**
 	 * Adds an item. `item.program` is resolved later by the renderer (once the frame's lights are known).
 	 */
-	push(object, geometry, material, group, materialRid, geometryRid, variant) {
+	push(object, geometry, material, group, materialRid, geometryRid, variant, layoutClass = -1) {
 		if (this.count >= INDEX_RANGE) return; // list full; ignore extra items rather than corrupt keys
 		const item = this._getItem(object, geometry, material, group, variant);
-		item.materialRid = materialRid; item.geometryRid = geometryRid;
+		item.materialRid = materialRid; item.geometryRid = geometryRid; item.layoutClass = layoutClass;
 		const index = this.count - 1;
 		if (material.transparent === true) {
 			const slot = this.transparent;
@@ -207,9 +207,9 @@ class WebGLRenderList {
 			const rank = singleRank ? 0 : rankOf(item.renderOrder);
 			const program = item.program._frameRid & 63;
 			const mat = item.materialRid & 1023;
-			const geo = item.geometryRid & 511;
-			const indexed = item.geometry.index !== null || item.object.isLine === true ? 1 : 0; // keeps geometries of one mega-buffer layout adjacent (lines are always indexed there)
-			ohi[i] = (((rank * 64 + program) * 1024 + mat) * 2 + indexed) * 512 + geo;
+			// low 10 bits keep geometries of one mega-buffer layout adjacent: meshes by indexed + geometry, lines / points / sprites by attribute layout class + geometry
+			const low = item.layoutClass < 0 ? (item.geometry.index !== null ? 512 : 0) + (item.geometryRid & 511) : item.layoutClass * 64 + (item.geometryRid & 63);
+			ohi[i] = ((rank * 64 + program) * 1024 + mat) * 1024 + low;
 		}
 		this.opaqueSorted = os.finish(sortObjects);
 		// transparent: back to front

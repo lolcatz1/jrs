@@ -162,3 +162,62 @@ cases['shadermaterial-fog'] = (T) => {
 	scatter(T, 30, 5, [20, 14, 40], (i, r, p) => { const o = new T.Mesh(g, mat); o.position.set(...p); s.scene.add(o); });
 	return s;
 };
+
+// Per-object materials that differ only in colour / opacity / size / rotation / dash values: batched together, drawn like single draws.
+cases['points-own-materials'] = (T) => {
+	const s = setup(T, { fog: true }); const m = disc(T), g = pointsGeo(T, 10, 70, { spread: 3 });
+	scatter(T, 60, 71, [20, 14, 16], (i, r, p) => {
+		const mat = new T.PointsMaterial({ map: m, color: new T.Color().setHSL(r(), 0.7, 0.6), size: 0.3 + r() * 1.5, sizeAttenuation: i % 3 !== 0, opacity: 0.5 + r() * 0.5, transparent: true, depthWrite: false, alphaTest: i % 2 ? 0.2 : 0.05 });
+		const o = new T.Points(g, mat); o.position.set(...p); o.rotation.set(i, i * 0.5, 0); s.scene.add(o);
+	});
+	return s;
+};
+cases['points-own-materials-pixelratio2'] = (T) => { const s = cases['points-own-materials'](T); s.pixelRatio = 2; return s; };
+cases['points-own-materials-opaque'] = (T) => {
+	const s = setup(T); const g = [pointsGeo(T, 12, 72, { spread: 3 }), pointsGeo(T, 20, 73, { spread: 3 }), pointsGeo(T, 7, 74, { spread: 3 })];
+	scatter(T, 60, 75, [20, 14, 16], (i, r, p) => {
+		const o = new T.Points(g[i % 3], new T.PointsMaterial({ color: new T.Color().setHSL(r(), 0.8, 0.5), size: 0.3 + r() * 1.5, sizeAttenuation: i % 2 === 0 })); o.position.set(...p); s.scene.add(o);
+	});
+	return s;
+};
+cases['line-own-materials'] = (T) => {
+	const s = setup(T, { fog: true }); const rand = rng(81); const kinds = [T.Line, T.LineSegments, T.LineLoop];
+	const shared = [lineGeo(T, 6, 82), lineGeo(T, 8, 83)];
+	for (let i = 0; i < 60; i++) {
+		const dashed = i % 3 === 0;
+		const mat = dashed ? new T.LineDashedMaterial({ color: new T.Color().setHSL(rand(), 0.8, 0.6), dashSize: 0.2 + rand(), gapSize: 0.1 + rand() * 0.6, scale: 0.5 + rand() * 2, opacity: 0.6 + rand() * 0.4, transparent: i % 2 === 0 }) : new T.LineBasicMaterial({ color: new T.Color().setHSL(rand(), 0.8, 0.6), opacity: 0.5 + rand() * 0.5, transparent: i % 2 === 0 });
+		const o = new kinds[i % 3](i % 2 ? shared[i % 4 === 1 ? 0 : 1] : lineGeo(T, 6 + (i % 4), 90 + i), mat);
+		if (dashed) o.computeLineDistances();
+		o.position.set((rand() - 0.5) * 16, (rand() - 0.5) * 10, (rand() - 0.5) * 10); o.rotation.set(rand() * 6, rand() * 6, 0); s.scene.add(o);
+	}
+	return s;
+};
+cases['sprite-own-materials'] = (T) => {
+	const s = setup(T, { fog: true }); const m = disc(T);
+	scatter(T, 120, 91, [20, 14, 30], (i, r, p) => {
+		const at = i % 4 !== 0;
+		const mat = new T.SpriteMaterial({ map: m, color: new T.Color().setHSL(r(), 0.8, 0.6), opacity: 0.4 + r() * 0.6, rotation: (r() - 0.5) * 6, sizeAttenuation: at, alphaTest: i % 5 === 0 ? 0.3 : 0.05 });
+		const o = new T.Sprite(mat); o.position.set(...p); o.scale.setScalar(at ? 1 + r() * 2 : 0.05 + r() * 0.1); o.center.set(r(), r()); s.scene.add(o);
+	});
+	return s;
+};
+cases['sprite-own-materials-opaque'] = (T) => {
+	const s = setup(T); const m = disc(T);
+	scatter(T, 100, 92, [20, 14, 30], (i, r, p) => {
+		const mat = new T.SpriteMaterial({ map: m, color: new T.Color().setHSL(r(), 0.8, 0.6), transparent: false, alphaTest: 0.4, rotation: r() * 6, sizeAttenuation: i % 3 !== 0 });
+		const o = new T.Sprite(mat); o.position.set(...p); o.scale.setScalar(i % 3 !== 0 ? 1 + r() * 2 : 0.08); s.scene.add(o);
+	});
+	return s;
+};
+cases['sprite-mixed-state-runs'] = (T) => {
+	// materials with different blending / depthWrite / maps interleaved: runs must not merge across them
+	const s = setup(T); const m = disc(T), m2 = disc(T, false);
+	const mats = [new T.SpriteMaterial({ map: m }), new T.SpriteMaterial({ map: m, blending: T.AdditiveBlending, depthWrite: false }), new T.SpriteMaterial({ map: m2, color: 0xff8844 }), new T.SpriteMaterial({ map: m, depthTest: false, opacity: 0.5 })];
+	scatter(T, 100, 93, [14, 10, 20], (i, r, p) => { const o = new T.Sprite(mats[i % 4]); o.position.set(...p); o.scale.setScalar(2); s.scene.add(o); });
+	return s;
+};
+cases['line-points-sprite-mixed'] = (T) => {
+	const s = setup(T, { fog: 'exp2' });
+	for (const c of ['line-own-materials', 'points-own-materials-opaque', 'sprite-own-materials']) for (const o of cases[c](T).scene.children.slice()) s.scene.add(o);
+	return s;
+};

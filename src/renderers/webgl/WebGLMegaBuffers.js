@@ -19,6 +19,12 @@ const MAX_VERTICES = 1 << 16;
 export const KIND_TRIANGLES = 0, KIND_LINE_STRIP = 1, KIND_LINE_LOOP = 2, KIND_LINE_SEGMENTS = 3, KIND_POINTS = 4;
 const KIND_COUNT = 5;
 
+/** Lines / points / sprites page only the attributes their material reads: position plus `needs` (bit 0 colour, 1 lineDistance, 2 uv). Meshes page everything with a fixed location. */
+function wanted(name, kind, needs) {
+	if (kind === KIND_TRIANGLES) return true;
+	return name === 'position' || (name === 'color' && (needs & 1) !== 0) || (name === 'lineDistance' && (needs & 2) !== 0) || (name === 'uv' && (needs & 4) !== 0);
+}
+
 function glTypeOf(gl, array) {
 	if (array instanceof Float32Array) return gl.FLOAT;
 	if (array instanceof Uint16Array) return gl.UNSIGNED_SHORT;
@@ -79,14 +85,15 @@ class WebGLMegaBuffers {
 	}
 
 	/** Returns the allocation record for a geometry drawn as `kind` (allocating/updating as needed), or null if not eligible. */
-	ensure(geometry, kind = KIND_TRIANGLES) {
+	ensure(geometry, kind = KIND_TRIANGLES, needs = 0) {
 		let recs = this.records.get(geometry);
 		if (recs === undefined) {
-			recs = new Array(KIND_COUNT).fill(undefined);
+			recs = new Array(KIND_COUNT * 8).fill(undefined);
 			this.records.set(geometry, recs);
 			geometry.addEventListener('dispose', this._onGeometryDispose);
 		}
-		let rec = recs[kind];
+		const slot = kind === KIND_TRIANGLES ? 0 : kind * 8 + (needs & 7);
+		let rec = recs[slot];
 		if (rec !== undefined) {
 			if (rec === null) return null;
 			if (rec.layoutVersion === geometry._layoutVersion) {
@@ -95,8 +102,8 @@ class WebGLMegaBuffers {
 			}
 			this._free(rec);
 		}
-		rec = this._allocate(geometry, kind);
-		recs[kind] = rec;
+		rec = this._allocate(geometry, kind, needs);
+		recs[slot] = rec;
 		return rec;
 	}
 
@@ -113,13 +120,13 @@ class WebGLMegaBuffers {
 		rec.page = null;
 	}
 
-	_layoutOf(geometry, kind) {
+	_layoutOf(geometry, kind, needs) {
 		const attributes = geometry.attributes;
 		if (attributes.position === undefined || attributes.position.isInterleavedBufferAttribute) return null;
 		const list = [];
 		for (const name in attributes) {
 			const location = ATTRIBUTE_LOCATIONS[name];
-			if (location === undefined) continue;
+			if (location === undefined || !wanted(name, kind, needs)) continue;
 			const a = attributes[name];
 			if (a.isInterleavedBufferAttribute || a.isInstancedBufferAttribute) return null;
 			const glType = glTypeOf(this.gl, a.array);
@@ -146,12 +153,12 @@ class WebGLMegaBuffers {
 		}
 	}
 
-	_allocate(geometry, kind) {
+	_allocate(geometry, kind, needs) {
 		// groups only matter for material arrays, which never reach the batch path; drawRange must be the whole geometry
 		if (geometry.drawRange.start !== 0 || geometry.drawRange.count !== Infinity) return null;
 		if (geometry.morphAttributes && Object.keys(geometry.morphAttributes).length > 0) return null;
 		if (geometry.attributes.position === undefined || geometry.attributes.position.count > MAX_VERTICES) return null;
-		const layout = this._layoutOf(geometry, kind);
+		const layout = this._layoutOf(geometry, kind, needs);
 		if (layout === null) return null;
 		const vertexCount = geometry.attributes.position.count;
 		const indexCount = layout.indexed ? this._indexCountOf(geometry, kind) : 0;

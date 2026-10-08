@@ -445,13 +445,17 @@ function buildLinesMany(T, n) {
 		let geometry;
 		if (i % 4 === 0) geometry = sharedGeo[coloured ? 1 : 0]; else geometry = makeGeometry(kind, kind === 1 ? 8 : 4 + (i % 5), coloured);
 		let material;
-		if (useDash) material = dashed[coloured ? 2 : i % 2];
+		if (i % 5 === 1 || i % 5 === 3) {
+			// per-object material instance (a distinct colour and opacity per line), as scenes that colour each line individually do
+			material = i % 10 < 5 ? new T.LineBasicMaterial({ color: new T.Color().setHSL(rand(), 0.8, 0.6), transparent: i % 3 === 0, opacity: 0.5 + rand() * 0.5, linewidth: 2 })
+				: new T.LineDashedMaterial({ color: new T.Color().setHSL(rand(), 0.8, 0.6), dashSize: 0.3 + rand(), gapSize: 0.2 + rand() * 0.6, scale: 0.5 + rand() * 2 });
+		} else if (useDash) material = dashed[coloured ? 2 : i % 2];
 		else if (coloured) material = colored;
 		else if (i % 11 === 0) material = noFog;
 		else material = basic[i % basic.length];
 		const Ctor = kind === 0 ? T.Line : kind === 1 ? T.LineSegments : T.LineLoop;
 		const o = new Ctor(geometry, material);
-		if (useDash) o.computeLineDistances();
+		if (useDash || material.isLineDashedMaterial) o.computeLineDistances();
 		o.position.set((rand() - 0.5) * 90, (rand() - 0.5) * 60, (rand() - 0.5) * 60 - 10);
 		o.rotation.set(rand() * 6.28, rand() * 6.28, rand() * 6.28);
 		o.scale.setScalar(0.4 + rand() * 1.2);
@@ -494,7 +498,9 @@ function buildPointsCloud(T, n, smallCount) {
 		smallGeo.push(geo);
 	}
 	for (let i = 0; i < smallCount; i++) {
-		const p = new T.Points(smallGeo[i % smallGeo.length], smallMats[i % smallMats.length]);
+		// half of the small clouds have a material of their own (colour, size and opacity per object)
+		const mat = i % 2 ? new T.PointsMaterial({ color: new T.Color().setHSL(rand(), 0.8, 0.6), size: 0.5 + rand() * 2, sizeAttenuation: i % 4 === 1, map: disc, alphaTest: 0.2, opacity: 0.6 + rand() * 0.4 }) : smallMats[(i >> 1) % smallMats.length];
+		const p = new T.Points(smallGeo[i % smallGeo.length], mat);
 		p.position.set((rand() - 0.5) * 90, (rand() - 0.5) * 60, (rand() - 0.5) * 60 + 10);
 		p.rotation.set(rand() * 6, rand() * 6, 0); p.scale.setScalar(0.5 + rand());
 		scene.add(p);
@@ -519,9 +525,11 @@ function buildSpritesMany(T, n) {
 		new T.SpriteMaterial({ map: disc, alphaTest: 0.5, transparent: false, rotation: 0.2 }),
 	];
 	for (let i = 0; i < n; i++) {
-		const s = new T.Sprite(mats[i % mats.length]);
+		// 70% of the sprites own a SpriteMaterial (colour / opacity / rotation / size attenuation per sprite, sharing one texture)
+		const own = i % 10 < 7;
+		const mat = own ? new T.SpriteMaterial({ map: disc, color: new T.Color().setHSL(rand(), 0.7, 0.6), opacity: 0.5 + rand() * 0.5, rotation: (rand() - 0.5) * 6, sizeAttenuation: i % 4 !== 0 }) : mats[i % mats.length];
+		const s = new T.Sprite(mat);
 		s.position.set((rand() - 0.5) * 90, (rand() - 0.5) * 60, (rand() - 0.5) * 80);
-		const mat = mats[i % mats.length];
 		s.scale.setScalar(mat.sizeAttenuation === false ? 0.03 + rand() * 0.03 : 0.8 + rand() * 1.6);
 		if (i % 4 === 1) s.scale.x *= 1.8;
 		s.center.set(i % 3 === 0 ? 0 : 0.5, i % 5 === 0 ? 1 : 0.5);
