@@ -22,9 +22,19 @@ const gpu = !args.includes('--nogpu');
 const cpuStubbed = args.includes('--cpu-stubbed');
 
 const { server, port } = await startServer();
-const browser = await launchBrowser();
+let browser = await launchBrowser();
 
-async function freshPage() {
+async function freshPage(attempt = 0) {
+	try { return await openPage(); } catch (e) {
+		// a wedged SwiftShader GPU process can make a load time out: relaunch the browser and retry (twice at most)
+		if (attempt >= 2) throw e;
+		console.log(`[harness] page load failed (${String(e.message).split('\n')[0]}); relaunching browser`);
+		try { await browser.close(); } catch (e2) { /* already gone */ }
+		browser = await launchBrowser();
+		return freshPage(attempt + 1);
+	}
+}
+async function openPage() {
 	const page = await browser.newPage();
 	page.on('pageerror', (e) => console.log('[pageerror]', e.message));
 	page.on('console', (m) => { if (m.type() === 'error') console.log('[browser]', m.text()); });
