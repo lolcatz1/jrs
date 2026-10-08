@@ -98,7 +98,7 @@ three.js r186, through the built-in programs and the existing render-target code
 
 ## Conformance results (headless Chromium / SwiftShader, 256x256)
 
-All 41 checks pass. The eight env-map checks against three.js r186:
+All 43 checks pass. The eight env-map checks against three.js r186:
 
 | check | mean abs diff | max | differing pixels |
 |---|---:|---:|---:|
@@ -126,20 +126,20 @@ full runs (`node bench/run.mjs --compare --frames=60`, data in `bench/results/la
 
 | | three.js r186 | jrs |
 |---|---:|---:|
-| median frame (ms) | 3.7 | 0.8 |
-| mean frame (ms) | 4.07 | 0.85 |
-| worst frame (ms) | 18.2 | 2.3 |
+| median frame (ms) | 4.4 | 0.3 |
+| mean frame (ms) | 4.65 | 0.31 |
+| worst frame (ms) | 9.6 | 0.6 |
 | draw calls per frame | 2000 | 1 |
 | GL calls per frame | 6019 | 4 |
 | pixel diff vs three (mean / max, 0-255) | | 0 / 0 |
 
-Speed-up 4.6x on the median. The 2 000 spheres share one geometry and 8 materials with one program,
+Speed-up 14.7x on the median. The 2 000 spheres share one geometry and 8 materials with one program,
 so the integration branch's multi-material batching draws them as a single instanced call with the
 environment map bound once; the per-frame cost is the IBL fragment work, which is the same in both
-libraries. The second run of the two gave 4.1 ms / 0.8 ms.
+libraries. Measured after the merge with the integration tip d48164c.
 
-All other scenarios keep their pixel diffs or improve (`shared-static` 0.347 / 8 -> 0 / 0,
-`shared-animated` 0.346 / 9 -> 0 / 1, the rest unchanged).
+All 17 other scenarios keep exactly the pixel diffs of the integration tip (`bench/results/latest.json`).
+`node bench/fuzz.mjs --seeds=30 --continue` fails only on seeds 8, 23, 27 and 28, the ones that fail on the tip.
 
 ## Not implemented (precisely)
 

@@ -73,7 +73,7 @@ over 60 frames after 10 warm-up frames, 320x240 (median frame time, so single ga
 | shadows-point: 2 000 casters, one shadow-casting point light (cube depth map) | 2,000 | 76.9 ms | 0.3 ms | **256.3x** | 202 → 1 ms | 4001 → 2 | 0 / 0 |
 | shadows-point-animated: same, a third of the casters moving | 2,000 | 72.8 ms | 1.8 ms | **40.4x** | 170 → 6 ms | 4001 → 3 | 0 / 0 |
 | shadows-point-multi: directional + spot + two point shadows + one unshadowed point light | 400 | 48.0 ms | 0.2 ms | **240.0x** | 70 → 1 ms | 2031 → 2 | 0 / 1 |
-| pbr-envmap: 2 000 MeshStandardMaterial spheres (8 materials) lit by `scene.environment` through PMREM, plus a directional light | 2,000 | 3.7 ms | 0.8 ms | **4.6x** | 18 → 2 ms | 2000 → 1 | 0 / 0 |
+| pbr-envmap: 2 000 MeshStandardMaterial spheres (8 materials) lit by `scene.environment` through PMREM, plus a directional light | 2,000 | 4.4 ms | 0.3 ms | **14.7x** | 10 → 1 ms | 2000 → 1 | 0 / 0 |
 
 The instanced scenario is a single draw call in both libraries; it measures only the fixed per-frame cost. Full data: `bench/results/latest.json`.
 
