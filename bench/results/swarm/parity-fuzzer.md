@@ -96,13 +96,39 @@ Off by default (`--list-features` shows them; `--enable=` re-enables): see **Kno
 
 ## Seeds run
 
-RESULTS_PLACEHOLDER
+All runs: headless Chromium / SwiftShader on the cloud container, 320x240, 6 frames per seed,
+default feature set, `--continue`.
+
+| Run | Seeds | Result |
+|---|---|---|
+| Baseline, before any fix | 1-5 | 5/5 failing (means up to 88 levels, GL errors, a jrs exception) |
+| Final code, full feature set | 1-100 | 86 pass, 14 residual (every one mean ≤ 0.10, ≤ 206 pixels over 33; table below) |
+| Final code, full feature set | 101-200 | SEEDS_101_200 |
+| Self-check (`--selfcheck`, each library vs itself) | 1-10 | identical frames for both libraries (deterministic) |
+
+Feature-isolated batches with the final code (30 seeds each, `--only=basic,<feature>` plus
+`lambert,lights` where lighting is needed): fog, transparency, side, wireframe+drawRange, stencil,
+shadows, shadows+stencil, shadows+transparency, shadows+instancing, render targets, maps, alphaTest,
+vertex colours, groups/drawRange/custom geometry, hierarchy, camera moves, background, tone mapping,
+override materials, instancing, Standard+lights, Phong+lights, Phong+transparency+side, Standard+shadows
+all pass (worst mean 0.07, on shadow scenes). Over the night roughly 3,500 seed renders were run.
+
+Residual failures in seeds 1-100 (final code), all small and all interactions of several objects (every
+object alone renders identically; `--loo`/pair isolation in the scratch tooling pinned them):
+
+| Seed | mean | px>33 | What |
+|---|---|---|---|
+| 93 | 0.098 | 206 | one transparent DoubleSide custom-blend MeshPhongMaterial shared by a 6-group box and an InstancedMesh with instance colours: a 150-pixel sliver where they overlap composites lighter in jrs, independent of draw order and of single/two-pass; open |
+| 23, 27, 28, 41, 47 | ≤ 0.061 | ≤ 137 | scenes with a render target used as a map (three sRGB): pixels that are exactly black in three.js come out as (0,0,15) in jrs on surfaces textured with it; open |
+| 61, 99, 63, 85, 78, 35, 65, 8 | ≤ 0.027 | ≤ 60 | clusters of a few dozen pixels at object edges in scenes with many stencil / custom-blend / shader objects; likely the float32 edge effect on thin overlapping geometry, not yet proven |
 
 ## Mismatches found and what was done
 
 Everything below was found by the fuzzer tonight (mostly with `--only=` feature subsets to isolate a
-class), fixed in `src/`, and verified by re-running the subset and the full set. `npm test`,
-`node bench/conformance.mjs` (26/26) and `node bench/smoke.mjs` pass after every fix.
+class, then per-object / leave-one-out isolation of one seed), fixed in `src/`, and verified by
+re-running the subset and the full set. `npm test` (100/100), `node bench/conformance.mjs` (26/26) and
+`node bench/smoke.mjs` pass after every fix. Commits on `swarm/parity-fuzzer` carry one group of fixes
+each with the reasoning.
 
 ### Fixed in src/
 
@@ -150,6 +176,33 @@ class), fixed in `src/`, and verified by re-running the subset and the full set.
     the threshold).
 11. **Wireframe ignored `drawRange` and groups** (`WebGLRenderer`). three.js scales both by 2 for the
     line index buffer; jrs drew the whole wireframe.
+12. **Transparent DoubleSide materials rendered in one pass** (`WebGLRenderer`, `WebGLPrograms`).
+    three.js draws them twice unless `forceSinglePass`: back faces with a `FLIP_SIDED` program, then
+    front faces. jrs now does the same (new `V_SIDE_BACK/FRONT` program variants) and never batches
+    such materials, because an instanced batch would draw all back faces before all front faces.
+13. **Transparent sort depth** (`WebGLRenderer._projectObject`). three.js r186 sorts by the NDC depth
+    of the world-space bounding sphere centre (the instance-aware sphere for `InstancedMesh`); jrs
+    used a view-space depth of the object position when culling was off. Two InstancedMeshes at the
+    origin tied and composited in the other order.
+14. **Shadow casters drawn with their own state** (`WebGLState.setShadowPassMaterial`). three.js
+    renders casters with a MeshDepthMaterial: depth test and write on, no blending, no stencil, no
+    polygon offset. A caster with `depthTest: false` or `depthWrite: false` left wrong or missing
+    depths in the shadow map.
+15. **The shadow pass reset the frame's renderOrder table** (`WebGLShadowMap`). Ranks were rebuilt
+    from the casters' orders only, so in the main pass every non-caster renderOrder ranked last and
+    order-dependent materials (depthWrite off, blending, stencil) composited differently whenever
+    shadows were on.
+
+### Open (found, not fixed tonight)
+
+* **Shared transparent material between an InstancedMesh with instance colours and a grouped mesh**
+  (seed 93, `node bench/fuzz.mjs --seed=93`): mean 0.098, ~150 pixels. Each object alone is
+  identical; the pair differs whichever draw order is forced and with `forceSinglePass`. Something in
+  the per-material state (uniform block or texture/VAO binding) differs between the instanced and the
+  non-instanced program of the same material; not located.
+* **sRGB render target sampled slightly non-black** (seeds 23, 27, 28, 41, 47): where three.js shows
+  exactly 0, jrs shows a linear value of about 0.004 (15/255 after encoding) on surfaces that sample
+  the render target. Likely the clear or the sRGB encode/decode round trip of the target; mean ≤ 0.06.
 
 ### Known, excluded from the default feature set (flag to re-enable)
 
@@ -176,6 +229,14 @@ class), fixed in `src/`, and verified by re-running the subset and the full set.
   generator always sets `premultipliedAlpha` for those modes.
 * `vertexColors: true` on a built-in material whose geometry has no `color` attribute renders black in
   three.js (the attribute reads as 0) and uncoloured in jrs; the generator never does this.
+* Material arrays (groups) never contain order-dependent materials: groups share one renderOrder and
+  three.js orders them by material id while jrs orders by program (the documented opaque-order
+  difference).
+* Wireframe is only generated on materials without screen-space derivatives (no flatShading, no
+  MeshStandardMaterial): `dFdx/dFdy` are implementation-defined on line primitives.
+* Transparent objects at exactly the same sort depth: three.js breaks the tie by object id, jrs by
+  traversal order; identical unless objects were created in a different order than they sit in the
+  scene graph.
 
 ## For the integrator: after every merge
 
@@ -194,3 +255,14 @@ npm run fuzz -- --seeds=200 --continue          # ~10 minutes on the cloud conta
   below); keep `--strict` out of CI (edge pixels) but run it occasionally to watch the edge-pixel rate.
 * The tolerances live in `bench/pixel-compare.js` next to the comparison; `bench/index.html` keeps its
   own identical inline copy for `--compare` so other workers' edits to that page do not conflict.
+* `build/jrs.module.js` was not regenerated on this branch (every worker touching `src/` would
+  conflict on it): run `npm run build` once after the merge.
+* The README benchmark note "Standard-material scenes differ by a few levels because jrs does not
+  implement three.js's environment multi-scatter term" no longer holds after fix 4; re-measure with
+  `npm run bench -- --compare` and update the table.
+* Two helpers that were decisive for the interaction bugs (12-15 above):
+  `node bench/fuzz-isolate.mjs <seed>` renders every mesh of a seed alone with both libraries (an
+  interaction bug shows as "all objects differ, none alone"), `--loo` hides one object at a time,
+  `--pair=a,b` renders two objects with both forced draw orders and writes the pair images;
+  `node bench/fuzz-glerr.mjs <seed> jrs` wraps every GL call, reports the first erroring ones with a
+  stack, and at a failing draw dumps the program's sampler units and what is bound on them.
