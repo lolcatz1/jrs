@@ -1,0 +1,112 @@
+
+shader-client / three: first frame 278.8 ms, frames 1-9: 9.6 6.8 4.3 4.3 4.9 6.7 4.3 4.4 4.9
+   0-19   median    5.00  worst   278.8
+  20-39   median    5.80  worst    65.0
+  40-59   median    4.90  worst   148.0
+  60-79   median    6.50  worst     9.2
+  80-99   median    5.50  worst   276.8
+ 100-119  median    5.70  worst     8.5
+ 120-139  median    6.20  worst   283.7
+ 140-159  median    4.50  worst     7.6
+ 160-179  median    6.80  worst     9.1
+ 180-199  median    4.10  worst     9.9
+ 200-219  median    3.70  worst    40.4
+ 220-239  median   25.00  worst  1708.5
+
+shader-client / jrs: first frame 211.4 ms, frames 1-9: 6.8 5.1 5.6 2.6 3.7 3.3 2.6 3.3 2.6
+   0-19   median    2.80  worst   211.4
+  20-39   median    4.30  worst     6.2
+  40-59   median    5.10  worst   251.7
+  60-79   median    5.70  worst   122.4
+  80-99   median    5.00  worst   138.3
+ 100-119  median    4.90  worst     8.5
+ 120-139  median    4.40  worst     6.4
+ 140-159  median    4.50  worst     6.6
+ 160-179  median    6.00  worst     7.0
+ 180-199  median    3.80  worst     6.9
+ 200-219  median    3.70  worst     6.2
+ 220-239  median    4.50  worst     5.4
+
+shader-client-static / three: first frame 291.2 ms, frames 1-9: 9.0 8.0 2.1 3.0 1.8 2.7 2.5 3.8 2.6
+   0-19   median    3.20  worst   291.2
+  20-39   median    3.30  worst   700.1
+  40-59   median   61.20  worst   139.9
+  60-79   median   58.80  worst    95.1
+  80-99   median   67.30  worst    87.1
+ 100-119  median   61.50  worst    79.5
+ 120-139  median   67.00  worst    83.5
+ 140-159  median   63.10  worst    86.8
+ 160-179  median   59.90  worst    82.8
+ 180-199  median   57.90  worst    76.6
+ 200-219  median   62.70  worst    86.4
+ 220-239  median   65.90  worst    82.7
+
+shader-client-static / jrs: first frame 240.7 ms, frames 1-9: 12.0 4.8 5.9 4.5 3.6 2.6 1.7 1.4 1.5
+   0-19   median    2.30  worst   240.7
+  20-39   median    2.80  worst   634.4
+  40-59   median   62.60  worst   103.0
+  60-79   median   64.00  worst    93.8
+  80-99   median   63.00  worst    77.3
+ 100-119  median   58.90  worst    67.4
+ 120-139  median   60.80  worst    68.4
+ 140-159  median   64.00  worst    72.7
+ 160-179  median   59.90  worst    74.9
+ 180-199  median   63.70  worst    75.6
+ 200-219  median   60.30  worst    75.4
+ 220-239  median   58.50  worst    77.0
+
+shared-static / three: first frame 155.0 ms, frames 1-9: 27.8 23.3 18.2 16.0 15.8 21.1 16.5 16.0 15.5
+   0-19   median   15.80  worst   155.0
+  20-39   median   20.50  worst   112.2
+  40-59   median   15.00  worst    93.7
+  60-79   median   14.50  worst   122.5
+  80-99   median   13.80  worst    14.7
+ 100-119  median   16.40  worst   386.2
+ 120-139  median   15.70  worst    23.8
+ 140-159  median   14.40  worst    34.1
+ 160-179  median   13.10  worst    15.1
+ 180-199  median   13.10  worst    15.7
+ 200-219  median   20.10  worst    24.6
+ 220-239  median   14.20  worst    23.9
+
+shared-static / jrs: first frame 125.5 ms, frames 1-9: 23.3 10.2 8.8 11.8 5.4 5.5 5.7 7.1 9.2
+   0-19   median    6.00  worst   125.5
+  20-39   median    5.10  worst     8.7
+  40-59   median    5.00  worst     5.5
+  60-79   median    7.80  worst     8.2
+  80-99   median    9.20  worst    10.7
+ 100-119  median    7.70  worst    10.4
+ 120-139  median    7.90  worst     9.0
+ 140-159  median    5.40  worst     7.5
+ 160-179  median    4.70  worst     9.7
+ 180-199  median    5.00  worst     9.3
+ 200-219  median    4.70  worst     5.1
+ 220-239  median    4.60  worst     5.5
+
+many-materials / three: first frame 105.6 ms, frames 1-9: 29.4 15.1 276.6 16.2 12.8 12.5 24.1 31.0 19.3
+   0-19   median   15.10  worst   276.6
+  20-39   median   10.50  worst    62.9
+  40-59   median    9.90  worst    40.3
+  60-79   median   10.80  worst    16.1
+  80-99   median   10.70  worst   227.7
+ 100-119  median   10.40  worst    12.4
+ 120-139  median   11.10  worst    12.2
+ 140-159  median   10.50  worst   316.6
+ 160-179  median   15.70  worst    20.6
+ 180-199  median   16.30  worst    20.7
+ 200-219  median   10.10  worst    18.6
+ 220-239  median    9.50  worst    14.1
+
+many-materials / jrs: first frame 102.2 ms, frames 1-9: 15.9 9.6 6.5 5.8 6.0 8.2 5.4 4.8 4.7
+   0-19   median    5.00  worst   102.2
+  20-39   median    5.40  worst     7.5
+  40-59   median    4.50  worst     5.3
+  60-79   median    7.60  worst     8.5
+  80-99   median    4.00  worst     8.0
+ 100-119  median    3.80  worst     4.2
+ 120-139  median    3.80  worst     3.9
+ 140-159  median    3.70  worst     4.1
+ 160-179  median    4.10  worst     6.0
+ 180-199  median    4.30  worst     8.0
+ 200-219  median    3.80  worst     5.9
+ 220-239  median    3.80  worst     5.3

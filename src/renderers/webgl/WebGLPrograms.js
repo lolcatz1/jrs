@@ -192,10 +192,13 @@ class WebGLPrograms {
 		const isLit = materialType === MATERIAL_LAMBERT || materialType === MATERIAL_PHONG || materialType === MATERIAL_STANDARD;
 		const hasUv = attributes.uv !== undefined;
 		const hasUv1 = attributes.uv1 !== undefined;
-		const vertexColors = material.vertexColors === true && attributes.color !== undefined;
+		// Shadow pass without alpha test is depth only: the program needs neither uvs, colours nor textures,
+		// so those features are dropped from the key and every such caster shares one lean program.
+		const leanShadow = variant.shadowPass === true && !(material.alphaTest > 0);
+		const vertexColors = !leanShadow && material.vertexColors === true && attributes.color !== undefined;
 		const fog = scene.fog !== null && material.fog === true && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH;
-		const map = !!material.map;
-		const alphaMap = !!material.alphaMap;
+		const map = !leanShadow && !!material.map;
+		const alphaMap = !leanShadow && !!material.alphaMap;
 		const emissiveMap = isLit && !!material.emissiveMap;
 		const normalMap = isLit && !!material.normalMap;
 		const roughnessMap = materialType === MATERIAL_STANDARD && !!material.roughnessMap;
@@ -224,7 +227,8 @@ class WebGLPrograms {
 			materialArray: variant.materialArray === true && (variant.objectTexture === true || variant.multiDraw === true),
 			materialArraySize: renderer._materialWindow, materialPad: renderer._materialPad,
 			flatShading: isLit && material.flatShading === true,
-			doubleSided: material.side === DoubleSide,
+			doubleSided: !leanShadow && material.side === DoubleSide,
+			leanShadow,
 			fog, fogExp2: fog && scene.fog.isFogExp2 === true,
 			alphaTest: material.alphaTest > 0,
 			sizeAttenuation: (materialType === MATERIAL_POINTS || materialType === MATERIAL_SPRITE) && material.sizeAttenuation === true,
@@ -243,7 +247,7 @@ class WebGLPrograms {
 		key = key * 2 + (p.instancing ? 1 : 0); key = key * 2 + (p.instancingColor ? 1 : 0); key = key * 2 + (p.flatShading ? 1 : 0); key = key * 2 + (p.doubleSided ? 1 : 0);
 		key = key * 2 + (fog ? 1 : 0); key = key * 2 + (p.alphaTest ? 1 : 0); key = key * 2 + (p.sizeAttenuation ? 1 : 0); key = key * 2 + (p.premultipliedAlpha ? 1 : 0);
 		key = key * 2 + (p.dithering ? 1 : 0); key = key * 2 + (hasUv1 ? 1 : 0); key = key * 8 + toneMapping; key = key * 2 + (sRGBOutput ? 1 : 0);
-		key = key * 8 + numDirShadows; key = key * 8 + numSpotShadows; key = key * 2 + (p.multiDraw ? 1 : 0); key = key * 2 + (p.objectTexture ? 1 : 0);
+		key = key * 8 + numDirShadows; key = key * 8 + numSpotShadows; key = key * 2 + (p.multiDraw ? 1 : 0); key = key * 2 + (p.objectTexture ? 1 : 0); key = key * 2 + (leanShadow ? 1 : 0);
 		key = key * 2 + (p.materialArray ? 1 : 0);
 		p.key = key;
 		return p;

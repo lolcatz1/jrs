@@ -154,3 +154,17 @@ scenario code) and were repeated.
 * `three.js` parity for `depthWrite = false` opaque ordering (three sorts them by material
   then z); cheap to special-case by keeping such materials out of groups.
 * Make the probe a render test (2 records, read back a pixel) rather than a link test.
+
+## After merging the integration branch (`origin/claude/threejs-performance-fork-vfqpcw`)
+
+Conflicts (sort-list `push` signature, program key bits, renderer helpers, README table,
+results, bundles) resolved; the other workers' batcher change (`texImage2D` upload) keeps the
+active-unit fix. Re-validated on the merged tree: `npm test` 100/100, conformance 28/28,
+smoke and addons clean, edge-case script 0 differing pixels in every mode and frame. Full
+benchmark on the merged tree (medians, jrs): many-materials **2.8 ms, 3 draws** (three.js
+8.1 ms, 5,000 draws), shared-static 3.0, shared-animated 8.2 (noisy scenario, see A/B below),
+unique-geometries 1.1, hierarchy-animated 4.2, shader-client 2.8, shader-client-static 20.9,
+shadows 1.4, shadows-animated 1.7; pixel diffs identical to the integration branch's
+`latest.json` for every scenario.
+shared-animated A/B on the same host, integration source vs merged source, two runs each:
+7.3 / 4.7 ms vs 5.1 / 4.9 ms (jrs medians): no regression, the scenario is simply noisy here.
