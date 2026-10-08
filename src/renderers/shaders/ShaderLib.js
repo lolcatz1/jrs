@@ -705,11 +705,16 @@ void main() {
 	#ifdef IS_POINTS
 	vec2 pointUv = gl_PointCoord;
 	#endif
+	#if defined( IS_SHADOW_PASS )
+	// three.js's shadow depth material: alpha 1 (its own opacity), then map / alphaMap / alphaTest; no vertex colours
+	vec4 diffuseColor = vec4( 1.0 );
+	#elif defined( IS_DEPTH )
+	vec4 diffuseColor = vec4( 1.0, 1.0, 1.0, diffuse.a ); // MeshDepthMaterial: the opacity, no vertex colours
+	#else
 	vec4 diffuseColor = vec4( diffuse.rgb, diffuse.a );
-	#ifdef IS_SPRITE
-	#endif
-	#if defined( USE_COLOR ) || defined( USE_INSTANCING_COLOR )
-	diffuseColor *= vColor;
+		#if defined( USE_COLOR ) || defined( USE_INSTANCING_COLOR )
+		diffuseColor *= vColor;
+		#endif
 	#endif
 	#ifdef USE_MAP
 		#ifdef IS_POINTS
@@ -727,7 +732,11 @@ void main() {
 		#endif
 	#endif
 	#ifdef USE_ALPHATEST
-	if ( diffuseColor.a < emissive.a ) discard;
+		#ifdef ALPHATEST_HALF
+		if ( diffuseColor.a < 0.5 ) discard;
+		#else
+		if ( diffuseColor.a < emissive.a ) discard;
+		#endif
 	#endif
 
 	#ifdef IS_DEPTH
@@ -981,7 +990,8 @@ export function buildBuiltinShader(p) {
 		case MATERIAL_PHONG: d('LIGHTING_PHONG'); d('USE_NORMAL'); break;
 		case MATERIAL_STANDARD: d('LIGHTING_STANDARD'); d('USE_NORMAL'); break;
 		case MATERIAL_NORMAL: d('IS_NORMAL_MATERIAL'); d('USE_NORMAL'); break;
-		case MATERIAL_DEPTH: case MATERIAL_SHADOW_DEPTH: d('IS_DEPTH'); break;
+		case MATERIAL_DEPTH: d('IS_DEPTH'); break;
+		case MATERIAL_SHADOW_DEPTH: d('IS_DEPTH'); d('IS_SHADOW_PASS'); break;
 		case MATERIAL_POINTS: d('IS_POINTS'); break;
 		case MATERIAL_SPRITE: d('IS_SPRITE'); break;
 	}
@@ -1013,6 +1023,7 @@ export function buildBuiltinShader(p) {
 	if (p.flipSided) d('FLIP_SIDED');
 	if (p.fog) d('USE_FOG');
 	if (p.alphaTest) d('USE_ALPHATEST');
+	if (p.alphaTestHalf) d('ALPHATEST_HALF');
 	if (p.sizeAttenuation) d('SIZE_ATTENUATION');
 	if (p.premultipliedAlpha) d('PREMULTIPLIED_ALPHA');
 	if (p.opaque) d('OPAQUE');
