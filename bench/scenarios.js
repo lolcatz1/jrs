@@ -656,7 +656,7 @@ function makeAlphaTexture(T) {
 }
 
 function buildLinesMany(T, n) {
-	const rand = rng(1234);
+	const rand = rng(4321);
 	const scene = new T.Scene();
 	scene.fog = new T.Fog(0x203040, 40, 110);
 	scene.background = new T.Color(0x101820);
