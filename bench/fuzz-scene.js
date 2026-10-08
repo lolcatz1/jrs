@@ -37,13 +37,13 @@ export const FEATURES = {
 	toneMapping: 'tone mapping operators and exposure',
 	mutations: 'per-frame scene mutations: meshes added/removed/hidden, material colour/opacity/transparent/flatShading changed, lights added/changed, renderOrder, drawRange, geometry attribute updates, fog/background/exposure changes',
 	// off by default: known differences, see bench/results/swarm/parity-fuzzer.md
-	perMapTransform: 'different offset/repeat/rotation per map on one material (jrs applies the first map\'s transform to all)',
+	perMapTransform: 'different offset/repeat/rotation per map on one material (one uv transform per map, as three.js)',
 	shaderFog: 'ShaderMaterial with fog: true (three fog chunks)',
 	agx: 'AgX tone mapping (not implemented in jrs)',
 	points: 'Points objects (point size rasterisation)',
 	lines: 'Line / LineSegments objects',
 };
-export const DEFAULT_OFF = ['perMapTransform', 'agx', 'shaderFog', 'points', 'lines'];
+export const DEFAULT_OFF = ['agx', 'shaderFog', 'points', 'lines'];
 
 export function defaultFeatures() {
 	const f = {};
