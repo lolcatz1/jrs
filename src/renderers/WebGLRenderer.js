@@ -31,6 +31,7 @@ const _vector3 = /*@__PURE__*/ new Vector3();
 const _color = /*@__PURE__*/ new Color();
 const _frustum = /*@__PURE__*/ new Frustum();
 const _emptyScene = { fog: null, environment: null, background: null, overrideMaterial: null, isScene: true, matrixWorldAutoUpdate: false, children: [], visible: true };
+let _frameCounter = 0; // unique across renderers so per-material frame stamps cannot collide
 
 // variant bits for program selection
 const V_INSTANCING = 1, V_INSTANCING_COLOR = 2, V_RECEIVE_SHADOW = 4, V_SHADOW_PASS = 8;
@@ -370,7 +371,7 @@ class WebGLRenderer {
 		const gl = this._gl;
 		if (scene.matrixWorldAutoUpdate === true) scene.updateMatrixWorld();
 		if (camera.parent === null && camera.matrixWorldAutoUpdate === true) camera.updateMatrixWorld();
-		this._frameId++;
+		this._frameId = ++_frameCounter;
 		this._renderCallDepth++;
 		this._currentCamera = camera;
 		this._currentScene = scene;
@@ -655,7 +656,7 @@ class WebGLRenderer {
 	_materialProps(material) {
 		let props = this._materialProperties.get(material);
 		if (props === undefined) {
-			props = { programs: [], blockData: new Float32Array(MATERIAL_BLOCK_SIZE / 4), blockSlot: -1, blockStamp: -1, textureStamp: -1, resolveStamp: -1, resolveVariant: -1, resolveProgram: null };
+			props = { programs: [], blockData: new Float32Array(MATERIAL_BLOCK_SIZE / 4), blockSlot: -1, blockStamp: -1, textureStamp: -1 };
 			this._materialProperties.set(material, props);
 			material.addEventListener('dispose', this._onMaterialDispose);
 		}
@@ -673,10 +674,9 @@ class WebGLRenderer {
 	}
 
 	_getProgram(material, object, scene, variant) {
-		const props = this._materialProps(material);
-		if (props.resolveStamp === this._frameId && props.resolveVariant === variant) return props.resolveProgram;
-		const program = this._getProgramSlow(props, material, object, scene, variant);
-		props.resolveStamp = this._frameId; props.resolveVariant = variant; props.resolveProgram = program;
+		if (material._resolveStamp === this._frameId && material._resolveVariant === variant) return material._resolveProgram;
+		const program = this._getProgramSlow(this._materialProps(material), material, object, scene, variant);
+		material._resolveStamp = this._frameId; material._resolveVariant = variant; material._resolveProgram = program;
 		return program;
 	}
 	_getProgramSlow(props, material, object, scene, variant) {

@@ -3500,6 +3500,9 @@ var EventDispatcher = class {
   }
 };
 
+// src/core/attributeEpoch.js
+var attributeEpoch = { value: 0 };
+
 // src/core/BufferAttribute.js
 var _vector4 = /* @__PURE__ */ new Vector3();
 var _vector23 = /* @__PURE__ */ new Vector2();
@@ -3522,7 +3525,10 @@ var BufferAttribute = class {
   onUploadCallback() {
   }
   set needsUpdate(value) {
-    if (value === true) this.version++;
+    if (value === true) {
+      this.version++;
+      attributeEpoch.value++;
+    }
   }
   setUsage(value) {
     this.usage = value;
@@ -15408,22 +15414,30 @@ var WebGLBindingStates = class {
     const gl = this.gl, attributes = this.attributes;
     let entry = this.cache.get(geometry);
     if (entry === void 0) {
-      entry = { vaos: [null, null, null], layoutVersion: -1, instancedFor: null, hadInstanceColor: false, custom: null, attrList: null, versionSum: -1 };
+      entry = { vaos: [null, null, null], layoutVersion: -1, instancedFor: null, hadInstanceColor: false, custom: null, attrList: null, versionSum: -1, epoch: -1, epochMode: -1 };
       this.cache.set(geometry, entry);
       geometry.addEventListener("dispose", this._onGeometryDispose);
       if (this.info !== null) this.info.memory.geometries++;
     }
     const useCustom = program !== null && program.hasCustomAttributes === true;
     if (entry.layoutVersion === geometry._layoutVersion && entry.attrList !== null && (mode !== 1 || entry.instancedFor === instancedObject)) {
-      const list2 = entry.attrList;
-      let sum2 = 0;
-      for (let i = 0, l = list2.length; i < l; i++) sum2 += list2[i].version;
-      if (geometry.index !== null) sum2 += geometry.index.version;
-      if (mode === 1) {
-        sum2 += instancedObject.instanceMatrix.version;
-        if (instancedObject.instanceColor !== null) sum2 += instancedObject.instanceColor.version + 1000003;
+      let valid = entry.epoch === attributeEpoch.value && entry.epochMode === mode;
+      if (!valid) {
+        const list2 = entry.attrList;
+        let sum2 = 0;
+        for (let i = 0, l = list2.length; i < l; i++) sum2 += list2[i].version;
+        if (geometry.index !== null) sum2 += geometry.index.version;
+        if (mode === 1) {
+          sum2 += instancedObject.instanceMatrix.version;
+          if (instancedObject.instanceColor !== null) sum2 += instancedObject.instanceColor.version + 1000003;
+        }
+        valid = sum2 === entry.versionSum;
+        if (valid) {
+          entry.epoch = attributeEpoch.value;
+          entry.epochMode = mode;
+        }
       }
-      if (sum2 === entry.versionSum) {
+      if (valid) {
         let record2;
         if (useCustom) {
           if (entry.custom !== null) {
@@ -15520,6 +15534,8 @@ var WebGLBindingStates = class {
     }
     entry.attrList = list;
     entry.versionSum = sum;
+    entry.epoch = attributeEpoch.value;
+    entry.epochMode = mode;
     return record;
   }
   _createVAO(geometry, mode, instancedObject, batchBuffer, program) {
@@ -16759,6 +16775,7 @@ var _projScreenMatrix2 = /* @__PURE__ */ new Matrix4();
 var _color2 = /* @__PURE__ */ new Color();
 var _frustum2 = /* @__PURE__ */ new Frustum();
 var _emptyScene = { fog: null, environment: null, background: null, overrideMaterial: null, isScene: true, matrixWorldAutoUpdate: false, children: [], visible: true };
+var _frameCounter = 0;
 var V_INSTANCING = 1;
 var V_INSTANCING_COLOR = 2;
 var V_RECEIVE_SHADOW = 4;
@@ -17201,7 +17218,7 @@ var WebGLRenderer = class {
     const gl = this._gl;
     if (scene.matrixWorldAutoUpdate === true) scene.updateMatrixWorld();
     if (camera.parent === null && camera.matrixWorldAutoUpdate === true) camera.updateMatrixWorld();
-    this._frameId++;
+    this._frameId = ++_frameCounter;
     this._renderCallDepth++;
     this._currentCamera = camera;
     this._currentScene = scene;
@@ -17541,7 +17558,7 @@ var WebGLRenderer = class {
   _materialProps(material) {
     let props = this._materialProperties.get(material);
     if (props === void 0) {
-      props = { programs: [], blockData: new Float32Array(MATERIAL_BLOCK_SIZE / 4), blockSlot: -1, blockStamp: -1, textureStamp: -1, resolveStamp: -1, resolveVariant: -1, resolveProgram: null };
+      props = { programs: [], blockData: new Float32Array(MATERIAL_BLOCK_SIZE / 4), blockSlot: -1, blockStamp: -1, textureStamp: -1 };
       this._materialProperties.set(material, props);
       material.addEventListener("dispose", this._onMaterialDispose);
     }
@@ -17564,12 +17581,11 @@ var WebGLRenderer = class {
     this._materialProperties.delete(material);
   }
   _getProgram(material, object, scene, variant) {
-    const props = this._materialProps(material);
-    if (props.resolveStamp === this._frameId && props.resolveVariant === variant) return props.resolveProgram;
-    const program = this._getProgramSlow(props, material, object, scene, variant);
-    props.resolveStamp = this._frameId;
-    props.resolveVariant = variant;
-    props.resolveProgram = program;
+    if (material._resolveStamp === this._frameId && material._resolveVariant === variant) return material._resolveProgram;
+    const program = this._getProgramSlow(this._materialProps(material), material, object, scene, variant);
+    material._resolveStamp = this._frameId;
+    material._resolveVariant = variant;
+    material._resolveProgram = program;
     return program;
   }
   _getProgramSlow(props, material, object, scene, variant) {
@@ -19348,6 +19364,9 @@ var Material = class extends EventDispatcher {
     this._programDirty = true;
     this._frameStamp = -1;
     this._frameRid = 0;
+    this._resolveStamp = -1;
+    this._resolveVariant = -1;
+    this._resolveProgram = null;
     this._shadowSigStamp = -1;
     this._shadowSig = 0;
   }
