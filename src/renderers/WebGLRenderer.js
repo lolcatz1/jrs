@@ -195,8 +195,8 @@ class WebGLRenderer {
 		gl.bufferData(gl.UNIFORM_BUFFER, LIGHTS_BLOCK_SIZE, gl.DYNAMIC_DRAW);
 		this._materialStride = Math.max(MATERIAL_BLOCK_SIZE, this.state.uboAlignment);
 		// Material-index batching binds a window of `_materialWindow` consecutive material records as one
-		// block; the window must fit MAX_UNIFORM_BLOCK_SIZE (16 KB on some mobile GPUs -> 128 records of
-		// 128 B) and is capped so the shader's array stays small. Records are padded to the buffer stride.
+		// block; the window must fit MAX_UNIFORM_BLOCK_SIZE (16 KB on some mobile GPUs -> 64 records of
+		// 256 B) and is capped so the shader's array stays small. Records are padded to the buffer stride.
 		this._materialWindow = Math.max(1, Math.min(256, Math.floor(gl.getParameter(gl.MAX_UNIFORM_BLOCK_SIZE) / this._materialStride)));
 		this._materialPad = (this._materialStride - MATERIAL_BLOCK_SIZE) / 16;
 		this._materialArrayOk = probeMaterialArray(gl);
@@ -859,7 +859,7 @@ class WebGLRenderer {
 		if (props.blockSlot < 0) this._allocMaterialSlot(props);
 		const s = this._batchSigScratch;
 		let k = 0;
-		for (let i = 0; i < MAP_KEYS.length; i++) { const t = material[MAP_KEYS[i]]; s[k++] = t ? t.id : -1; }
+		for (let i = 0; i < MAP_KEYS.length; i++) { const t = material[MAP_KEYS[i]]; s[k++] = t ? t.id * 4 + (t.channel > 3 ? 3 : t.channel) : -1; } // the uv channel selects the program
 		s[k++] = material.side; s[k++] = material.shadowSide === null || material.shadowSide === undefined ? -1 : material.shadowSide;
 		s[k++] = material.transparent ? 1 : 0; s[k++] = material.blending; s[k++] = material.blendEquation; s[k++] = material.blendSrc; s[k++] = material.blendDst;
 		s[k++] = material.blendEquationAlpha === null ? -1 : material.blendEquationAlpha; s[k++] = material.blendSrcAlpha === null ? -1 : material.blendSrcAlpha; s[k++] = material.blendDstAlpha === null ? -1 : material.blendDstAlpha;
@@ -1043,24 +1043,30 @@ class WebGLRenderer {
 		if (ns !== undefined) { s[16] = ns.x; s[17] = ns.y; } else { s[16] = 1; s[17] = 1; }
 		s[18] = material.size !== undefined ? material.size * this._pixelRatio : 1;
 		s[19] = material.isSpriteMaterial ? material.rotation : (material.bumpScale !== undefined ? material.bumpScale : 1);
-		const map = material.map || material.alphaMap || material.emissiveMap || material.normalMap || material.roughnessMap || material.metalnessMap || material.aoMap || material.specularMap;
-		if (map && map.isTexture) {
-			if (map.matrixAutoUpdate === true) map.updateMatrix();
-			const m = map.matrix.elements;
-			s[20] = m[0]; s[21] = m[1]; s[22] = m[2]; s[23] = 0;
-			s[24] = m[3]; s[25] = m[4]; s[26] = m[5]; s[27] = 0;
-			s[28] = m[6]; s[29] = m[7]; s[30] = m[8]; s[31] = 0;
-		} else {
-			s[20] = 1; s[21] = 0; s[22] = 0; s[23] = 0; s[24] = 0; s[25] = 1; s[26] = 0; s[27] = 0; s[28] = 0; s[29] = 0; s[30] = 1; s[31] = 0;
+		// one uv transform per present map (three.js refreshTransformUniform: Texture.matrix, refreshed when matrixAutoUpdate),
+		// 6 floats each: the affine part (m0 m1 m3 m4 m6 m7) of the 3x3 matrix, at floats 20 + 6 * slot
+		let used = 20;
+		for (let slot = 0; slot < UV_SLOT_COUNT; slot++) {
+			const tex = (slot === 5 && material.isMeshStandardMaterial !== true) ? material.specularMap : material[UV_SLOT_KEYS[slot]];
+			const o = 20 + slot * 6;
+			if (tex !== undefined && tex !== null && tex.isTexture === true) {
+				if (tex.matrixAutoUpdate === true) tex.updateMatrix();
+				const m = tex.matrix.elements;
+				s[o] = m[0]; s[o + 1] = m[1]; s[o + 2] = m[3]; s[o + 3] = m[4]; s[o + 4] = m[6]; s[o + 5] = m[7];
+				used = o + 6;
+			} else {
+				s[o] = 0; s[o + 1] = 0; s[o + 2] = 0; s[o + 3] = 0; s[o + 4] = 0; s[o + 5] = 0;
+			}
 		}
 		const b = props.blockData;
+		// b mirrors what the GPU holds (NaN where nothing was uploaded yet), so only the used prefix is compared and sent
 		let dirty = false;
-		for (let i = 0; i < 32; i++) { if (b[i] !== s[i]) { dirty = true; break; } }
+		for (let i = 0; i < used; i++) { if (b[i] !== s[i]) { dirty = true; break; } }
 		const offset = props.blockSlot * this._materialStride;
 		if (dirty) {
-			b.set(s);
+			for (let i = 0; i < used; i++) b[i] = s[i];
 			this.state.bindUniformBuffer(this._materialBuffer);
-			gl.bufferSubData(gl.UNIFORM_BUFFER, offset, b);
+			gl.bufferSubData(gl.UNIFORM_BUFFER, offset, b, 0, used);
 		}
 		return offset;
 	}
@@ -1639,6 +1645,9 @@ function shadowSideOf(material) {
 }
 
 const _wireGroup = { start: 0, count: 0, materialIndex: 0 };
+// uv-transform slot of each map in the Material block (roughnessMap and specularMap share slot 5: never on one material type)
+const UV_SLOT_KEYS = ['map', 'alphaMap', 'emissiveMap', 'normalMap', 'aoMap', 'roughnessMap', 'metalnessMap'];
+const UV_SLOT_COUNT = UV_SLOT_KEYS.length;
 const MAP_KEYS = ['map', 'alphaMap', 'normalMap', 'emissiveMap', 'roughnessMap', 'metalnessMap', 'aoMap', 'specularMap'];
 const BATCH_SIG_SIZE = MAP_KEYS.length + 33; // see _batchGroupOf
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);

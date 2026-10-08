@@ -720,6 +720,56 @@ export function conformanceTests() {
 			}
 		},
 		{
+			name: 'Per-map uv transforms and channels: map, alphaMap, emissiveMap, aoMap on one material (matches three.js)', run(T, renderer, ref) {
+				const build = (L) => {
+					const { scene, camera } = baseScene(L, 5);
+					lightRig(L, scene);
+					// 4x4 coloured cells and 4x4 stripes, nearest filtered and repeating so every transform shows
+					const cells = (seed) => {
+						const d = new Uint8Array(4 * 4 * 4);
+						for (let i = 0; i < 16; i++) { d[i * 4] = (i * 53 + seed * 31) % 256; d[i * 4 + 1] = (i * 97 + seed * 71) % 256; d[i * 4 + 2] = (i * 29 + seed * 11) % 256; d[i * 4 + 3] = 255; }
+						return d;
+					};
+					const tex = (seed, colorSpace) => {
+						const t = new L.DataTexture(cells(seed), 4, 4, L.RGBAFormat, L.UnsignedByteType);
+						t.magFilter = L.NearestFilter; t.minFilter = L.NearestFilter; t.wrapS = t.wrapT = L.RepeatWrapping;
+						t.colorSpace = colorSpace; t.needsUpdate = true;
+						return t;
+					};
+					const stripes = () => {
+						const d = new Uint8Array(4 * 4 * 4);
+						for (let i = 0; i < 16; i++) { const v = (i % 4 + Math.floor(i / 4)) % 2 === 0 ? 255 : 40; d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = v; d[i * 4 + 3] = 255; }
+						const t = new L.DataTexture(d, 4, 4, L.RGBAFormat, L.UnsignedByteType);
+						t.magFilter = L.NearestFilter; t.minFilter = L.NearestFilter; t.wrapS = t.wrapT = L.RepeatWrapping; t.needsUpdate = true;
+						return t;
+					};
+					const geometry = new L.PlaneGeometry(2, 2);
+					const uv = geometry.attributes.uv, uv1 = new Float32Array(uv.count * 2);
+					for (let i = 0; i < uv.count; i++) { uv1[i * 2] = 1 - uv.getY(i); uv1[i * 2 + 1] = uv.getX(i) * 0.5 + 0.25; } // a different parameterisation on the second channel
+					geometry.setAttribute('uv1', new L.BufferAttribute(uv1, 2));
+					const map = tex(1, L.SRGBColorSpace); map.offset.set(0.25, 0.1); map.repeat.set(1.5, 2); map.rotation = 0.3; map.center.set(0.5, 0.5);
+					const alphaMap = stripes(); alphaMap.offset.set(-0.2, 0.3); alphaMap.repeat.set(2.5, 1.25); alphaMap.rotation = -0.6; alphaMap.center.set(0.2, 0.7); alphaMap.channel = 1;
+					const emissiveMap = tex(2, L.SRGBColorSpace); emissiveMap.offset.set(0.5, 0); emissiveMap.repeat.set(0.75, 0.75);
+					const aoMap = stripes(); aoMap.repeat.set(3, 3); aoMap.offset.set(0.1, 0.2); aoMap.channel = 1;
+					const left = new L.Mesh(geometry, new L.MeshBasicMaterial({ map, alphaMap, transparent: true, side: L.DoubleSide }));
+					left.position.x = -1.2;
+					const right = new L.Mesh(geometry, new L.MeshStandardMaterial({ map, emissive: 0xffffff, emissiveMap, aoMap, aoMapIntensity: 0.8, roughness: 0.7, metalness: 0.2 }));
+					right.position.x = 1.2;
+					// a second Basic material with the same textures but alpha on the default channel: must not share a program or a batch with the first
+					const mid = new L.Mesh(geometry, new L.MeshBasicMaterial({ map, alphaMap: alphaMap.clone(), transparent: true }));
+					mid.material.alphaMap.channel = 0; mid.material.alphaMap.needsUpdate = true; mid.material.alphaMap.offset.set(0.1, 0.1);
+					mid.position.set(0, 0.2, -1);
+					scene.add(left, right, mid);
+					return { scene, camera };
+				};
+				const { scene, camera } = build(T);
+				renderer.render(scene, camera);
+				const px = readAll(renderer);
+				const d = compareWithReference(ref, (L) => build(L), px);
+				return { pass: refOk(d) && (d === null || d.maxDiff <= 3), detail: refDetail(d) };
+			}
+		},
+		{
 			name: 'Raycaster hit through camera', run(T, renderer) {
 				const { scene, camera } = baseScene(T);
 				const box = new T.Mesh(new T.BoxGeometry(1, 1, 1), new T.MeshBasicMaterial()); scene.add(box);

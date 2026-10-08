@@ -35,14 +35,14 @@ export const FEATURES = {
 	overrideMaterial: 'scene.overrideMaterial on some frames',
 	background: 'scene.background colour / clear colour',
 	toneMapping: 'tone mapping operators and exposure',
+	perMapTransform: 'a texture transform and uv channel (uv / uv1) per map on one material, incl. normal / ao / roughness / metalness maps',
 	// off by default: known differences, see bench/results/swarm/parity-fuzzer.md
-	perMapTransform: 'different offset/repeat/rotation per map on one material (jrs applies the first map\'s transform to all)',
 	shaderFog: 'ShaderMaterial with fog: true (three fog chunks)',
 	agx: 'AgX tone mapping (not implemented in jrs)',
 	points: 'Points objects (point size rasterisation)',
 	lines: 'Line / LineSegments objects',
 };
-export const DEFAULT_OFF = ['perMapTransform', 'agx', 'shaderFog', 'points', 'lines'];
+export const DEFAULT_OFF = ['agx', 'shaderFog', 'points', 'lines'];
 
 export function defaultFeatures() {
 	const f = {};
@@ -287,6 +287,12 @@ export function buildFuzzScene(T, seed, features = defaultFeatures(), opts = {})
 			}
 			g.userData.groupCount = nGroups;
 		}
+		if (features.perMapTransform) {
+			// second uv channel for texture.channel = 1 (derived from the positions: no rng draws, scenes keep their shape)
+			const pos = g.attributes.position, uv1 = new Float32Array(pos.count * 2);
+			for (let i = 0; i < pos.count; i++) { uv1[i * 2] = pos.getX(i) * 0.35 + pos.getZ(i) * 0.15 + 0.5; uv1[i * 2 + 1] = pos.getY(i) * 0.3 - pos.getX(i) * 0.1 + 0.4; }
+			g.setAttribute('uv1', new T.BufferAttribute(uv1, 2));
+		}
 		geometries.push(g);
 	}
 
@@ -378,6 +384,35 @@ export function buildFuzzScene(T, seed, features = defaultFeatures(), opts = {})
 		},
 	];
 	const shaderUniformsShared = [];
+	// perMapTransform: independent texture clones (own offset / repeat / rotation / centre / wrap, and uv or uv1) for maps the
+	// main generator does not cover (normal, ao, roughness, metalness) and for some existing ones. Uses its own rng stream so
+	// the rest of the scene is the same with or without the feature.
+	const extraTextures = [];
+	let extraCounter = 0;
+	const addExtraMaps = (mat, kind) => {
+		const bases = textures.filter((t) => t.isDataTexture === true);
+		if (bases.length === 0) return;
+		const x = makeRng(seed * 7919 + (++extraCounter) * 104729);
+		const fresh = () => {
+			const t = x.pick(bases).clone();
+			t.wrapS = x.pick([T.RepeatWrapping, T.ClampToEdgeWrapping, T.MirroredRepeatWrapping]); t.wrapT = x.pick([T.RepeatWrapping, T.MirroredRepeatWrapping]);
+			t.repeat.set(x.range(0.4, 3), x.range(0.4, 3)); t.offset.set(x.range(-1, 1), x.range(-1, 1));
+			if (x.chance(0.5)) { t.rotation = x.range(-3.2, 3.2); t.center.set(x.range(0, 1), x.range(0, 1)); }
+			if (x.chance(0.4)) t.channel = 1;
+			t.needsUpdate = true; extraTextures.push(t);
+			return t;
+		};
+		const lit = kind !== 'basic';
+		if (mat.map && x.chance(0.4)) mat.map = fresh();
+		if (x.chance(0.3)) { mat.alphaMap = fresh(); if (!mat.transparent && x.chance(0.5)) mat.alphaTest = 0.35; }
+		if (lit && x.chance(0.3)) mat.normalMap = fresh();
+		if (kind === 'standard' && x.chance(0.3)) mat.roughnessMap = fresh();
+		if (kind === 'standard' && x.chance(0.3)) mat.metalnessMap = fresh();
+		if (kind !== 'basic' && x.chance(0.3)) { mat.emissiveMap = fresh(); mat.emissive.setRGB(0.6, 0.6, 0.6); }
+		if (kind === 'phong' && x.chance(0.3)) mat.specularMap = fresh();
+		if (x.chance(0.3)) { mat.aoMap = fresh(); mat.aoMapIntensity = x.range(0.3, 1.2); }
+		mat.needsUpdate = true;
+	};
 	const makeMaterial = () => {
 		const kinds = [];
 		if (features.basic) kinds.push('basic');
@@ -420,8 +455,8 @@ export function buildFuzzScene(T, seed, features = defaultFeatures(), opts = {})
 		if (features.depthState && !transparent && rng.chance(0.08)) { params.depthWrite = false; sensitive = true; }
 		if (features.flatShading && kind !== 'basic' && kind !== 'shader' && !params.wireframe && rng.chance(0.3)) params.flatShading = true;
 		if (features.maps && textures.length) {
-			// jrs has one uv transform per material (the first map's); unless perMapTransform is on, every
-			// extra map on a material is the same texture object as its first map
+			// with perMapTransform every extra map is an independent texture (own transform); without it every
+			// extra map is the same texture object as the first map
 			const extra = () => (features.perMapTransform || !params.map) ? rng.pick(textures) : (rng(), params.map);
 			if (rng.chance(0.2)) params.alphaMap = extra();
 			if ((kind === 'lambert' || kind === 'phong' || kind === 'standard') && rng.chance(0.25)) { params.emissive = randomColor(); params.emissiveIntensity = rng.range(0.1, 1); if (rng.chance(0.5)) params.emissiveMap = extra(); }
@@ -470,6 +505,7 @@ export function buildFuzzScene(T, seed, features = defaultFeatures(), opts = {})
 			sensitive = true;
 		}
 		mat.userData.kind = kind;
+		if (features.perMapTransform && features.maps && kind !== 'shader') addExtraMaps(mat, kind);
 		if (sensitive) orderSensitive.add(mat);
 		return mat;
 	};
@@ -660,6 +696,7 @@ export function buildFuzzScene(T, seed, features = defaultFeatures(), opts = {})
 	};
 	const dispose = (renderer) => {
 		for (const t of textures) t.dispose();
+		for (const t of extraTextures) t.dispose();
 		for (const g of geometries) g.dispose();
 		for (const m of materials) m.dispose();
 		if (renderTarget) renderTarget.dispose();

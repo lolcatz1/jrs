@@ -94,9 +94,7 @@ struct MaterialRecord {
 	vec4 mSpecular;
 	vec4 mParams;
 	vec4 mParams2;
-	vec4 mUvTransform0;
-	vec4 mUvTransform1;
-	vec4 mUvTransform2;
+	vec4 mUvT[ 11 ];
 	#if MATERIAL_PAD > 0
 	vec4 mPad[ MATERIAL_PAD ];
 	#endif
@@ -109,9 +107,7 @@ layout(std140) uniform Materials {
 #define specular materials[ matIdx ].mSpecular
 #define matParams materials[ matIdx ].mParams
 #define matParams2 materials[ matIdx ].mParams2
-#define uvTransform0 materials[ matIdx ].mUvTransform0
-#define uvTransform1 materials[ matIdx ].mUvTransform1
-#define uvTransform2 materials[ matIdx ].mUvTransform2
+#define uvT materials[ matIdx ].mUvT
 #else
 layout(std140) uniform Material {
 	vec4 diffuse;        // rgb, a = opacity
@@ -119,13 +115,15 @@ layout(std140) uniform Material {
 	vec4 specular;       // rgb, a = shininess
 	vec4 matParams;      // roughness, metalness, aoMapIntensity, emissiveIntensity
 	vec4 matParams2;     // normalScale.xy, pointSize, bumpScale
-	vec4 uvTransform0;   // mat3 columns, padded
-	vec4 uvTransform1;
-	vec4 uvTransform2;
+	vec4 uvT[ 11 ];      // per-map uv transforms: 6 floats each (m0 m1 m3 m4 m6 m7 of the 3x3 affine matrix), 7 slots
 };
 #endif
+// slot of each map: 0 map, 1 alphaMap, 2 emissiveMap, 3 normalMap, 4 aoMap, 5 roughnessMap / specularMap (never on
+// one material type), 6 metalnessMap. UV_TRANSFORM( slot ) rebuilds the texture matrix three.js calls <map>Transform.
+#define UVT_F( k ) uvT[ ( k ) >> 2 ][ ( k ) & 3 ]
+#define UV_TRANSFORM( s ) mat3( UVT_F( ( s ) * 6 ), UVT_F( ( s ) * 6 + 1 ), 0.0, UVT_F( ( s ) * 6 + 2 ), UVT_F( ( s ) * 6 + 3 ), 0.0, UVT_F( ( s ) * 6 + 4 ), UVT_F( ( s ) * 6 + 5 ), 1.0 )
 `;
-export const MATERIAL_BLOCK_SIZE = 16 * 8;
+export const MATERIAL_BLOCK_SIZE = 16 * 16;
 
 const common = /* glsl */`
 #define PI 3.141592653589793
@@ -213,11 +211,29 @@ out vec3 vWorldPosition;
 #ifdef USE_NORMAL
 out vec3 vNormal;
 #endif
-#ifdef USE_UV
-out vec2 vUv;
+#ifdef USE_MAP_UV
+out vec2 vMapUv;
 #endif
-#ifdef USE_UV1
-out vec2 vUv1;
+#ifdef USE_ALPHAMAP_UV
+out vec2 vAlphaMapUv;
+#endif
+#ifdef USE_EMISSIVEMAP_UV
+out vec2 vEmissiveMapUv;
+#endif
+#ifdef USE_NORMALMAP_UV
+out vec2 vNormalMapUv;
+#endif
+#ifdef USE_AOMAP_UV
+out vec2 vAoMapUv;
+#endif
+#ifdef USE_ROUGHNESSMAP_UV
+out vec2 vRoughnessMapUv;
+#endif
+#ifdef USE_METALNESSMAP_UV
+out vec2 vMetalnessMapUv;
+#endif
+#ifdef USE_SPECULARMAP_UV
+out vec2 vSpecularMapUv;
 #endif
 #if defined( USE_COLOR ) || defined( USE_INSTANCING_COLOR )
 out vec4 vColor;
@@ -291,11 +307,30 @@ void main() {
 		vNormal = - vNormal;
 		#endif
 	#endif
-	#ifdef USE_UV
-	vUv = ( mat3( uvTransform0.xyz, uvTransform1.xyz, uvTransform2.xyz ) * vec3( uv, 1.0 ) ).xy;
+	// one transform and one uv channel per map, as three.js's uv_vertex (MAP_UV is uv, uv1 or vec2( 0.0 ) for a missing attribute)
+	#ifdef USE_MAP_UV
+	vMapUv = ( UV_TRANSFORM( 0 ) * vec3( MAP_UV, 1.0 ) ).xy;
 	#endif
-	#ifdef USE_UV1
-	vUv1 = uv1;
+	#ifdef USE_ALPHAMAP_UV
+	vAlphaMapUv = ( UV_TRANSFORM( 1 ) * vec3( ALPHAMAP_UV, 1.0 ) ).xy;
+	#endif
+	#ifdef USE_EMISSIVEMAP_UV
+	vEmissiveMapUv = ( UV_TRANSFORM( 2 ) * vec3( EMISSIVEMAP_UV, 1.0 ) ).xy;
+	#endif
+	#ifdef USE_NORMALMAP_UV
+	vNormalMapUv = ( UV_TRANSFORM( 3 ) * vec3( NORMALMAP_UV, 1.0 ) ).xy;
+	#endif
+	#ifdef USE_AOMAP_UV
+	vAoMapUv = ( UV_TRANSFORM( 4 ) * vec3( AOMAP_UV, 1.0 ) ).xy;
+	#endif
+	#ifdef USE_ROUGHNESSMAP_UV
+	vRoughnessMapUv = ( UV_TRANSFORM( 5 ) * vec3( ROUGHNESSMAP_UV, 1.0 ) ).xy;
+	#endif
+	#ifdef USE_METALNESSMAP_UV
+	vMetalnessMapUv = ( UV_TRANSFORM( 6 ) * vec3( METALNESSMAP_UV, 1.0 ) ).xy;
+	#endif
+	#ifdef USE_SPECULARMAP_UV
+	vSpecularMapUv = ( UV_TRANSFORM( 5 ) * vec3( SPECULARMAP_UV, 1.0 ) ).xy;
 	#endif
 	#if defined( USE_COLOR ) || defined( USE_INSTANCING_COLOR )
 	vColor = vec4( 1.0 );
@@ -373,11 +408,29 @@ in vec3 vWorldPosition;
 #ifdef USE_NORMAL
 in vec3 vNormal;
 #endif
-#ifdef USE_UV
-in vec2 vUv;
+#ifdef USE_MAP_UV
+in vec2 vMapUv;
 #endif
-#ifdef USE_UV1
-in vec2 vUv1;
+#ifdef USE_ALPHAMAP_UV
+in vec2 vAlphaMapUv;
+#endif
+#ifdef USE_EMISSIVEMAP_UV
+in vec2 vEmissiveMapUv;
+#endif
+#ifdef USE_NORMALMAP_UV
+in vec2 vNormalMapUv;
+#endif
+#ifdef USE_AOMAP_UV
+in vec2 vAoMapUv;
+#endif
+#ifdef USE_ROUGHNESSMAP_UV
+in vec2 vRoughnessMapUv;
+#endif
+#ifdef USE_METALNESSMAP_UV
+in vec2 vMetalnessMapUv;
+#endif
+#ifdef USE_SPECULARMAP_UV
+in vec2 vSpecularMapUv;
 #endif
 #if defined( USE_COLOR ) || defined( USE_INSTANCING_COLOR )
 in vec4 vColor;
@@ -459,8 +512,8 @@ float sampleShadow( sampler2DShadow shadowMap, vec4 shadowCoord, vec4 params ) {
 vec3 perturbNormal2Arb( vec3 eye_pos, vec3 surf_norm, vec3 mapN, float faceDirection ) {
 	vec3 q0 = dFdx( eye_pos.xyz );
 	vec3 q1 = dFdy( eye_pos.xyz );
-	vec2 st0 = dFdx( vUv.st );
-	vec2 st1 = dFdy( vUv.st );
+	vec2 st0 = dFdx( vNormalMapUv.st );
+	vec2 st1 = dFdy( vNormalMapUv.st );
 	vec3 N = surf_norm;
 	vec3 q1perp = cross( q1, N );
 	vec3 q0perp = cross( N, q0 );
@@ -602,6 +655,10 @@ vec4 sRGBTransferOETF( in vec4 value ) {
 void main() {
 	#ifdef IS_POINTS
 	vec2 pointUv = gl_PointCoord;
+		#ifdef USE_MAP
+		// three.js: one uvTransform (the map's) for the point sprite's map and alphaMap
+		pointUv = ( UV_TRANSFORM( 0 ) * vec3( pointUv, 1.0 ) ).xy;
+		#endif
 	#endif
 	vec4 diffuseColor = vec4( diffuse.rgb, diffuse.a );
 	#ifdef IS_SPRITE
@@ -611,9 +668,9 @@ void main() {
 	#endif
 	#ifdef USE_MAP
 		#ifdef IS_POINTS
-		vec4 sampledDiffuseColor = texture( map, ( mat3( uvTransform0.xyz, uvTransform1.xyz, uvTransform2.xyz ) * vec3( pointUv, 1.0 ) ).xy );
+		vec4 sampledDiffuseColor = texture( map, pointUv );
 		#else
-		vec4 sampledDiffuseColor = texture( map, vUv );
+		vec4 sampledDiffuseColor = texture( map, vMapUv );
 		#endif
 	diffuseColor *= sampledDiffuseColor;
 	#endif
@@ -621,7 +678,7 @@ void main() {
 		#ifdef IS_POINTS
 		diffuseColor.a *= texture( alphaMap, pointUv ).g;
 		#else
-		diffuseColor.a *= texture( alphaMap, vUv ).g;
+		diffuseColor.a *= texture( alphaMap, vAlphaMapUv ).g;
 		#endif
 	#endif
 	#ifdef USE_ALPHATEST
@@ -647,7 +704,7 @@ void main() {
 		#endif
 		vec3 nonPerturbedNormal = normal;
 		#ifdef USE_NORMALMAP
-		vec3 mapN = texture( normalMap, vUv ).xyz * 2.0 - 1.0;
+		vec3 mapN = texture( normalMap, vNormalMapUv ).xyz * 2.0 - 1.0;
 		mapN.xy *= matParams2.xy;
 		normal = perturbNormal2Arb( vWorldPosition - cameraPosition.xyz, normal, mapN, faceDirection );
 		#endif
@@ -666,10 +723,10 @@ void main() {
 		float roughnessFactor = matParams.x;
 		float metalnessFactor = matParams.y;
 		#ifdef USE_ROUGHNESSMAP
-		roughnessFactor *= texture( roughnessMap, vUv ).g;
+		roughnessFactor *= texture( roughnessMap, vRoughnessMapUv ).g;
 		#endif
 		#ifdef USE_METALNESSMAP
-		metalnessFactor *= texture( metalnessMap, vUv ).b;
+		metalnessFactor *= texture( metalnessMap, vMetalnessMapUv ).b;
 		#endif
 		#if defined( LIGHTING_STANDARD )
 		vec3 diffuseBase = diffuseColor.rgb * ( 1.0 - metalnessFactor );
@@ -694,7 +751,7 @@ void main() {
 		float shininess = specular.a;
 		float specularStrength = 1.0;
 			#ifdef USE_SPECULARMAP
-			specularStrength = texture( specularMap, vUv ).r;
+			specularStrength = texture( specularMap, vSpecularMapUv ).r;
 			#endif
 		#endif
 		vec3 directDiffuse = vec3( 0.0 );
@@ -783,27 +840,19 @@ void main() {
 		vec3 indirectDiffuse = indirectIrradiance * BRDF_Lambert( diffuseBase );
 		#endif
 		#ifdef USE_AOMAP
-			#ifdef USE_UV1
-			float ambientOcclusion = ( texture( aoMap, vUv1 ).r - 1.0 ) * matParams.z + 1.0;
-			#else
-			float ambientOcclusion = ( texture( aoMap, vUv ).r - 1.0 ) * matParams.z + 1.0;
-			#endif
+			float ambientOcclusion = ( texture( aoMap, vAoMapUv ).r - 1.0 ) * matParams.z + 1.0;
 		indirectDiffuse *= ambientOcclusion;
 		#endif
 		vec3 totalEmissive = emissive.rgb * matParams.w;
 		#ifdef USE_EMISSIVEMAP
-		totalEmissive *= texture( emissiveMap, vUv ).rgb;
+		totalEmissive *= texture( emissiveMap, vEmissiveMapUv ).rgb;
 		#endif
 		outgoingLight = directDiffuse + indirectDiffuse + directSpecular + totalEmissive;
 	#else
 		// unlit
 		outgoingLight = diffuseColor.rgb;
 		#ifdef USE_AOMAP
-			#ifdef USE_UV1
-			float ambientOcclusion = ( texture( aoMap, vUv1 ).r - 1.0 ) * matParams.z + 1.0;
-			#else
-			float ambientOcclusion = ( texture( aoMap, vUv ).r - 1.0 ) * matParams.z + 1.0;
-			#endif
+			float ambientOcclusion = ( texture( aoMap, vAoMapUv ).r - 1.0 ) * matParams.z + 1.0;
 		outgoingLight *= ambientOcclusion;
 		#endif
 	#endif
@@ -849,6 +898,7 @@ function shadowFactorFunctions(numDir, numSpot) {
 	return s;
 }
 
+const UV_MAP_NAMES = [['map', 'MAP'], ['alphaMap', 'ALPHAMAP'], ['emissiveMap', 'EMISSIVEMAP'], ['normalMap', 'NORMALMAP'], ['aoMap', 'AOMAP'], ['roughnessMap', 'ROUGHNESSMAP'], ['metalnessMap', 'METALNESSMAP'], ['specularMap', 'SPECULARMAP']];
 const spriteUniform = 'uniform vec2 uSpriteCenter;\n';
 
 /**
@@ -878,6 +928,13 @@ export function buildBuiltinShader(p) {
 	if (p.specularMap) d('USE_SPECULARMAP');
 	if (p.useUv) d('USE_UV');
 	if (p.useUv1) d('USE_UV1');
+	// per-map uv varying + source (uv, uv1 or a constant for a missing attribute), three.js's MAP_UV defines
+	for (let i = 0; i < UV_MAP_NAMES.length; i++) {
+		const src = p[UV_MAP_NAMES[i][0] + 'Uv'];
+		if (src < 0 || p.materialType === MATERIAL_POINTS) continue;
+		const N = UV_MAP_NAMES[i][1];
+		d('USE_' + N + '_UV'); d(N + '_UV', src === 0 ? 'uv' : (src === 1 ? 'uv1' : 'vec2( 0.0 )'));
+	}
 	if (p.vertexColors) d('USE_COLOR');
 	if (p.vertexAlphas) d('USE_COLOR_ALPHA');
 	if (p.instancing) d('USE_INSTANCING');

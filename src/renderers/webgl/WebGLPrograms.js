@@ -186,6 +186,14 @@ function materialTypeOf(material) {
  * Program cache keyed by an integer feature mask. Resolving a program for a
  * (material, object, scene) triple is a handful of bit ops and one Map get.
  */
+/** uv source of one map: 0 = `uv`, 1 = `uv1`, 2 = constant zero (attribute missing or channel not supported). */
+function uvSource(texture, hasUv, hasUv1) {
+	const channel = texture.channel;
+	if (channel === 0) return hasUv ? 0 : 2;
+	if (channel === 1) return hasUv1 ? 1 : 2;
+	return 2;
+}
+
 class WebGLPrograms {
 	constructor(gl, renderer) {
 		this.gl = gl;
@@ -216,8 +224,21 @@ class WebGLPrograms {
 		const metalnessMap = materialType === MATERIAL_STANDARD && !!material.metalnessMap;
 		const aoMap = (isLit || materialType === MATERIAL_BASIC) && !!material.aoMap;
 		const specularMap = materialType === MATERIAL_PHONG && !!material.specularMap;
-		const useUv = hasUv && (map || alphaMap || emissiveMap || normalMap || roughnessMap || metalnessMap || aoMap || specularMap) && materialType !== MATERIAL_POINTS;
-		const useUv1 = hasUv1 && aoMap;
+		// Per map, like three.js's getChannel( texture.channel ): the attribute its uv comes from, 0 = uv, 1 = uv1, 2 = a
+		// constant (0, 0) when the geometry lacks the attribute (a disabled attribute reads as zero) or the channel is
+		// above 1 (not supported); -1 = no such map. Each present map gets its own transform and varying in the shader.
+		const mapUv = map ? uvSource(material.map, hasUv, hasUv1) : -1;
+		const alphaMapUv = alphaMap ? uvSource(material.alphaMap, hasUv, hasUv1) : -1;
+		const emissiveMapUv = emissiveMap ? uvSource(material.emissiveMap, hasUv, hasUv1) : -1;
+		const normalMapUv = normalMap ? uvSource(material.normalMap, hasUv, hasUv1) : -1;
+		const roughnessMapUv = roughnessMap ? uvSource(material.roughnessMap, hasUv, hasUv1) : -1;
+		const metalnessMapUv = metalnessMap ? uvSource(material.metalnessMap, hasUv, hasUv1) : -1;
+		const aoMapUv = aoMap ? uvSource(material.aoMap, hasUv, hasUv1) : -1;
+		const specularMapUv = specularMap ? uvSource(material.specularMap, hasUv, hasUv1) : -1;
+		const uvKey = ((((((mapUv + 1) * 4 + alphaMapUv + 1) * 4 + emissiveMapUv + 1) * 4 + normalMapUv + 1) * 4 + roughnessMapUv + 1) * 4 + metalnessMapUv + 1) * 16 + (aoMapUv + 1) * 4 + specularMapUv + 1;
+		const pointsType = materialType === MATERIAL_POINTS;
+		const useUv = !pointsType && (mapUv === 0 || alphaMapUv === 0 || emissiveMapUv === 0 || normalMapUv === 0 || roughnessMapUv === 0 || metalnessMapUv === 0 || aoMapUv === 0 || specularMapUv === 0);
+		const useUv1 = !pointsType && (mapUv === 1 || alphaMapUv === 1 || emissiveMapUv === 1 || normalMapUv === 1 || roughnessMapUv === 1 || metalnessMapUv === 1 || aoMapUv === 1 || specularMapUv === 1);
 		const receiveShadow = variant.receiveShadow && isLit && renderer.shadowMap.enabled;
 		const numDirShadows = receiveShadow ? lights.numDirShadows : 0;
 		const numSpotShadows = receiveShadow ? lights.numSpotShadows : 0;
@@ -240,6 +261,7 @@ class WebGLPrograms {
 			materialType,
 			map, alphaMap, emissiveMap, normalMap, roughnessMap, metalnessMap, aoMap, specularMap,
 			useUv, useUv1,
+			mapUv, alphaMapUv, emissiveMapUv, normalMapUv, roughnessMapUv, metalnessMapUv, aoMapUv, specularMapUv,
 			vertexColors,
 			vertexAlphas: vertexColors && attributes.color.itemSize === 4,
 			instancing: variant.instancing,
@@ -279,7 +301,7 @@ class WebGLPrograms {
 		key = key * 2 + (p.materialArray ? 1 : 0);
 		key = key * 2 + (skinning ? 1 : 0); key = key * 2 + (p.morphTargets ? 1 : 0); key = key * 2 + (p.morphNormals ? 1 : 0); key = key * 2 + (p.morphColors ? 1 : 0);
 		key = key * 4 + morphTextureStride; key = key * 256 + morphTargetsCount;
-		p.key = key;
+		p.key = uvKey === 0 ? key : key + ':' + uvKey; // materials without maps keep a plain numeric key
 		return p;
 	}
 
