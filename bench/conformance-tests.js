@@ -577,6 +577,41 @@ export function conformanceTests() {
 			}
 		},
 		{
+			name: 'ShaderMaterial batching: 50 instances reading modelViewMatrix / normalMatrix (matches individual draws and three.js)', run(T, renderer, ref) {
+				const build = (L) => {
+					const { scene, camera } = baseScene(L, 6);
+					const vsView = 'varying vec3 vN; varying vec3 vP; void main(){ vN = normalize( normalMatrix * normal ); vec4 mv = modelViewMatrix * vec4( position, 1.0 ); vP = mv.xyz; gl_Position = projectionMatrix * mv; }';
+					const vsWorld = 'varying vec3 vN; varying vec3 vP; void main(){ vec4 wp = modelMatrix * vec4( position, 1.0 ); vN = normalize( mat3( modelMatrix ) * normal ); vP = ( viewMatrix * wp ).xyz; gl_Position = projectionMatrix * viewMatrix * wp; }';
+					const fs = 'uniform vec3 color; varying vec3 vN; varying vec3 vP; void main(){ vec3 n = normalize( vN ); vec3 l = normalize( vec3( 0.4, 0.8, 0.6 ) ); float d = max( dot( n, l ), 0.0 ); float s = pow( max( dot( reflect( -l, n ), normalize( -vP ) ), 0.0 ), 24.0 ); gl_FragColor = vec4( color * ( 0.25 + 0.75 * d ) + s, 1.0 ); }';
+					const view = new L.ShaderMaterial({ vertexShader: vsView, fragmentShader: fs, uniforms: { color: { value: new L.Color(0xff8844) } } });
+					const world = new L.ShaderMaterial({ vertexShader: vsWorld, fragmentShader: fs, uniforms: { color: { value: new L.Color(0x4488ff) } } });
+					const box = new L.BoxGeometry(0.3, 0.3, 0.3), meshes = [];
+					// 50 instances of one geometry + one view-space material -> one instanced draw
+					for (let i = 0; i < 50; i++) { const m = new L.Mesh(box, view); m.position.set((i % 10 - 4.5) * 0.42, (Math.floor(i / 10) - 2) * 0.42 + 0.9, 0); m.rotation.set(i * 0.3, i * 0.5, 0); m.scale.setScalar(0.8 + (i % 3) * 0.15); scene.add(m); meshes.push(m); }
+					// 25 unique geometries + one world-space material -> one multi-draw (instanced per geometry without WEBGL_multi_draw)
+					for (let i = 0; i < 25; i++) { const m = new L.Mesh(new L.BoxGeometry(0.3, 0.3 + (i % 4) * 0.08, 0.3), world); m.position.set((i % 5 - 2) * 0.5, -1.7 + Math.floor(i / 5) * 0.2 - 0.3, 0); m.rotation.set(i * 0.4, i * 0.7, 0); scene.add(m); meshes.push(m); }
+					// per-object uniform through onBeforeRender: stays a draw of its own and sees its own value
+					const hooked = new L.Mesh(box, view); hooked.position.set(2.4, -0.3, 0); hooked.scale.setScalar(2);
+					hooked.onBeforeRender = (r, sc, c, g, mat) => { mat.uniforms.color.value.setRGB(0.2, 0.9, 0.3); mat.uniformsNeedUpdate = true; };
+					hooked.onAfterRender = (r, sc, c, g, mat) => { mat.uniforms.color.value.setHex(0xff8844); mat.uniformsNeedUpdate = true; };
+					scene.add(hooked); meshes.push(hooked);
+					return { scene, camera, meshes };
+				};
+				const a = build(T);
+				renderer.autoBatchShaderMaterials = true; renderer.render(a.scene, a.camera); renderer.render(a.scene, a.camera);
+				const batched = readAll(renderer), callsA = renderer.info.render.calls, programs = renderer.info.programs.length;
+				renderer.autoBatchShaderMaterials = false; renderer.render(a.scene, a.camera);
+				const single = readAll(renderer), callsB = renderer.info.render.calls;
+				renderer.autoBatchShaderMaterials = true;
+				const vsSingle = diffImages(batched, single);
+				const d = compareWithReference(ref, build, batched);
+				const hookPx = readPixel(renderer, 230, 140);
+				const glErr = renderer.getContext().getError();
+				return { pass: callsA <= 4 && callsB === 76 && vsSingle.maxDiff === 0 && refOk(d) && hookPx[1] > hookPx[0] && glErr === 0,
+					detail: `draw calls ${callsB} -> ${callsA} (50 instanced + 25 multi-drawn + 1 hooked); batched vs individual draws max diff ${vsSingle.maxDiff}; ${refDetail(d)}; hooked mesh ${fmt(hookPx)} (green); programs ${programs}; GL error ${glErr}` };
+			}
+		},
+		{
 			name: 'SkinnedMesh: cylinder bent by two bones (matches three.js)', run(T, renderer, ref) {
 				const build = (L, bend = 0.9) => {
 					const { scene, camera } = baseScene(L, 7);

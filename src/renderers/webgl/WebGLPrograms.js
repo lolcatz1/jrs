@@ -3,6 +3,7 @@ import {
 	MATERIAL_SPRITE, MATERIAL_SHADER, MATERIAL_SHADOW_DEPTH, TEXTURE_UNITS, buildBuiltinShader, buildCustomShader
 } from '../shaders/ShaderLib.js';
 import { DoubleSide, NoToneMapping, SRGBColorSpace } from '../../constants.js';
+import { OBJ_ELIGIBLE, OBJ_USES_MODEL } from '../shaders/ShaderMaterialBatching.js';
 
 export const BLOCK_FRAME = 0;
 export const BLOCK_LIGHTS = 1;
@@ -105,6 +106,7 @@ class WebGLProgram {
 		// samplers sequentially. Every active sampler gets its own unit(s) whether or not a
 		// texture is ever assigned to it, so a program is always valid to draw with.
 		const isCustom = parameters.materialType === MATERIAL_SHADER;
+		const reserveMatrixUnit = isCustom && this.uniforms.objectMatrices !== undefined; // batched variant: unit 15 belongs to the matrix texture
 		this.samplerUniforms = [];
 		let nextUnit = 0;
 		gl.useProgram(program);
@@ -118,7 +120,14 @@ class WebGLProgram {
 			let unit;
 			if (!isCustom && (TEXTURE_UNITS[name] !== undefined || TEXTURE_UNITS[name + '0'] !== undefined)) {
 				unit = u.size > 1 ? TEXTURE_UNITS[name + '0'] : TEXTURE_UNITS[name];
+			} else if (isCustom && name === 'objectMatrices') {
+				// batched variant of a custom program: the matrix texture keeps its fixed unit (bound by the renderer, never by the material)
+				unit = TEXTURE_UNITS.objectMatrices;
+				u.unit = unit;
+				gl.uniform1i(u.location, unit);
+				continue;
 			} else {
+				if (reserveMatrixUnit && nextUnit <= TEXTURE_UNITS.objectMatrices && nextUnit + u.size > TEXTURE_UNITS.objectMatrices) nextUnit = TEXTURE_UNITS.objectMatrices + 1;
 				unit = nextUnit; nextUnit += u.size;
 			}
 			u.unit = unit;
@@ -131,6 +140,12 @@ class WebGLProgram {
 			}
 			this.samplerUniforms.push(u);
 		}
+		/**
+		 * Automatic instancing (ShaderMaterialBatching.js): 0 when this program's object uniforms cannot be fed
+		 * from the matrix texture, else the usage mask (which of modelMatrix / modelViewMatrix / normalMatrix
+		 * the vertex shader reads) with OBJ_ELIGIBLE set. Built-in programs always qualify.
+		 */
+		this.objTexMode = OBJ_ELIGIBLE | OBJ_USES_MODEL;
 		this.materialVersion = -1; // last material version whose non-block uniforms were set (ShaderMaterial)
 		this.materialId = -1;
 	}
@@ -291,6 +306,7 @@ class WebGLPrograms {
 		if (program === undefined) {
 			const src = parameters.materialType === MATERIAL_SHADER ? buildCustomShader(material, parameters) : buildBuiltinShader(parameters);
 			program = new WebGLProgram(this.gl, parameters, src.vertexShader, src.fragmentShader);
+			if (src.objTexMode !== undefined) program.objTexMode = src.objTexMode;
 			// the constructor binds the new program to set sampler units; tell the state cache
 			this.renderer.state.currentProgram = program.program;
 			this.cache.set(key, program);

@@ -48,7 +48,7 @@ class BufferGeometry extends EventDispatcher {
 		this._layoutVersion = 0;
 		this._frameStamp = -1; this._frameRid = 0;
 		this._shadowSigStamp = -1; this._shadowSig = 0;
-		this._attrBits = 0; this._attrBitsVersion = -1;
+		this._attrBits = 0; this._attrBitsVersion = -1; this._attrInstanced = false; // per-instance attribute present (never auto-batched)
 	}
 	getIndex() { return this.index; }
 	setIndex(index) {

@@ -87,7 +87,7 @@ render-order ranks and per-frame ids are replayed. Camera moved only -> every ca
 flips the opaque list stays and the transparent keys are rebuilt from fresh depths (the same keys a full rebuild
 produces). Anything else -> a normal rebuild. Dependencies are recorded only on a build that follows an unchanged
 frame, so animated scenes pay for a signature copy. Draw commands are cached per list too and replayed when the
-matrix texture still holds that list's matrices (`renderer.debug.listReuse` counts rebuilds, reuses and replays).
+list's own matrix texture (§4d) still holds its matrices (`renderer.debug.listReuse` counts rebuilds, reuses and replays).
 
 `renderer.reuseRenderLists = false` disables it; `renderer.debug.verifyListReuse = true` rebuilds every reused list
 from scratch and compares (`node bench/reuse-check.mjs` renders twin scenes through ~60 scene mutations that way).
@@ -122,8 +122,9 @@ more per vertex than an attribute would on software GL; on GPUs it is the same t
 
 Instanced batching needs identical geometry. For runs of **different** geometries that share a
 material, jrs uses `WEBGL_multi_draw` (Chrome, Firefox, Safari): geometries with the same
-attribute layout (names, item sizes, types, indexed or not) are sub-allocated into large shared
-vertex and index buffers ("pages", 262k vertices each, one VAO per page). Indices are rebased to
+attribute layout (names, item sizes, types, indexed or not; custom attributes included) are sub-allocated
+into large shared vertex and index buffers ("pages", 262k vertices each, one VAO per page for the
+fixed-location attributes plus one per custom-attribute program). Indices are rebased to
 the page's vertex base at upload time, so no base-vertex extension is needed. A run becomes one
 `multiDrawElementsWEBGL` (or `multiDrawArraysWEBGL`) call whose sub-draws read their object
 matrix and normal matrix from the same per-frame matrix texture, indexed by `gl_DrawID`. This is the transform-texture technique that three's `BatchedMesh` asks the
@@ -175,6 +176,61 @@ Limits and fallbacks:
 `renderer.autoBatchMaterials = false` turns it off. Effect: the many-materials benchmark (5,000
 meshes, 200 Phong materials, 3 geometries) goes from 600 instanced draws plus 200 block binds to
 3 draws.
+
+### 4d. ShaderMaterial draws: automatic instancing of custom programs
+
+Custom programs used to end every batch: a `ShaderMaterial` reads its object transforms through
+plain uniforms (`modelMatrix`, `modelViewMatrix`, `normalMatrix`), so a scene of 1,300 custom-shader
+meshes was 1,300 draws in jrs as in three.js. `src/renderers/shaders/ShaderMaterialBatching.js`
+removes that limit without touching the application's shader:
+
+* **Eligibility** is decided once per material version by scanning the include-resolved vertex
+  shader (comments stripped): every reference to the three uniforms must be a plain read inside a
+  function body (no mention on a preprocessor line such as `#define` / `#if`, none in a global
+  initialiser), the shader must not read `gl_InstanceID` / `gl_DrawID` itself, there must be exactly
+  one `main()`, and the fragment shader must not declare the uniforms for itself. `RawShaderMaterial`
+  qualifies when it declares each of the three as a single plain `uniform mat4 modelMatrix;` style
+  line. Chunks such as `project_vertex`, `worldpos_vertex` and `defaultnormal_vertex` pass as they
+  are. A per-instance attribute (`InstancedBufferGeometry`), an `InstancedMesh`, skinning, morph
+  targets, `onBeforeRender` / `onAfterRender` hooks, geometry groups and mirrored objects
+  (negative-determinant world matrix, which flips the front face per object) keep their own draws.
+* **The rewrite.** The batched variant of the program replaces the three uniform declarations by
+  globals and a `jrs_fetchObject()` function, and inserts a call to it as the first statement of
+  `main()`. The function fills the globals from the matrix texture of §4, indexed by
+  `drawBase + gl_InstanceID + gl_DrawID` (one variant serves instanced runs and multi-draw runs:
+  `gl_DrawID` is 0 outside a multi-draw call). Which entries it fetches depends on what the shader
+  reads: `modelMatrix` only -> the world matrix entry (the same entry built-in batches use);
+  `modelViewMatrix` / `normalMatrix` -> an entry holding the model-view matrix and its normal
+  matrix; both kinds -> two entries per object. The view-space matrices are computed on the CPU
+  while the texture is filled, with the same `Matrix4.multiplyMatrices` / `Matrix3.getNormalMatrix`
+  calls on the same float32 inputs the per-object uniform path uses, so a batched draw is
+  bit-identical to the unbatched one (computing `viewMatrix * modelMatrix` in the shader would
+  round each product to float32 and sum in an unspecified order, an ulp or two away from the CPU's
+  double-precision accumulate, enough to move an edge pixel). The sampler of the matrix texture keeps
+  its fixed unit (15) in the custom program; the material's own samplers are numbered around it.
+* **One program per material.** A batchable mesh resolves straight to the batched variant while
+  the render list is built, so an eligible material compiles one program, and every run of its
+  meshes, however short (even a single mesh), goes through the batched path: switching between the
+  per-object and the batched variant would re-send every uniform of the material at each switch.
+  Runs follow the sort order, so transparent runs keep their back-to-front order as instance /
+  sub-draw order, and a run spans consecutive items of the *same material instance* only (two
+  instances of one shader with different uniform values never share a draw).
+* **Camera dependence.** A list whose batches hold view-space entries hashes the camera's view
+  matrix into the matrix-texture hash and records it with its cached draw commands; a camera move
+  rebuilds the commands and refills the texture, a static frame replays them.
+* **Matrix texture per list.** Every sorted list (opaque / transparent, per scene, pass and camera)
+  owns its own GPU copy of the matrix texture, so a list that did not change replays its commands
+  against matrices that are still on the GPU while other lists and passes draw through the batcher.
+  The static client frame (two shadow passes plus the main pass, each with opaque and transparent
+  batches) therefore uploads nothing at all once warm.
+* Multi-draw runs of custom programs need their custom attributes in the mega-buffers: every
+  non-instanced attribute of a geometry is now packed (§4b), and a program with custom attribute
+  names gets a VAO per page that points them at its linker-assigned locations.
+
+Effect: the client-shaped `shader-client` scene goes from 1,313 draws to 297 (132 instanced /
+single draws plus 165 multi-draws) and 3,320 to 955 GL calls per frame, pixel-identical to three.js;
+the static three-pass client frame goes from 651 to 53 draws and replays entirely.
+`renderer.autoBatchShaderMaterials = false` turns it off.
 
 ## 5. Uniform blocks instead of uniform uploads (`src/renderers/shaders/ShaderLib.js`)
 

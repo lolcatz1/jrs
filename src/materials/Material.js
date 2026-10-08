@@ -65,6 +65,7 @@ class Material extends EventDispatcher {
 		this._frameStamp = -1; this._frameRid = 0; this._batchGroup = null;
 		// per-frame program resolution cache (renderer-owned; frame ids are unique across renderers)
 		this._resolveStamp = -1; this._resolveVariant = -1; this._resolveProgram = null;
+		this._objTexMode = undefined; this._objTexVersion = -1; // ShaderMaterial batching eligibility (ShaderMaterialBatching.js), cached per version
 		this._shadowSigStamp = -1; this._shadowSig = 0;
 	}
 	get alphaTest() { return this._alphaTest; }
