@@ -1,0 +1,960 @@
+{
+ "scenario": "shadows",
+ "lib": "three",
+ "n": 2000,
+ "frames": 120,
+ "buildMs": 20.5,
+ "programs": 2,
+ "timing": {
+  "plain": {
+   "median": 92.2,
+   "mean": 85.177,
+   "p90": 121.4,
+   "best": 7.3,
+   "worst": 749.1
+  },
+  "plainRepeat": {
+   "median": 99.3,
+   "mean": 83.101,
+   "p90": 118.8,
+   "best": 7.7,
+   "worst": 136.5
+  },
+  "finishPerFrame": {
+   "median": 101.1,
+   "mean": 106.857,
+   "p90": 121.8,
+   "best": 7.4,
+   "worst": 2750.3
+  },
+  "drawsStubbed": {
+   "median": 7.2,
+   "mean": 7.688,
+   "p90": 8.7,
+   "best": 6.1,
+   "worst": 19
+  },
+  "trailingFinishMs": 0.2,
+  "wallPerFrameMs": 85.202
+ },
+ "worstFrames": [
+  {
+   "frame": 1,
+   "ms": 749.1,
+   "heapDeltaKB": 0,
+   "prevMs": 10.1
+  },
+  {
+   "frame": 38,
+   "ms": 300.4,
+   "heapDeltaKB": 0,
+   "prevMs": 102.4
+  },
+  {
+   "frame": 36,
+   "ms": 158.5,
+   "heapDeltaKB": 0,
+   "prevMs": 95.8
+  },
+  {
+   "frame": 118,
+   "ms": 130.1,
+   "heapDeltaKB": 0,
+   "prevMs": 116.7
+  },
+  {
+   "frame": 107,
+   "ms": 129.9,
+   "heapDeltaKB": 0,
+   "prevMs": 118.1
+  }
+ ],
+ "gcFrames": 0,
+ "heapGrowthKBPerFrame": 0,
+ "expensiveGLFrames": {
+  "frames": 60,
+  "of": 60,
+  "sample": [
+   {
+    "frame": 0,
+    "ms": 83.1,
+    "heapDeltaKB": 0,
+    "calls": {
+     "bindFramebuffer": 2
+    }
+   },
+   {
+    "frame": 1,
+    "ms": 2383.9,
+    "heapDeltaKB": 0,
+    "calls": {
+     "bindFramebuffer": 2
+    }
+   },
+   {
+    "frame": 2,
+    "ms": 50.3,
+    "heapDeltaKB": 0,
+    "calls": {
+     "bindFramebuffer": 2
+    }
+   },
+   {
+    "frame": 3,
+    "ms": 11.2,
+    "heapDeltaKB": 0,
+    "calls": {
+     "bindFramebuffer": 2
+    }
+   },
+   {
+    "frame": 4,
+    "ms": 14.5,
+    "heapDeltaKB": 0,
+    "calls": {
+     "bindFramebuffer": 2
+    }
+   },
+   {
+    "frame": 5,
+    "ms": 12.2,
+    "heapDeltaKB": 0,
+    "calls": {
+     "bindFramebuffer": 2
+    }
+   }
+  ],
+  "glCallsPerFrame": 10026
+ },
+ "profiledFrame": {
+  "median": 116,
+  "mean": 116.802,
+  "p90": 141.9,
+  "best": 9.9,
+  "worst": 2580.5
+ },
+ "cpu": {
+  "framesSeen": 51,
+  "steadyFrames": 41,
+  "stallFrames": 10,
+  "stallMsTotal": 9583.4,
+  "stalls": [
+   {
+    "frame": 1,
+    "ms": 2620.7,
+    "top": [
+     "uniformMatrix4fv [(native)] 2574.1ms",
+     "drawElements [(native)] 28.9ms",
+     "setValueM4 [setValueM4:5284] 2.6ms"
+    ]
+   },
+   {
+    "frame": 23,
+    "ms": 1133.4,
+    "top": [
+     "uniformMatrix4fv [(native)] 973.6ms",
+     "drawElements [(native)] 52.3ms",
+     "needsUpdate [WebGLBindingStates:1759] 23.3ms"
+    ]
+   },
+   {
+    "frame": 35,
+    "ms": 908.1,
+    "top": [
+     "uniformMatrix4fv [(native)] 687.5ms",
+     "drawElements [(native)] 112.1ms",
+     "needsUpdate [WebGLBindingStates:1759] 29.0ms"
+    ]
+   },
+   {
+    "frame": 50,
+    "ms": 833.6,
+    "top": [
+     "uniformMatrix4fv [(native)] 651.2ms",
+     "drawElements [(native)] 97.0ms",
+     "needsUpdate [WebGLBindingStates:1759] 38.9ms"
+    ]
+   },
+   {
+    "frame": 48,
+    "ms": 820,
+    "top": [
+     "uniformMatrix4fv [(native)] 594.1ms",
+     "drawElements [(native)] 100.5ms",
+     "needsUpdate [WebGLBindingStates:1759] 27.2ms"
+    ]
+   },
+   {
+    "frame": 32,
+    "ms": 712.7,
+    "top": [
+     "uniformMatrix4fv [(native)] 515.3ms",
+     "drawElements [(native)] 102.4ms",
+     "needsUpdate [WebGLBindingStates:1759] 60.2ms"
+    ]
+   },
+   {
+    "frame": 47,
+    "ms": 682.2,
+    "top": [
+     "uniformMatrix4fv [(native)] 420.8ms",
+     "drawElements [(native)] 180.6ms",
+     "needsUpdate [WebGLBindingStates:1759] 21.1ms"
+    ]
+   },
+   {
+    "frame": 41,
+    "ms": 646.6,
+    "top": [
+     "uniformMatrix4fv [(native)] 568.0ms",
+     "needsUpdate [WebGLBindingStates:1759] 22.4ms",
+     "setup [WebGLBindingStates:1623] 9.1ms"
+    ]
+   }
+  ],
+  "medianSampledFrameMs": 124.495,
+  "allSampledMsPerFrame": 275.56,
+  "markerMsPerFrame": 0.192,
+  "sampledMsPerFrame": 109.028,
+  "glNativeMsPerFrame": 89.093,
+  "samples": 90900,
+  "phases": [
+   {
+    "phase": "app update",
+    "msPerFrame": 0.008,
+    "pct": 0,
+    "glMsPerFrame": 0
+   },
+   {
+    "phase": "scene graph update",
+    "msPerFrame": 0.76,
+    "pct": 0.7,
+    "glMsPerFrame": 0
+   },
+   {
+    "phase": "project + cull",
+    "msPerFrame": 0.858,
+    "pct": 0.8,
+    "glMsPerFrame": 0
+   },
+   {
+    "phase": "sort",
+    "msPerFrame": 0.779,
+    "pct": 0.7,
+    "glMsPerFrame": 0
+   },
+   {
+    "phase": "program resolve",
+    "msPerFrame": 0.013,
+    "pct": 0,
+    "glMsPerFrame": 0
+   },
+   {
+    "phase": "draw-list build",
+    "msPerFrame": 0.434,
+    "pct": 0.4,
+    "glMsPerFrame": 0
+   },
+   {
+    "phase": "per-draw state",
+    "msPerFrame": 3.129,
+    "pct": 2.9,
+    "glMsPerFrame": 0.047
+   },
+   {
+    "phase": "uniform upload",
+    "msPerFrame": 77.263,
+    "pct": 70.9,
+    "glMsPerFrame": 74.831
+   },
+   {
+    "phase": "geometry bind",
+    "msPerFrame": 5.655,
+    "pct": 5.2,
+    "glMsPerFrame": 0.016
+   },
+   {
+    "phase": "draw issue",
+    "msPerFrame": 15.758,
+    "pct": 14.5,
+    "glMsPerFrame": 14.198
+   },
+   {
+    "phase": "frame setup/other renderer",
+    "msPerFrame": 3.964,
+    "pct": 3.6,
+    "glMsPerFrame": 0
+   },
+   {
+    "phase": "GC",
+    "msPerFrame": 0.134,
+    "pct": 0.1,
+    "glMsPerFrame": 0
+   },
+   {
+    "phase": "(program)/VM",
+    "msPerFrame": 0.128,
+    "pct": 0.1,
+    "glMsPerFrame": 0
+   },
+   {
+    "phase": "other JS",
+    "msPerFrame": 0.146,
+    "pct": 0.1,
+    "glMsPerFrame": 0
+   }
+  ],
+  "topSelf": [
+   {
+    "key": "uniformMatrix4fv [(native)]",
+    "msPerFrame": 74.831,
+    "pct": 68.6
+   },
+   {
+    "key": "drawElements [(native)]",
+    "msPerFrame": 14.198,
+    "pct": 13
+   },
+   {
+    "key": "needsUpdate [WebGLBindingStates:1759]",
+    "msPerFrame": 2.858,
+    "pct": 2.6
+   },
+   {
+    "key": "WebGLRenderer.renderBufferDirect [WebGLRenderer:17233]",
+    "msPerFrame": 2.532,
+    "pct": 2.3
+   },
+   {
+    "key": "setup [WebGLBindingStates:1623]",
+    "msPerFrame": 2.335,
+    "pct": 2.1
+   },
+   {
+    "key": "setValueM4 [setValueM4:5284]",
+    "msPerFrame": 1.981,
+    "pct": 1.8
+   },
+   {
+    "key": "setProgram [WebGLRenderer:18407]",
+    "msPerFrame": 1.699,
+    "pct": 1.6
+   },
+   {
+    "key": "setMaterial [WebGLState:10409]",
+    "msPerFrame": 1.283,
+    "pct": 1.2
+   },
+   {
+    "key": "multiplyMatrices [Matrix4:10570]",
+    "msPerFrame": 0.871,
+    "pct": 0.8
+   },
+   {
+    "key": "renderObject [WebGLShadowMap:9569]",
+    "msPerFrame": 0.79,
+    "pct": 0.7
+   },
+   {
+    "key": "intersectsObject [Frustum:25925]",
+    "msPerFrame": 0.579,
+    "pct": 0.5
+   },
+   {
+    "key": "renderObject [WebGLRenderer:18192]",
+    "msPerFrame": 0.526,
+    "pct": 0.5
+   },
+   {
+    "key": "updateMatrixWorld [Object3D:13067]",
+    "msPerFrame": 0.523,
+    "pct": 0.5
+   },
+   {
+    "key": "sort [WebGLRenderList:8213]",
+    "msPerFrame": 0.493,
+    "pct": 0.5
+   },
+   {
+    "key": "renderObjects [WebGLRenderer:18165]",
+    "msPerFrame": 0.434,
+    "pct": 0.4
+   },
+   {
+    "key": "render [WebGLIndexedBufferRenderer:4331]",
+    "msPerFrame": 0.43,
+    "pct": 0.4
+   },
+   {
+    "key": "setValueT1Array [setValueT1Array:5764]",
+    "msPerFrame": 0.3,
+    "pct": 0.3
+   },
+   {
+    "key": "painterSortStable [painterSortStable:8048]",
+    "msPerFrame": 0.286,
+    "pct": 0.3
+   },
+   {
+    "key": "update [WebGLAttributes:242]",
+    "msPerFrame": 0.233,
+    "pct": 0.2
+   },
+   {
+    "key": "projectObject [WebGLRenderer:17897]",
+    "msPerFrame": 0.221,
+    "pct": 0.2
+   },
+   {
+    "key": "determinantAffine [Matrix4:10669]",
+    "msPerFrame": 0.145,
+    "pct": 0.1
+   },
+   {
+    "key": "getBindingState [WebGLBindingStates:1680]",
+    "msPerFrame": 0.142,
+    "pct": 0.1
+   },
+   {
+    "key": "(garbage collector) [(native)]",
+    "msPerFrame": 0.134,
+    "pct": 0.1
+   },
+   {
+    "key": "getDepthMaterial [WebGLShadowMap:9480]",
+    "msPerFrame": 0.132,
+    "pct": 0.1
+   },
+   {
+    "key": "(program) [(native)]",
+    "msPerFrame": 0.128,
+    "pct": 0.1
+   },
+   {
+    "key": "update [WebGLInfo:4393]",
+    "msPerFrame": 0.125,
+    "pct": 0.1
+   },
+   {
+    "key": "now [(native)]",
+    "msPerFrame": 0.103,
+    "pct": 0.1
+   },
+   {
+    "key": "setValueM3 [setValueM3:5257]",
+    "msPerFrame": 0.099,
+    "pct": 0.1
+   },
+   {
+    "key": "WebGLRenderer.setRenderTarget [WebGLRenderer:18971]",
+    "msPerFrame": 0.073,
+    "pct": 0.1
+   },
+   {
+    "key": "applyMatrix4 [Vector4:8516]",
+    "msPerFrame": 0.057,
+    "pct": 0.1
+   },
+   {
+    "key": "get [WebGLAttributes:218]",
+    "msPerFrame": 0.046,
+    "pct": 0
+   },
+   {
+    "key": "window.__runFrames [(native)]",
+    "msPerFrame": 0.036,
+    "pct": 0
+   },
+   {
+    "key": "WebGLShadowMap.render [WebGLShadowMap:9143]",
+    "msPerFrame": 0.032,
+    "pct": 0
+   },
+   {
+    "key": "WebGLRenderer.render [WebGLRenderer:17674]",
+    "msPerFrame": 0.029,
+    "pct": 0
+   },
+   {
+    "key": "bindFramebuffer [(native)]",
+    "msPerFrame": 0.029,
+    "pct": 0
+   },
+   {
+    "key": "setFunc [WebGLState:9790]",
+    "msPerFrame": 0.028,
+    "pct": 0
+   },
+   {
+    "key": "setBlending [WebGLState:10264]",
+    "msPerFrame": 0.027,
+    "pct": 0
+   },
+   {
+    "key": "update [WebGLObjects:4612]",
+    "msPerFrame": 0.026,
+    "pct": 0
+   },
+   {
+    "key": "setClear [WebGLState:9690]",
+    "msPerFrame": 0.022,
+    "pct": 0
+   },
+   {
+    "key": "setMode [WebGLIndexedBufferRenderer:4316]",
+    "msPerFrame": 0.017,
+    "pct": 0
+   }
+  ],
+  "topInclusive": [
+   {
+    "key": "(root) [(native)]",
+    "msPerFrame": 109.028,
+    "pct": 100
+   },
+   {
+    "key": "(anonymous) [(native)]",
+    "msPerFrame": 108.748,
+    "pct": 99.7
+   },
+   {
+    "key": "evaluate [(native)]",
+    "msPerFrame": 108.748,
+    "pct": 99.7
+   },
+   {
+    "key": "window.__runFrames [(native)]",
+    "msPerFrame": 108.741,
+    "pct": 99.7
+   },
+   {
+    "key": "doFrame [(native)]",
+    "msPerFrame": 108.602,
+    "pct": 99.6
+   },
+   {
+    "key": "WebGLRenderer.render [WebGLRenderer:17674]",
+    "msPerFrame": 108.594,
+    "pct": 99.6
+   },
+   {
+    "key": "WebGLRenderer.renderBufferDirect [WebGLRenderer:17233]",
+    "msPerFrame": 103.381,
+    "pct": 94.8
+   },
+   {
+    "key": "setProgram [WebGLRenderer:18407]",
+    "msPerFrame": 78.959,
+    "pct": 72.4
+   },
+   {
+    "key": "setValueM4 [setValueM4:5284]",
+    "msPerFrame": 76.812,
+    "pct": 70.5
+   },
+   {
+    "key": "uniformMatrix4fv [(native)]",
+    "msPerFrame": 74.831,
+    "pct": 68.6
+   },
+   {
+    "key": "renderScene [WebGLRenderer:18015]",
+    "msPerFrame": 54.392,
+    "pct": 49.9
+   },
+   {
+    "key": "renderObjects [WebGLRenderer:18165]",
+    "msPerFrame": 54.386,
+    "pct": 49.9
+   },
+   {
+    "key": "renderObject [WebGLRenderer:18192]",
+    "msPerFrame": 53.948,
+    "pct": 49.5
+   },
+   {
+    "key": "WebGLShadowMap.render [WebGLShadowMap:9143]",
+    "msPerFrame": 52.051,
+    "pct": 47.7
+   },
+   {
+    "key": "renderObject [WebGLShadowMap:9569]",
+    "msPerFrame": 51.858,
+    "pct": 47.6
+   },
+   {
+    "key": "render [WebGLIndexedBufferRenderer:4331]",
+    "msPerFrame": 14.747,
+    "pct": 13.5
+   },
+   {
+    "key": "drawElements [(native)]",
+    "msPerFrame": 14.198,
+    "pct": 13
+   },
+   {
+    "key": "setup [WebGLBindingStates:1623]",
+    "msPerFrame": 5.586,
+    "pct": 5.1
+   },
+   {
+    "key": "needsUpdate [WebGLBindingStates:1759]",
+    "msPerFrame": 2.87,
+    "pct": 2.6
+   },
+   {
+    "key": "setMaterial [WebGLState:10409]",
+    "msPerFrame": 1.335,
+    "pct": 1.2
+   },
+   {
+    "key": "multiplyMatrices [Matrix4:10570]",
+    "msPerFrame": 0.871,
+    "pct": 0.8
+   },
+   {
+    "key": "sort [WebGLRenderList:8213]",
+    "msPerFrame": 0.779,
+    "pct": 0.7
+   },
+   {
+    "key": "updateMatrixWorld [Object3D:13067]",
+    "msPerFrame": 0.757,
+    "pct": 0.7
+   },
+   {
+    "key": "intersectsObject [Frustum:25925]",
+    "msPerFrame": 0.579,
+    "pct": 0.5
+   },
+   {
+    "key": "projectObject [WebGLRenderer:17897]",
+    "msPerFrame": 0.555,
+    "pct": 0.5
+   },
+   {
+    "key": "setValueT1Array [setValueT1Array:5764]",
+    "msPerFrame": 0.3,
+    "pct": 0.3
+   },
+   {
+    "key": "painterSortStable [painterSortStable:8048]",
+    "msPerFrame": 0.286,
+    "pct": 0.3
+   },
+   {
+    "key": "update [WebGLAttributes:242]",
+    "msPerFrame": 0.233,
+    "pct": 0.2
+   },
+   {
+    "key": "determinantAffine [Matrix4:10669]",
+    "msPerFrame": 0.145,
+    "pct": 0.1
+   },
+   {
+    "key": "getBindingState [WebGLBindingStates:1680]",
+    "msPerFrame": 0.142,
+    "pct": 0.1
+   }
+  ],
+  "glByCall": [
+   {
+    "key": "uniformMatrix4fv",
+    "msPerFrame": 74.831,
+    "pct": 68.6
+   },
+   {
+    "key": "drawElements",
+    "msPerFrame": 14.198,
+    "pct": 13
+   },
+   {
+    "key": "bindFramebuffer",
+    "msPerFrame": 0.029,
+    "pct": 0
+   },
+   {
+    "key": "bindVertexArray",
+    "msPerFrame": 0.016,
+    "pct": 0
+   },
+   {
+    "key": "clearColor",
+    "msPerFrame": 0.007,
+    "pct": 0
+   },
+   {
+    "key": "frontFace",
+    "msPerFrame": 0.005,
+    "pct": 0
+   },
+   {
+    "key": "scissor",
+    "msPerFrame": 0.003,
+    "pct": 0
+   },
+   {
+    "key": "useProgram",
+    "msPerFrame": 0.003,
+    "pct": 0
+   }
+  ],
+  "glCallers": [
+   {
+    "key": "uniformMatrix4fv <- setValueM4 [setValueM4:5284]",
+    "msPerFrame": 74.831,
+    "pct": 68.6
+   },
+   {
+    "key": "drawElements <- render [WebGLIndexedBufferRenderer:4331]",
+    "msPerFrame": 14.198,
+    "pct": 13
+   },
+   {
+    "key": "bindFramebuffer <- WebGLRenderer.setRenderTarget [WebGLRenderer:18971]",
+    "msPerFrame": 0.029,
+    "pct": 0
+   },
+   {
+    "key": "bindVertexArray <- bindVertexArrayObject [WebGLBindingStates:1668]",
+    "msPerFrame": 0.016,
+    "pct": 0
+   },
+   {
+    "key": "clearColor <- setClear [WebGLState:9690]",
+    "msPerFrame": 0.007,
+    "pct": 0
+   },
+   {
+    "key": "frontFace <- setMaterial [WebGLState:10409]",
+    "msPerFrame": 0.005,
+    "pct": 0
+   },
+   {
+    "key": "scissor <- WebGLRenderer.setRenderTarget [WebGLRenderer:18971]",
+    "msPerFrame": 0.003,
+    "pct": 0
+   },
+   {
+    "key": "useProgram <- setProgram [WebGLRenderer:18407]",
+    "msPerFrame": 0.003,
+    "pct": 0
+   }
+  ],
+  "unclassifiedLeaves": [
+   {
+    "key": "renderObject [WebGLShadowMap:9569] -> frame setup/other renderer",
+    "msPerFrame": 0.79,
+    "pct": 0.7
+   },
+   {
+    "key": "multiplyMatrices [Matrix4:10570] -> draw issue",
+    "msPerFrame": 0.453,
+    "pct": 0.4
+   },
+   {
+    "key": "multiplyMatrices [Matrix4:10570] -> scene graph update",
+    "msPerFrame": 0.23,
+    "pct": 0.2
+   },
+   {
+    "key": "multiplyMatrices [Matrix4:10570] -> frame setup/other renderer",
+    "msPerFrame": 0.188,
+    "pct": 0.2
+   },
+   {
+    "key": "determinantAffine [Matrix4:10669] -> frame setup/other renderer",
+    "msPerFrame": 0.145,
+    "pct": 0.1
+   },
+   {
+    "key": "getDepthMaterial [WebGLShadowMap:9480] -> frame setup/other renderer",
+    "msPerFrame": 0.132,
+    "pct": 0.1
+   },
+   {
+    "key": "now [(native)] -> other JS",
+    "msPerFrame": 0.103,
+    "pct": 0.1
+   },
+   {
+    "key": "applyMatrix4 [Vector4:8516] -> project + cull",
+    "msPerFrame": 0.057,
+    "pct": 0.1
+   },
+   {
+    "key": "window.__runFrames [(native)] -> other JS",
+    "msPerFrame": 0.036,
+    "pct": 0
+   },
+   {
+    "key": "WebGLShadowMap.render [WebGLShadowMap:9143] -> frame setup/other renderer",
+    "msPerFrame": 0.032,
+    "pct": 0
+   },
+   {
+    "key": "copy [Vector4:8343] -> frame setup/other renderer",
+    "msPerFrame": 0.01,
+    "pct": 0
+   },
+   {
+    "key": "updateMatrixWorld [Camera:46703] -> frame setup/other renderer",
+    "msPerFrame": 0.007,
+    "pct": 0
+   },
+   {
+    "key": "(anonymous) [(native)] -> other JS",
+    "msPerFrame": 0.006,
+    "pct": 0
+   },
+   {
+    "key": "transformDirection [Vector3:5319] -> uniform upload",
+    "msPerFrame": 0.006,
+    "pct": 0
+   },
+   {
+    "key": "get alphaTest [Material:21547] -> uniform upload",
+    "msPerFrame": 0.004,
+    "pct": 0
+   }
+  ]
+ },
+ "heap": {
+  "bytesPerFrame": 159352,
+  "top": [
+   {
+    "key": "painterSortStable [painterSortStable:8048]  <- sort [(native)]",
+    "bytesPerFrame": 106566,
+    "pct": 66.9
+   },
+   {
+    "key": "projectObject [WebGLRenderer:17897]  <- projectObject [WebGLRenderer:17897]",
+    "bytesPerFrame": 33699,
+    "pct": 21.1
+   },
+   {
+    "key": "sort [(native)]  <- sort [WebGLRenderList:8213]",
+    "bytesPerFrame": 17650,
+    "pct": 11.1
+   },
+   {
+    "key": "sort [(native)]  <- setup [WebGLLights:8516]",
+    "bytesPerFrame": 422,
+    "pct": 0.3
+   },
+   {
+    "key": "setValueV3f [setValueV3f:5159]  <- upload [WebGLUniforms:6123]",
+    "bytesPerFrame": 117,
+    "pct": 0.1
+   },
+   {
+    "key": "setFromProjectionMatrix [Frustum:25874]  <- _updateMatrix [LightShadow:46455]",
+    "bytesPerFrame": 86,
+    "pct": 0.1
+   },
+   {
+    "key": "setFromProjectionMatrix [Frustum:25874]  <- WebGLRenderer.render [WebGLRenderer:17674]",
+    "bytesPerFrame": 78,
+    "pct": 0
+   },
+   {
+    "key": "next [(native)]  <- from [(native)]",
+    "bytesPerFrame": 74,
+    "pct": 0
+   },
+   {
+    "key": "pushLight [WebGLRenderState:8966]  <- projectObject [WebGLRenderer:17897]",
+    "bytesPerFrame": 73,
+    "pct": 0
+   },
+   {
+    "key": "flatten [flatten:5029]  <- setValueM4Array [setValueM4Array:5697]",
+    "bytesPerFrame": 69,
+    "pct": 0
+   },
+   {
+    "key": "pushShadow [WebGLRenderState:8972]  <- projectObject [WebGLRenderer:17897]",
+    "bytesPerFrame": 69,
+    "pct": 0
+   },
+   {
+    "key": "setup [WebGLLights:8516]  <- WebGLRenderer.render [WebGLRenderer:17674]",
+    "bytesPerFrame": 56,
+    "pct": 0
+   },
+   {
+    "key": "window.__runFrames [(native)]  <- (anonymous) [(native)]",
+    "bytesPerFrame": 52,
+    "pct": 0
+   },
+   {
+    "key": "innerSerialize [(native)]  <- serialize [(native)]",
+    "bytesPerFrame": 40,
+    "pct": 0
+   },
+   {
+    "key": "from [(native)]  <- window.__runFrames [(native)]",
+    "bytesPerFrame": 40,
+    "pct": 0
+   },
+   {
+    "key": "(anonymous) [(native)]  <- innerSerialize [(native)]",
+    "bytesPerFrame": 35,
+    "pct": 0
+   },
+   {
+    "key": "setValueV3f [setValueV3f:5159]  <- setValue [StructuredUniform:5972]",
+    "bytesPerFrame": 35,
+    "pct": 0
+   },
+   {
+    "key": "push [(native)]  <- innerSerialize [(native)]",
+    "bytesPerFrame": 29,
+    "pct": 0
+   },
+   {
+    "key": "(V8 API) [(native)]  <- (root) [(native)]",
+    "bytesPerFrame": 24,
+    "pct": 0
+   },
+   {
+    "key": "next [(native)]  <- innerSerialize [(native)]",
+    "bytesPerFrame": 22,
+    "pct": 0
+   },
+   {
+    "key": "lookAt [Matrix4:10491]  <- lookAt [Object3D:12585]",
+    "bytesPerFrame": 22,
+    "pct": 0
+   },
+   {
+    "key": "entries [(native)]  <- innerSerialize [(native)]",
+    "bytesPerFrame": 17,
+    "pct": 0
+   },
+   {
+    "key": "min [(native)]  <- setFromRotationMatrix [Euler:11523]",
+    "bytesPerFrame": 17,
+    "pct": 0
+   },
+   {
+    "key": "values [(native)]  <- innerSerialize [(native)]",
+    "bytesPerFrame": 9,
+    "pct": 0
+   },
+   {
+    "key": "isTypedArray [(native)]  <- innerSerialize [(native)]",
+    "bytesPerFrame": 9,
+    "pct": 0
+   }
+  ]
+ },
+ "info": {
+  "calls": 4001,
+  "triangles": 48002,
+  "programs": 2,
+  "geometries": 2,
+  "textures": 2
+ }
+}
