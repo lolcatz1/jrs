@@ -29,6 +29,7 @@ import { MATERIAL_SHADER, MATERIAL_SPRITE, MATERIAL_POINTS, FRAME_BLOCK_SIZE, LI
 const _projScreenMatrix = /*@__PURE__*/ new Matrix4();
 const _vector3 = /*@__PURE__*/ new Vector3();
 const _color = /*@__PURE__*/ new Color();
+const _fogRGB = /*@__PURE__*/ new Color();
 const _frustum = /*@__PURE__*/ new Frustum();
 const _emptyScene = { fog: null, environment: null, background: null, overrideMaterial: null, isScene: true, matrixWorldAutoUpdate: false, children: [], visible: true };
 
@@ -484,6 +485,11 @@ class WebGLRenderer {
 		if (id !== this._envKeyId) { this._envKeyId = id; this._envVersion = this._lightsEpoch * 65536 + id; }
 	}
 
+	/** Fog colour as three.js uploads it (`getUnlitUniformColorSpace`): converted to the output colour space on the canvas, left in the working space on a render target. */
+	_unlitFogColor(fog) {
+		return fog.color.getRGB(_fogRGB, this._currentRenderTarget === null ? this._outputColorSpace : ColorManagement.workingColorSpace);
+	}
+
 	_uploadFrameBlock(camera, scene) {
 		const gl = this._gl, d = this._frameData;
 		const pe = camera.projectionMatrix.elements, ve = camera.matrixWorldInverse.elements;
@@ -495,7 +501,8 @@ class WebGLRenderer {
 		d[48] = we[12]; d[49] = we[13]; d[50] = we[14]; d[51] = camera.isOrthographicCamera ? 1 : 0;
 		const fog = scene.fog;
 		if (fog !== null && fog !== undefined) {
-			d[52] = fog.color.r; d[53] = fog.color.g; d[54] = fog.color.b; d[55] = fog.isFogExp2 ? 2 : 1;
+			const fogRGB = this._unlitFogColor(fog);
+			d[52] = fogRGB.r; d[53] = fogRGB.g; d[54] = fogRGB.b; d[55] = fog.isFogExp2 ? 2 : 1;
 			d[56] = fog.near !== undefined ? fog.near : 0; d[57] = fog.far !== undefined ? fog.far : 0; d[58] = fog.density !== undefined ? fog.density : 0;
 		} else {
 			d[52] = 0; d[53] = 0; d[54] = 0; d[55] = 0; d[56] = 0; d[57] = 0; d[58] = 0;
@@ -1132,7 +1139,7 @@ class WebGLRenderer {
 		if (pu.toneMappingExposure && uniforms.toneMappingExposure === undefined) setUniformValue(gl, this, pu.toneMappingExposure, this.toneMappingExposure);
 		const fog = this._currentScene ? this._currentScene.fog : null;
 		if (fog && material.fog === true) {
-			if (pu.fogColor) setUniformValue(gl, this, pu.fogColor, fog.color);
+			if (pu.fogColor) setUniformValue(gl, this, pu.fogColor, this._unlitFogColor(fog));
 			if (fog.isFog) { if (pu.fogNear) setUniformValue(gl, this, pu.fogNear, fog.near); if (pu.fogFar) setUniformValue(gl, this, pu.fogFar, fog.far); }
 			else if (pu.fogDensity) setUniformValue(gl, this, pu.fogDensity, fog.density);
 		}
