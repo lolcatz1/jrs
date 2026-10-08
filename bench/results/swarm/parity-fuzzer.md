@@ -132,7 +132,8 @@ default feature set, `--continue`.
 | Tip a178964 (perMapTransform on) | 1-100 | 99 pass; 14 (0.058, wireframe class) |
 | Tip a178964, `--enable=points,lines` | 1-40 | 39 pass; 14 (0.169 / 0.281 at frame 3: the same wireframe-class grouped boxes) after the Points-under-override generator fix (before it, seed 2 was non-deterministic in three.js itself: 9.6 / 5.2 / 0.8 on three runs) |
 | Tip a178964, points + lines on by default | 1-100 | 95 pass; 14 (0.169, wireframe class), 58 (1.58 → fix 25), 59 (0.19, Open), 81 / 90 (≤ 0.009, 14-15 edge pixels) |
-| Tip a178964 + fix 25 (final code of this cycle) | 1-100 | **96 pass**; 14 (wireframe class), 59 (Open), 81 / 90 (edge pixels) |
+| Tip a178964 + fix 25 | 1-100 | 96 pass; 14 (wireframe class), 59 (generator false positive, see Open), 81 / 90 (edge pixels) |
+| Tip a178964 + fix 25, transparent mutation keeps depth writes (final generator) | 1-100 | **97 pass**; 14 (wireframe class), 81 / 90 (14-15 edge pixels, ≤ 0.009) |
 
 Feature-isolated batches with the final code (30 seeds each, `--only=basic,<feature>` plus
 `lambert,lights` where lighting is needed): fog, transparency, side, wireframe+drawRange, stencil,
@@ -333,12 +334,12 @@ each with the reasoning.
 * ~~Seed 12 (envMaps generator, 0.125)~~: identical after fix 24.
 * ~~Seed 58 (points + lines generator, 1.58 at frame 3)~~: fix 25 (the stale geometry was the
   triangle soup itself, not the floor: the diff pixels sat where the rescaled triangles moved).
-* **Seed 59 (points + lines generator, 0.19 at frame 4, 2.9 on 015b35f)**: frame 3 is identical; on
-  frame 4 (mutations: a material's `transparent` toggled with `needsUpdate`, a mesh's `renderOrder`
-  changed) three grouped DoubleSide meshes composite differently (removing any one of objects 18, 20
-  or 22 clears it: Basic map + alphaTest + Additive premultiplied transparent, and a Standard
-  alphaMap/emissiveMap DoubleSide); `--noshadow`, `autoBatch=false` and `reuseRenderLists=false` change
-  nothing. Likely the two-pass / list placement of a material whose `transparent` changed mid-run; open.
+* ~~Seed 59 (points + lines generator, 0.19 at frame 4)~~: a generator false positive. The frame-4
+  `transparent` mutation turned a transparent Phong group material (random `depthWrite: false`) opaque
+  while keeping `depthWrite: false`, which makes it order-sensitive, and jrs's opaque ordering (grouped
+  by material) is the documented by-design difference from three's front-to-back sort; materials that
+  are order-sensitive from the start get a unique `renderOrder`, this one became so mid-run. The
+  mutation now turns depth writes back on with `transparent` (identical afterwards; 0.001).
 * **Seed 145 of the earlier generator** (`--seed=145 --disable=envMaps`): 0.082 after fix 24 (was
   0.165); the ShaderMaterial-after-overrideMaterial part remains.
 * **Seed 14 (0.05)**: `MeshPhongMaterial` wireframe lines textured with a render target sample about
