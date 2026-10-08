@@ -1,0 +1,460 @@
+{
+ "scenario": "shared-animated",
+ "lib": "jrs",
+ "frames": 120,
+ "medianMs": 7.600000000093132,
+ "worst": [
+  {
+   "frame": 116,
+   "ms": 12024.5,
+   "busiestThreads": [
+    "GPU Process/CrGpuMain 108216.9ms",
+    "Renderer/CrRendererMain 36067.0ms",
+    "Renderer/Compositor 686.8ms",
+    "GPU Process/VizCompositorThread 363.9ms",
+    "Service: tracing.mojom.TracingService/tracing.CrUtilityMain 53.9ms",
+    "GPU Process/Chrome_ChildIOThread 34.2ms"
+   ],
+   "gcMs": 0,
+   "longest": [
+    {
+     "name": "ThreadControllerImpl::RunTask",
+     "cat": "toplevel",
+     "ms": 13049.7,
+     "where": "Renderer/CrRendererMain",
+     "args": "{\"src_file\":\"ipc/ipc_mojo_bootstrap.cc\",\"src_func\":\"Accept\",\"src_line\":1141}"
+    },
+    {
+     "name": "Receive mojo message",
+     "cat": "toplevel,mojom",
+     "ms": 13049.7,
+     "where": "Renderer/CrRendererMain",
+     "args": "{\"chrome_mojo_event_info\":{\"data_num_bytes\":832,\"ipc_hash\":3544143186,\"mojo_interface_method\":{\"native_symbol\":{\"mapping_id\":3,\"rel_pc\":119399304}},\"mojo_interf"
+    },
+    {
+     "name": "ThreadControllerImpl::RunTask",
+     "cat": "toplevel",
+     "ms": 12096,
+     "where": "GPU Process/CrGpuMain",
+     "args": "{\"src_file\":\"gpu/command_buffer/service/scheduler.cc\",\"src_func\":\"TryScheduleSequence\",\"src_line\":412}"
+    },
+    {
+     "name": "Scheduler::RunTask",
+     "cat": "gpu,toplevel.flow",
+     "ms": 12096,
+     "where": "GPU Process/CrGpuMain",
+     "args": "{}"
+    },
+    {
+     "name": "GpuChannel::ExecuteDeferredRequest",
+     "cat": "gpu",
+     "ms": 12096,
+     "where": "GPU Process/CrGpuMain",
+     "args": "{}"
+    },
+    {
+     "name": "WebGL",
+     "cat": "gpu",
+     "ms": 12096,
+     "where": "GPU Process/CrGpuMain",
+     "args": "{}"
+    },
+    {
+     "name": "CommandBuffer::Flush",
+     "cat": "gpu,toplevel.flow",
+     "ms": 12096,
+     "where": "GPU Process/CrGpuMain",
+     "args": "{}"
+    },
+    {
+     "name": "CommandBufferStub::OnAsyncFlush",
+     "cat": "gpu",
+     "ms": 12096,
+     "where": "GPU Process/CrGpuMain",
+     "args": "{\"put_offset\":7297}"
+    },
+    {
+     "name": "CommandBufferService:PutChanged",
+     "cat": "gpu",
+     "ms": 12095.9,
+     "where": "GPU Process/CrGpuMain",
+     "args": "{\"handler\":\".WebGL-0x39840011a600\"}"
+    },
+    {
+     "name": "ContextVk::onCopyUpdate",
+     "cat": "gpu.angle",
+     "ms": 12089.5,
+     "where": "GPU Process/CrGpuMain",
+     "args": "{}"
+    },
+    {
+     "name": "ContextVk::flushAndSubmitOutsideRenderPassCommands",
+     "cat": "gpu.angle",
+     "ms": 12089,
+     "where": "GPU Process/CrGpuMain",
+     "args": "{}"
+    },
+    {
+     "name": "CommandBufferProxyImpl::WaitForToken",
+     "cat": "gpu",
+     "ms": 12017.5,
+     "where": "Renderer/CrRendererMain",
+     "args": "{\"end\":437,\"start\":402}"
+    },
+    {
+     "name": "ThreadControllerImpl::RunTask",
+     "cat": "toplevel",
+     "ms": 4.3,
+     "where": "GPU Process/CrGpuMain",
+     "args": "{\"src_file\":\"gpu/command_buffer/service/scheduler.cc\",\"src_func\":\"RunNextTask\",\"src_line\":610}"
+    },
+    {
+     "name": "Scheduler::RunTask",
+     "cat": "gpu,toplevel.flow",
+     "ms": 4.3,
+     "where": "GPU Process/CrGpuMain",
+     "args": "{}"
+    }
+   ]
+  },
+  {
+   "frame": 53,
+   "ms": 16.7,
+   "busiestThreads": [
+    "Renderer/CrRendererMain 33.5ms",
+    "Renderer/Compositor 1.1ms",
+    "GPU Process/CrGpuMain 0.6ms",
+    "GPU Process/VizCompositorThread 0.5ms",
+    "Browser/Chrome_IOThread 0.1ms",
+    "Browser/CrBrowserMain 0.1ms"
+   ],
+   "gcMs": 0,
+   "longest": [
+    {
+     "name": "ThreadControllerImpl::RunTask",
+     "cat": "toplevel",
+     "ms": 13049.7,
+     "where": "Renderer/CrRendererMain",
+     "args": "{\"src_file\":\"ipc/ipc_mojo_bootstrap.cc\",\"src_func\":\"Accept\",\"src_line\":1141}"
+    },
+    {
+     "name": "Receive mojo message",
+     "cat": "toplevel,mojom",
+     "ms": 13049.7,
+     "where": "Renderer/CrRendererMain",
+     "args": "{\"chrome_mojo_event_info\":{\"data_num_bytes\":832,\"ipc_hash\":3544143186,\"mojo_interface_method\":{\"native_symbol\":{\"mapping_id\":3,\"rel_pc\":119399304}},\"mojo_interf"
+    },
+    {
+     "name": "ThreadControllerImpl::RunTask",
+     "cat": "toplevel",
+     "ms": 8,
+     "where": "GPU Process/CrGpuMain",
+     "args": "{\"src_file\":\"gpu/command_buffer/service/scheduler.cc\",\"src_func\":\"TryScheduleSequence\",\"src_line\":412}"
+    },
+    {
+     "name": "Scheduler::RunTask",
+     "cat": "gpu,toplevel.flow",
+     "ms": 8,
+     "where": "GPU Process/CrGpuMain",
+     "args": "{}"
+    },
+    {
+     "name": "GpuChannel::ExecuteDeferredRequest",
+     "cat": "gpu",
+     "ms": 8,
+     "where": "GPU Process/CrGpuMain",
+     "args": "{}"
+    },
+    {
+     "name": "WebGL",
+     "cat": "gpu",
+     "ms": 7.9,
+     "where": "GPU Process/CrGpuMain",
+     "args": "{}"
+    },
+    {
+     "name": "CommandBuffer::Flush",
+     "cat": "gpu,toplevel.flow",
+     "ms": 7.9,
+     "where": "GPU Process/CrGpuMain",
+     "args": "{}"
+    },
+    {
+     "name": "CommandBufferStub::OnAsyncFlush",
+     "cat": "gpu",
+     "ms": 7.9,
+     "where": "GPU Process/CrGpuMain",
+     "args": "{\"put_offset\":4547}"
+    },
+    {
+     "name": "CommandBufferService:PutChanged",
+     "cat": "gpu",
+     "ms": 7.9,
+     "where": "GPU Process/CrGpuMain",
+     "args": "{\"handler\":\".WebGL-0x39840011a600\"}"
+    },
+    {
+     "name": "ThreadControllerImpl::RunTask",
+     "cat": "toplevel",
+     "ms": 0.2,
+     "where": "Renderer/Compositor",
+     "args": "{\"chrome_task_annotator\":{\"delay_policy\":\"PRECISE\",\"task_delay_us\":16077},\"src_file\":\"cc/scheduler/scheduler.cc\",\"src_func\":\"ScheduleBeginImplFrameDeadline\",\"sr"
+    },
+    {
+     "name": "auto cc::Scheduler::FinishImplFrame()::(anonymous class)::operator()()::(anonymous class)::operator()(uint32_t) const",
+     "cat": "cc",
+     "ms": 0.2,
+     "where": "Renderer/Compositor",
+     "args": "{}"
+    },
+    {
+     "name": "DidNotSubmitInLastFrame",
+     "cat": "cc",
+     "ms": 0.2,
+     "where": "Renderer/Compositor",
+     "args": "{\"has_pending_tree\":false,\"is_waiting_on_main\":true}"
+    },
+    {
+     "name": "ThreadControllerImpl::RunTask",
+     "cat": "toplevel",
+     "ms": 0.1,
+     "where": "GPU Process/VizCompositorThread",
+     "args": "{\"chrome_task_annotator\":{\"delay_policy\":\"PRECISE\",\"task_delay_us\":16433},\"src_file\":\"components/viz/common/frame_sinks/delay_based_time_source.cc\",\"src_func\":\""
+    },
+    {
+     "name": "EpollEvent",
+     "cat": "toplevel",
+     "ms": 0.1,
+     "where": "Renderer/Compositor",
+     "args": "{\"can_read\":true,\"can_write\":false,\"context\":\"0x39840064f578\",\"controller_created_from\":{\"file_name\":\"mojo/core/channel_posix.cc\",\"function_name\":\"StartOnIOThre"
+    }
+   ]
+  },
+  {
+   "frame": 0,
+   "ms": 15.4,
+   "busiestThreads": [
+    "Renderer/ThreadPoolForegroundWorker 37.8ms",
+    "Renderer/CrRendererMain 31.3ms",
+    "Renderer/Compositor 1.5ms",
+    "GPU Process/VizCompositorThread 0.6ms",
+    "Service: tracing.mojom.TracingService/Chrome_ChildIOThread 0.2ms",
+    "Service: tracing.mojom.TracingService/tracing.CrUtilityMain 0.1ms"
+   ],
+   "gcMs": 48.8,
+   "longest": [
+    {
+     "name": "ThreadControllerImpl::RunTask",
+     "cat": "toplevel",
+     "ms": 13049.7,
+     "where": "Renderer/CrRendererMain",
+     "args": "{\"src_file\":\"ipc/ipc_mojo_bootstrap.cc\",\"src_func\":\"Accept\",\"src_line\":1141}"
+    },
+    {
+     "name": "Receive mojo message",
+     "cat": "toplevel,mojom",
+     "ms": 13049.7,
+     "where": "Renderer/CrRendererMain",
+     "args": "{\"chrome_mojo_event_info\":{\"data_num_bytes\":832,\"ipc_hash\":3544143186,\"mojo_interface_method\":{\"native_symbol\":{\"mapping_id\":3,\"rel_pc\":119399304}},\"mojo_interf"
+    },
+    {
+     "name": "ThreadPool_RunTask",
+     "cat": "toplevel",
+     "ms": 17.1,
+     "where": "Renderer/ThreadPoolForegroundWorker",
+     "args": "{\"src_file\":\"v8/src/heap/concurrent-marking.cc\",\"src_func\":\"void v8::internal::ConcurrentMarking::TryScheduleJob(GarbageCollector, TaskPriority)\",\"src_line\":712"
+    },
+    {
+     "name": "V8.GC_MC_BACKGROUND_MARKING",
+     "cat": "devtools.timeline,disabled-by-default-v8.gc",
+     "ms": 17.1,
+     "where": "Renderer/ThreadPoolForegroundWorker",
+     "args": "{\"epoch\":11}"
+    },
+    {
+     "name": "ThreadPool_RunTask",
+     "cat": "toplevel",
+     "ms": 15.8,
+     "where": "Renderer/ThreadPoolForegroundWorker",
+     "args": "{\"src_file\":\"v8/src/heap/concurrent-marking.cc\",\"src_func\":\"void v8::internal::ConcurrentMarking::TryScheduleJob(GarbageCollector, TaskPriority)\",\"src_line\":712"
+    },
+    {
+     "name": "V8.GC_MC_BACKGROUND_MARKING",
+     "cat": "devtools.timeline,disabled-by-default-v8.gc",
+     "ms": 15.8,
+     "where": "Renderer/ThreadPoolForegroundWorker",
+     "args": "{\"epoch\":11}"
+    },
+    {
+     "name": "ThreadPool_RunTask",
+     "cat": "toplevel",
+     "ms": 15.7,
+     "where": "Renderer/ThreadPoolForegroundWorker",
+     "args": "{\"src_file\":\"v8/src/heap/concurrent-marking.cc\",\"src_func\":\"void v8::internal::ConcurrentMarking::TryScheduleJob(GarbageCollector, TaskPriority)\",\"src_line\":712"
+    },
+    {
+     "name": "V8.GC_MC_BACKGROUND_MARKING",
+     "cat": "devtools.timeline,disabled-by-default-v8.gc",
+     "ms": 15.7,
+     "where": "Renderer/ThreadPoolForegroundWorker",
+     "args": "{\"epoch\":11}"
+    },
+    {
+     "name": "ThreadPool_RunTask",
+     "cat": "toplevel",
+     "ms": 3.2,
+     "where": "Renderer/ThreadPoolForegroundWorker",
+     "args": "{\"src_file\":\"v8/src/compiler-dispatcher/optimizing-compile-dispatcher.cc\",\"src_func\":\"void v8::internal::OptimizingCompileTaskExecutor::EnsureStarted()\",\"src_li"
+    },
+    {
+     "name": "ThreadControllerImpl::RunTask",
+     "cat": "toplevel",
+     "ms": 0.4,
+     "where": "Renderer/Compositor",
+     "args": "{\"src_file\":\"cc/trees/proxy_main.cc\",\"src_func\":\"SendCommitRequestToImplThreadIfNeeded\",\"src_line\":904}"
+    },
+    {
+     "name": "ProxyImpl::SetNeedsCommitOnImplThread",
+     "cat": "cc",
+     "ms": 0.4,
+     "where": "Renderer/Compositor",
+     "args": "{}"
+    },
+    {
+     "name": "ThreadControllerImpl::RunTask",
+     "cat": "toplevel",
+     "ms": 0.2,
+     "where": "Renderer/Chrome_ChildIOThread",
+     "args": "{\"src_file\":\"ipc/ipc_mojo_bootstrap.cc\",\"src_func\":\"SendMessage\",\"src_line\":901}"
+    },
+    {
+     "name": "ThreadControllerImpl::RunTask",
+     "cat": "toplevel",
+     "ms": 0.2,
+     "where": "GPU Process/VizCompositorThread",
+     "args": "{\"src_file\":\"mojo/public/cpp/system/simple_watcher.cc\",\"src_func\":\"Notify\",\"src_line\":102}"
+    },
+    {
+     "name": "SimpleWatcher::OnHandleReady",
+     "cat": "toplevel",
+     "ms": 0.2,
+     "where": "GPU Process/VizCompositorThread",
+     "args": "{\"chrome_mojo_event_info\":{\"watcher_notify_interface_tag\":\"viz.mojom.CompositorFrameSink\"}}"
+    }
+   ]
+  },
+  {
+   "frame": 1,
+   "ms": 14.1,
+   "busiestThreads": [
+    "Renderer/CrRendererMain 28.5ms",
+    "Renderer/Compositor 0.9ms",
+    "GPU Process/VizCompositorThread 0.4ms",
+    "Renderer/Chrome_ChildIOThread 0.3ms",
+    "Browser/Chrome_IOThread 0.2ms",
+    "Browser/CrBrowserMain 0.1ms"
+   ],
+   "gcMs": 0.3,
+   "longest": [
+    {
+     "name": "ThreadControllerImpl::RunTask",
+     "cat": "toplevel",
+     "ms": 13049.7,
+     "where": "Renderer/CrRendererMain",
+     "args": "{\"src_file\":\"ipc/ipc_mojo_bootstrap.cc\",\"src_func\":\"Accept\",\"src_line\":1141}"
+    },
+    {
+     "name": "Receive mojo message",
+     "cat": "toplevel,mojom",
+     "ms": 13049.7,
+     "where": "Renderer/CrRendererMain",
+     "args": "{\"chrome_mojo_event_info\":{\"data_num_bytes\":832,\"ipc_hash\":3544143186,\"mojo_interface_method\":{\"native_symbol\":{\"mapping_id\":3,\"rel_pc\":119399304}},\"mojo_interf"
+    },
+    {
+     "name": "ThreadControllerImpl::RunTask",
+     "cat": "toplevel",
+     "ms": 0.3,
+     "where": "Renderer/Chrome_ChildIOThread",
+     "args": "{\"src_file\":\"ipc/ipc_mojo_bootstrap.cc\",\"src_func\":\"SendMessage\",\"src_line\":901}"
+    },
+    {
+     "name": "ThreadControllerImpl::RunTask",
+     "cat": "toplevel",
+     "ms": 0.1,
+     "where": "GPU Process/VizCompositorThread",
+     "args": "{\"chrome_task_annotator\":{\"delay_policy\":\"PRECISE\",\"task_delay_us\":7602},\"src_file\":\"components/viz/common/frame_sinks/delay_based_time_source.cc\",\"src_func\":\"P"
+    },
+    {
+     "name": "ThreadControllerImpl::RunTask",
+     "cat": "toplevel",
+     "ms": 0.1,
+     "where": "Renderer/Compositor",
+     "args": "{\"chrome_task_annotator\":{\"delay_policy\":\"PRECISE\",\"task_delay_us\":7448},\"src_file\":\"cc/scheduler/scheduler.cc\",\"src_func\":\"ScheduleBeginImplFrameDeadline\",\"src"
+    },
+    {
+     "name": "auto cc::Scheduler::FinishImplFrame()::(anonymous class)::operator()()::(anonymous class)::operator()(uint32_t) const",
+     "cat": "cc",
+     "ms": 0.1,
+     "where": "Renderer/Compositor",
+     "args": "{}"
+    },
+    {
+     "name": "DidNotSubmitInLastFrame",
+     "cat": "cc",
+     "ms": 0.1,
+     "where": "Renderer/Compositor",
+     "args": "{\"has_pending_tree\":false,\"is_waiting_on_main\":true}"
+    },
+    {
+     "name": "DelayBasedBeginFrameSource::OnTimerTick",
+     "cat": "viz",
+     "ms": 0.1,
+     "where": "GPU Process/VizCompositorThread",
+     "args": "{\"frame_time\":3639571078,\"interval\":16666}"
+    },
+    {
+     "name": "auto cc::Scheduler::SendDidNotProduceFrame(const viz::BeginFrameArgs &, FrameSkippedReason)::(anonymous class)::operator()()::(anonymous class)::operator()(uint32_t) const",
+     "cat": "cc",
+     "ms": 0.1,
+     "where": "Renderer/Compositor",
+     "args": "{\"reason\":2}"
+    },
+    {
+     "name": "EpollEvent",
+     "cat": "toplevel",
+     "ms": 0.1,
+     "where": "Renderer/Compositor",
+     "args": "{\"can_read\":true,\"can_write\":false,\"context\":\"0x39840064f578\",\"controller_created_from\":{\"file_name\":\"mojo/core/channel_posix.cc\",\"function_name\":\"StartOnIOThre"
+    },
+    {
+     "name": "LayerTreeHostImpl::DidNotProduceFrame",
+     "cat": "cc,benchmark",
+     "ms": 0.1,
+     "where": "Renderer/Compositor",
+     "args": "{\"Frame Sequence Number\":62,\"FrameSkippedReason\":\"kWaitingOnMain\"}"
+    },
+    {
+     "name": "Graphics.Pipeline",
+     "cat": "viz,benchmark,graphics.pipeline",
+     "ms": 0.1,
+     "where": "Renderer/Compositor",
+     "args": "{\"chrome_graphics_pipeline\":{\"frame_skipped_reason\":\"SKIPPED_REASON_WAITING_ON_MAIN\",\"step\":\"STEP_DID_NOT_PRODUCE_COMPOSITOR_FRAME\",\"surface_frame_trace_id\":-41"
+    },
+    {
+     "name": "Graphics.Pipeline",
+     "cat": "viz,benchmark,graphics.pipeline",
+     "ms": 0.1,
+     "where": "GPU Process/VizCompositorThread",
+     "args": "{\"chrome_graphics_pipeline\":{\"possible_deadlines\":{\"frame_time_us\":3639571078},\"step\":\"STEP_ISSUE_BEGIN_FRAME\",\"surface_frame_trace_id\":-4158981785474919000},\"c"
+    },
+    {
+     "name": "V8.GCIncrementalMarking",
+     "cat": "v8",
+     "ms": 0.1,
+     "where": "Renderer/CrRendererMain",
+     "args": "{\"epoch\":11}"
+    }
+   ]
+  }
+ ]
+}

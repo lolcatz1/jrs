@@ -159,7 +159,9 @@ mat3 fetchObjectNormalMatrix() {
 	return mat3( texelFetch( objectMatrices, objectTexel + ivec2( 4, 0 ), 0 ).xyz, texelFetch( objectMatrices, objectTexel + ivec2( 5, 0 ), 0 ).xyz, texelFetch( objectMatrices, objectTexel + ivec2( 6, 0 ), 0 ).xyz );
 }
 #endif
+#ifndef SHADOW_LEAN
 out vec3 vWorldPosition;
+#endif
 #ifdef USE_NORMAL
 out vec3 vNormal;
 #endif
@@ -209,7 +211,9 @@ void main() {
 		vec4 worldPosition = model * vec4( position, 1.0 );
 		vec4 mvPosition = viewMatrix * worldPosition;
 	#endif
+	#ifndef SHADOW_LEAN
 	vWorldPosition = worldPosition.xyz;
+	#endif
 	#ifdef USE_NORMAL
 		#if defined( USE_OBJECT_TEXTURE )
 		vNormal = normalize( fetchObjectNormalMatrix() * normal );
@@ -721,6 +725,7 @@ export function buildBuiltinShader(p) {
 		case MATERIAL_POINTS: d('IS_POINTS'); break;
 		case MATERIAL_SPRITE: d('IS_SPRITE'); break;
 	}
+	if (p.leanShadow) d('SHADOW_LEAN');
 	if (p.map) d('USE_MAP');
 	if (p.alphaMap) d('USE_ALPHAMAP');
 	if (p.emissiveMap) d('USE_EMISSIVEMAP');
@@ -752,6 +757,10 @@ export function buildBuiltinShader(p) {
 	const prefix = '#version 300 es\n' + defines.join('\n') + '\n';
 	const vsExtra = (p.multiDraw ? '#extension GL_ANGLE_multi_draw : require\n' : '') + (p.materialType === MATERIAL_SPRITE ? spriteUniform : '');
 	const vs = prefix + vsExtra + vertexShader;
+	if (p.leanShadow) {
+		// depth-only caster: no varyings, no fragment work (the depth attachment is all that is written)
+		return { vertexShader: vs, fragmentShader: '#version 300 es\nprecision mediump float;\nlayout(location = 0) out vec4 fragColor;\nvoid main() { fragColor = vec4( 0.0 ); }\n' };
+	}
 	// insert shadow helper functions after sampleShadow definition
 	let fs = fragmentShader;
 	const helpers = shadowFactorFunctions(p.numDirShadows | 0, p.numSpotShadows | 0);

@@ -1,0 +1,71 @@
+shared-animated/jrs: median 7.60 ms, worst 12024.5 ms; trace events 35975
+
+frame #116: 12024.5 ms  (GC 0.0 ms)
+  busiest threads: GPU Process/CrGpuMain 108216.9ms | Renderer/CrRendererMain 36067.0ms | Renderer/Compositor 686.8ms | GPU Process/VizCompositorThread 363.9ms | Service: tracing.mojom.TracingService/tracing.CrUtilityMain 53.9ms | GPU Process/Chrome_ChildIOThread 34.2ms
+   13049.7 ms  Renderer/CrRendererMain                  ThreadControllerImpl::RunTask [toplevel] {"src_file":"ipc/ipc_mojo_bootstrap.cc","src_func":"Accept","src_line":1141}
+   13049.7 ms  Renderer/CrRendererMain                  Receive mojo message [toplevel,mojom] {"chrome_mojo_event_info":{"data_num_bytes":832,"ipc_hash":3544143186,"mojo_interface_method":{"native_symbol":{"mapping_id":3,"rel_pc":119399304}},"mojo_interf
+     12096 ms  GPU Process/CrGpuMain                    ThreadControllerImpl::RunTask [toplevel] {"src_file":"gpu/command_buffer/service/scheduler.cc","src_func":"TryScheduleSequence","src_line":412}
+     12096 ms  GPU Process/CrGpuMain                    Scheduler::RunTask [gpu,toplevel.flow] {}
+     12096 ms  GPU Process/CrGpuMain                    GpuChannel::ExecuteDeferredRequest [gpu] {}
+     12096 ms  GPU Process/CrGpuMain                    WebGL [gpu] {}
+     12096 ms  GPU Process/CrGpuMain                    CommandBuffer::Flush [gpu,toplevel.flow] {}
+     12096 ms  GPU Process/CrGpuMain                    CommandBufferStub::OnAsyncFlush [gpu] {"put_offset":7297}
+   12095.9 ms  GPU Process/CrGpuMain                    CommandBufferService:PutChanged [gpu] {"handler":".WebGL-0x39840011a600"}
+   12089.5 ms  GPU Process/CrGpuMain                    ContextVk::onCopyUpdate [gpu.angle] {}
+     12089 ms  GPU Process/CrGpuMain                    ContextVk::flushAndSubmitOutsideRenderPassCommands [gpu.angle] {}
+   12017.5 ms  Renderer/CrRendererMain                  CommandBufferProxyImpl::WaitForToken [gpu] {"end":437,"start":402}
+       4.3 ms  GPU Process/CrGpuMain                    ThreadControllerImpl::RunTask [toplevel] {"src_file":"gpu/command_buffer/service/scheduler.cc","src_func":"RunNextTask","src_line":610}
+       4.3 ms  GPU Process/CrGpuMain                    Scheduler::RunTask [gpu,toplevel.flow] {}
+
+frame #53: 16.7 ms  (GC 0.0 ms)
+  busiest threads: Renderer/CrRendererMain 33.5ms | Renderer/Compositor 1.1ms | GPU Process/CrGpuMain 0.6ms | GPU Process/VizCompositorThread 0.5ms | Browser/Chrome_IOThread 0.1ms | Browser/CrBrowserMain 0.1ms
+   13049.7 ms  Renderer/CrRendererMain                  ThreadControllerImpl::RunTask [toplevel] {"src_file":"ipc/ipc_mojo_bootstrap.cc","src_func":"Accept","src_line":1141}
+   13049.7 ms  Renderer/CrRendererMain                  Receive mojo message [toplevel,mojom] {"chrome_mojo_event_info":{"data_num_bytes":832,"ipc_hash":3544143186,"mojo_interface_method":{"native_symbol":{"mapping_id":3,"rel_pc":119399304}},"mojo_interf
+         8 ms  GPU Process/CrGpuMain                    ThreadControllerImpl::RunTask [toplevel] {"src_file":"gpu/command_buffer/service/scheduler.cc","src_func":"TryScheduleSequence","src_line":412}
+         8 ms  GPU Process/CrGpuMain                    Scheduler::RunTask [gpu,toplevel.flow] {}
+         8 ms  GPU Process/CrGpuMain                    GpuChannel::ExecuteDeferredRequest [gpu] {}
+       7.9 ms  GPU Process/CrGpuMain                    WebGL [gpu] {}
+       7.9 ms  GPU Process/CrGpuMain                    CommandBuffer::Flush [gpu,toplevel.flow] {}
+       7.9 ms  GPU Process/CrGpuMain                    CommandBufferStub::OnAsyncFlush [gpu] {"put_offset":4547}
+       7.9 ms  GPU Process/CrGpuMain                    CommandBufferService:PutChanged [gpu] {"handler":".WebGL-0x39840011a600"}
+       0.2 ms  Renderer/Compositor                      ThreadControllerImpl::RunTask [toplevel] {"chrome_task_annotator":{"delay_policy":"PRECISE","task_delay_us":16077},"src_file":"cc/scheduler/scheduler.cc","src_func":"ScheduleBeginImplFrameDeadline","sr
+       0.2 ms  Renderer/Compositor                      auto cc::Scheduler::FinishImplFrame()::(anonymous class)::operator()()::(anonymous class)::operator()(uint32_t) const [cc] {}
+       0.2 ms  Renderer/Compositor                      DidNotSubmitInLastFrame [cc] {"has_pending_tree":false,"is_waiting_on_main":true}
+       0.1 ms  GPU Process/VizCompositorThread          ThreadControllerImpl::RunTask [toplevel] {"chrome_task_annotator":{"delay_policy":"PRECISE","task_delay_us":16433},"src_file":"components/viz/common/frame_sinks/delay_based_time_source.cc","src_func":"
+       0.1 ms  Renderer/Compositor                      EpollEvent [toplevel] {"can_read":true,"can_write":false,"context":"0x39840064f578","controller_created_from":{"file_name":"mojo/core/channel_posix.cc","function_name":"StartOnIOThre
+
+frame #0: 15.4 ms  (GC 48.8 ms)
+  busiest threads: Renderer/ThreadPoolForegroundWorker 37.8ms | Renderer/CrRendererMain 31.3ms | Renderer/Compositor 1.5ms | GPU Process/VizCompositorThread 0.6ms | Service: tracing.mojom.TracingService/Chrome_ChildIOThread 0.2ms | Service: tracing.mojom.TracingService/tracing.CrUtilityMain 0.1ms
+   13049.7 ms  Renderer/CrRendererMain                  ThreadControllerImpl::RunTask [toplevel] {"src_file":"ipc/ipc_mojo_bootstrap.cc","src_func":"Accept","src_line":1141}
+   13049.7 ms  Renderer/CrRendererMain                  Receive mojo message [toplevel,mojom] {"chrome_mojo_event_info":{"data_num_bytes":832,"ipc_hash":3544143186,"mojo_interface_method":{"native_symbol":{"mapping_id":3,"rel_pc":119399304}},"mojo_interf
+      17.1 ms  Renderer/ThreadPoolForegroundWorker      ThreadPool_RunTask [toplevel] {"src_file":"v8/src/heap/concurrent-marking.cc","src_func":"void v8::internal::ConcurrentMarking::TryScheduleJob(GarbageCollector, TaskPriority)","src_line":712
+      17.1 ms  Renderer/ThreadPoolForegroundWorker      V8.GC_MC_BACKGROUND_MARKING [devtools.timeline,disabled-by-default-v8.gc] {"epoch":11}
+      15.8 ms  Renderer/ThreadPoolForegroundWorker      ThreadPool_RunTask [toplevel] {"src_file":"v8/src/heap/concurrent-marking.cc","src_func":"void v8::internal::ConcurrentMarking::TryScheduleJob(GarbageCollector, TaskPriority)","src_line":712
+      15.8 ms  Renderer/ThreadPoolForegroundWorker      V8.GC_MC_BACKGROUND_MARKING [devtools.timeline,disabled-by-default-v8.gc] {"epoch":11}
+      15.7 ms  Renderer/ThreadPoolForegroundWorker      ThreadPool_RunTask [toplevel] {"src_file":"v8/src/heap/concurrent-marking.cc","src_func":"void v8::internal::ConcurrentMarking::TryScheduleJob(GarbageCollector, TaskPriority)","src_line":712
+      15.7 ms  Renderer/ThreadPoolForegroundWorker      V8.GC_MC_BACKGROUND_MARKING [devtools.timeline,disabled-by-default-v8.gc] {"epoch":11}
+       3.2 ms  Renderer/ThreadPoolForegroundWorker      ThreadPool_RunTask [toplevel] {"src_file":"v8/src/compiler-dispatcher/optimizing-compile-dispatcher.cc","src_func":"void v8::internal::OptimizingCompileTaskExecutor::EnsureStarted()","src_li
+       0.4 ms  Renderer/Compositor                      ThreadControllerImpl::RunTask [toplevel] {"src_file":"cc/trees/proxy_main.cc","src_func":"SendCommitRequestToImplThreadIfNeeded","src_line":904}
+       0.4 ms  Renderer/Compositor                      ProxyImpl::SetNeedsCommitOnImplThread [cc] {}
+       0.2 ms  Renderer/Chrome_ChildIOThread            ThreadControllerImpl::RunTask [toplevel] {"src_file":"ipc/ipc_mojo_bootstrap.cc","src_func":"SendMessage","src_line":901}
+       0.2 ms  GPU Process/VizCompositorThread          ThreadControllerImpl::RunTask [toplevel] {"src_file":"mojo/public/cpp/system/simple_watcher.cc","src_func":"Notify","src_line":102}
+       0.2 ms  GPU Process/VizCompositorThread          SimpleWatcher::OnHandleReady [toplevel] {"chrome_mojo_event_info":{"watcher_notify_interface_tag":"viz.mojom.CompositorFrameSink"}}
+
+frame #1: 14.1 ms  (GC 0.3 ms)
+  busiest threads: Renderer/CrRendererMain 28.5ms | Renderer/Compositor 0.9ms | GPU Process/VizCompositorThread 0.4ms | Renderer/Chrome_ChildIOThread 0.3ms | Browser/Chrome_IOThread 0.2ms | Browser/CrBrowserMain 0.1ms
+   13049.7 ms  Renderer/CrRendererMain                  ThreadControllerImpl::RunTask [toplevel] {"src_file":"ipc/ipc_mojo_bootstrap.cc","src_func":"Accept","src_line":1141}
+   13049.7 ms  Renderer/CrRendererMain                  Receive mojo message [toplevel,mojom] {"chrome_mojo_event_info":{"data_num_bytes":832,"ipc_hash":3544143186,"mojo_interface_method":{"native_symbol":{"mapping_id":3,"rel_pc":119399304}},"mojo_interf
+       0.3 ms  Renderer/Chrome_ChildIOThread            ThreadControllerImpl::RunTask [toplevel] {"src_file":"ipc/ipc_mojo_bootstrap.cc","src_func":"SendMessage","src_line":901}
+       0.1 ms  GPU Process/VizCompositorThread          ThreadControllerImpl::RunTask [toplevel] {"chrome_task_annotator":{"delay_policy":"PRECISE","task_delay_us":7602},"src_file":"components/viz/common/frame_sinks/delay_based_time_source.cc","src_func":"P
+       0.1 ms  Renderer/Compositor                      ThreadControllerImpl::RunTask [toplevel] {"chrome_task_annotator":{"delay_policy":"PRECISE","task_delay_us":7448},"src_file":"cc/scheduler/scheduler.cc","src_func":"ScheduleBeginImplFrameDeadline","src
+       0.1 ms  Renderer/Compositor                      auto cc::Scheduler::FinishImplFrame()::(anonymous class)::operator()()::(anonymous class)::operator()(uint32_t) const [cc] {}
+       0.1 ms  Renderer/Compositor                      DidNotSubmitInLastFrame [cc] {"has_pending_tree":false,"is_waiting_on_main":true}
+       0.1 ms  GPU Process/VizCompositorThread          DelayBasedBeginFrameSource::OnTimerTick [viz] {"frame_time":3639571078,"interval":16666}
+       0.1 ms  Renderer/Compositor                      auto cc::Scheduler::SendDidNotProduceFrame(const viz::BeginFrameArgs &, FrameSkippedReason)::(anonymous class)::operator()()::(anonymous class)::operator()(uint32_t) const [cc] {"reason":2}
+       0.1 ms  Renderer/Compositor                      EpollEvent [toplevel] {"can_read":true,"can_write":false,"context":"0x39840064f578","controller_created_from":{"file_name":"mojo/core/channel_posix.cc","function_name":"StartOnIOThre
+       0.1 ms  Renderer/Compositor                      LayerTreeHostImpl::DidNotProduceFrame [cc,benchmark] {"Frame Sequence Number":62,"FrameSkippedReason":"kWaitingOnMain"}
+       0.1 ms  Renderer/Compositor                      Graphics.Pipeline [viz,benchmark,graphics.pipeline] {"chrome_graphics_pipeline":{"frame_skipped_reason":"SKIPPED_REASON_WAITING_ON_MAIN","step":"STEP_DID_NOT_PRODUCE_COMPOSITOR_FRAME","surface_frame_trace_id":-41
+       0.1 ms  GPU Process/VizCompositorThread          Graphics.Pipeline [viz,benchmark,graphics.pipeline] {"chrome_graphics_pipeline":{"possible_deadlines":{"frame_time_us":3639571078},"step":"STEP_ISSUE_BEGIN_FRAME","surface_frame_trace_id":-4158981785474919000},"c
+       0.1 ms  Renderer/CrRendererMain                  V8.GCIncrementalMarking [v8] {"epoch":11}
+
+written /home/user/jrs/bench/results/swarm/stall-trace-shared-animated-jrs.json
