@@ -40,7 +40,9 @@ export const TEXTURE_UNITS = {
 	dirShadowMap0: 8, dirShadowMap1: 9, dirShadowMap2: 10, dirShadowMap3: 11,
 	spotShadowMap0: 12, spotShadowMap1: 13, spotShadowMap2: 14, // shadow-casting spot lights are capped at 3
 	envMap: 15, // environment map: samplerCube, or the sampler2D CubeUV (PMREM) layout
-	objectMatrices: 16, // batched draws' matrix texture; vertex-shader only, so it may sit above the 16 fragment units
+	// vertex-shader data textures live above the 16 fragment units (WebGL2 guarantees 32 combined units)
+	boneTexture: 16, morphTargetsTexture: 17,
+	objectMatrices: 18, // batched draws' matrix texture
 };
 export const MATRIX_TEXTURE_WIDTH = 1024; // texels
 export const TEXELS_PER_OBJECT = 8; // model matrix (4) + normal matrix columns (3) + spare -> 128 objects per row
@@ -81,6 +83,41 @@ export const LIGHTS_BLOCK_SIZE = 16 + 16 + MAX_DIR_LIGHTS * 32 + MAX_POINT_LIGHT
 export const FRAME_BLOCK_SIZE = 64 * 3 + 16 * 4;
 
 export const MATERIAL_BLOCK = /* glsl */`
+#ifdef USE_MATERIAL_ARRAY
+// Batched draws spanning several materials: the block holds a window of MATERIAL_ARRAY_SIZE
+// consecutive material records of the shared material buffer (each padded to the buffer's
+// slot stride) and every instance / sub-draw selects its record with the slot index stored
+// in the spare texel of its matrix-texture record. The member names below are remapped so
+// the shader body reads the same identifiers either way.
+struct MaterialRecord {
+	vec4 mDiffuse;
+	vec4 mEmissive;
+	vec4 mSpecular;
+	vec4 mParams;
+	vec4 mParams2;
+	vec4 mUvTransform0;
+	vec4 mUvTransform1;
+	vec4 mUvTransform2;
+	vec4 mEnvParams;
+	mat3 mEnvMapRotation;
+	#if MATERIAL_PAD > 0
+	vec4 mPad[ MATERIAL_PAD ];
+	#endif
+};
+layout(std140) uniform Materials {
+	MaterialRecord materials[ MATERIAL_ARRAY_SIZE ];
+};
+#define diffuse materials[ matIdx ].mDiffuse
+#define emissive materials[ matIdx ].mEmissive
+#define specular materials[ matIdx ].mSpecular
+#define matParams materials[ matIdx ].mParams
+#define matParams2 materials[ matIdx ].mParams2
+#define uvTransform0 materials[ matIdx ].mUvTransform0
+#define uvTransform1 materials[ matIdx ].mUvTransform1
+#define uvTransform2 materials[ matIdx ].mUvTransform2
+#define envParams materials[ matIdx ].mEnvParams
+#define envMapRotation materials[ matIdx ].mEnvMapRotation
+#else
 layout(std140) uniform Material {
 	vec4 diffuse;        // rgb, a = opacity
 	vec4 emissive;       // rgb, a = alphaTest
@@ -93,6 +130,7 @@ layout(std140) uniform Material {
 	vec4 envParams;      // envMapIntensity, reflectivity, refractionRatio, ior
 	mat3 envMapRotation; // three vec4 columns
 };
+#endif
 #define envMapIntensity envParams.x
 #define reflectivity envParams.y
 #define refractionRatio envParams.z
@@ -112,6 +150,7 @@ const common = /* glsl */`
 const vertexShader = /* glsl */`
 precision highp float;
 precision highp int;
+precision highp sampler2DArray;
 ${FRAME_BLOCK}
 ${MATERIAL_BLOCK}
 #if NUM_DIR_SHADOWS > 0 || NUM_SPOT_SHADOWS > 0
@@ -142,6 +181,12 @@ in mat4 instanceMatrix;
 	in vec3 instanceColor;
 	#endif
 #endif
+#ifdef USE_SKINNING
+in vec4 skinIndex;
+in vec4 skinWeight;
+#endif
+${ShaderChunk.skinning_pars_vertex}
+${ShaderChunk.morphtarget_pars_vertex}
 #ifdef USE_OBJECT_TEXTURE
 // Batched draws: each object's world matrix and normal matrix come from a per-frame matrix
 // texture. Instanced batches index it by gl_InstanceID, multi-draw batches by gl_DrawID.
@@ -162,6 +207,11 @@ mat4 fetchObjectMatrix() {
 mat3 fetchObjectNormalMatrix() {
 	return mat3( texelFetch( objectMatrices, objectTexel + ivec2( 4, 0 ), 0 ).xyz, texelFetch( objectMatrices, objectTexel + ivec2( 5, 0 ), 0 ).xyz, texelFetch( objectMatrices, objectTexel + ivec2( 6, 0 ), 0 ).xyz );
 }
+	#ifdef USE_MATERIAL_ARRAY
+	// spare texel: x = index of the object's material record inside the bound Materials window
+	int matIdx;
+	flat out int vMaterialIndex;
+	#endif
 #endif
 #ifndef SHADOW_LEAN
 out vec3 vWorldPosition;
@@ -198,7 +248,24 @@ void main() {
 	#endif
 	#ifdef USE_OBJECT_TEXTURE
 	model = model * fetchObjectMatrix();
+		#ifdef USE_MATERIAL_ARRAY
+		matIdx = int( texelFetch( objectMatrices, objectTexel + ivec2( 7, 0 ), 0 ).x );
+		vMaterialIndex = matIdx;
+		#endif
 	#endif
+	vec3 transformed = vec3( position );
+	#ifdef USE_NORMAL
+	vec3 objectNormal = vec3( normal );
+	#endif
+	${ShaderChunk.morphtarget_vertex}
+	#ifdef USE_NORMAL
+	${ShaderChunk.morphnormal_vertex}
+	#endif
+	${ShaderChunk.skinbase_vertex}
+	#ifdef USE_NORMAL
+	${ShaderChunk.skinnormal_vertex}
+	#endif
+	${ShaderChunk.skinning_vertex}
 	#ifdef IS_SPRITE
 		// billboard: sprite plane in view space
 		vec4 mvPosition = viewMatrix * model * vec4( 0.0, 0.0, 0.0, 1.0 );
@@ -215,7 +282,7 @@ void main() {
 		vec3 camUp = vec3( viewMatrix[ 0 ][ 1 ], viewMatrix[ 1 ][ 1 ], viewMatrix[ 2 ][ 1 ] );
 		vec4 worldPosition = vec4( model[ 3 ].xyz + camRight * rotated.x + camUp * rotated.y, 1.0 );
 	#else
-		vec4 worldPosition = model * vec4( position, 1.0 );
+		vec4 worldPosition = model * vec4( transformed, 1.0 );
 		vec4 mvPosition = viewMatrix * worldPosition;
 	#endif
 	#ifndef SHADOW_LEAN
@@ -223,11 +290,11 @@ void main() {
 	#endif
 	#ifdef USE_NORMAL
 		#if defined( USE_OBJECT_TEXTURE )
-		vNormal = normalize( fetchObjectNormalMatrix() * normal );
+		vNormal = normalize( fetchObjectNormalMatrix() * objectNormal );
 		#elif defined( USE_INSTANCING )
-		vNormal = normalize( transpose( inverse( mat3( model ) ) ) * normal );
+		vNormal = normalize( transpose( inverse( mat3( model ) ) ) * objectNormal );
 		#else
-		vNormal = normalize( normalMatrix * normal );
+		vNormal = normalize( normalMatrix * objectNormal );
 		#endif
 		#ifdef FLIP_SIDED
 		vNormal = - vNormal;
@@ -267,6 +334,20 @@ void main() {
 		#endif
 		#ifdef USE_INSTANCING_COLOR
 		vColor.rgb *= instanceColor;
+		#endif
+		#ifdef USE_MORPHCOLORS
+		// three.js morphcolor_vertex, on a vec4 vColor: alpha only morphs with USE_COLOR_ALPHA
+			#ifdef USE_COLOR_ALPHA
+			vColor *= morphTargetBaseInfluence;
+			for ( int i = 0; i < MORPHTARGETS_COUNT; i ++ ) {
+				if ( morphTargetInfluences[ i ] != 0.0 ) vColor += getMorph( gl_VertexID, i, 2 ) * morphTargetInfluences[ i ];
+			}
+			#elif defined( USE_COLOR )
+			vColor.rgb *= morphTargetBaseInfluence;
+			for ( int i = 0; i < MORPHTARGETS_COUNT; i ++ ) {
+				if ( morphTargetInfluences[ i ] != 0.0 ) vColor.rgb += getMorph( gl_VertexID, i, 2 ).rgb * morphTargetInfluences[ i ];
+			}
+			#endif
 		#endif
 	#endif
 	gl_Position = projectionMatrix * mvPosition;
@@ -308,6 +389,10 @@ precision highp int;
 precision highp sampler2DShadow;
 ${FRAME_BLOCK}
 ${LIGHTS_BLOCK}
+#ifdef USE_MATERIAL_ARRAY
+flat in int vMaterialIndex;
+#define matIdx vMaterialIndex
+#endif
 ${MATERIAL_BLOCK}
 ${common}
 in vec3 vWorldPosition;
@@ -504,8 +589,8 @@ void RE_IndirectDiffuse_Physical( const in vec3 irradiance, const in PhysicalMat
 	vec3 singleScattering = vec3( 0.0 );
 	vec3 multiScattering = vec3( 0.0 );
 	computeMultiscattering( material.dfg, material.specularColor, material.specularF90, singleScattering, multiScattering );
-	vec3 diffuse = irradiance * BRDF_Lambert( material.diffuseContribution ) * ( 1.0 - singleScattering - multiScattering );
-	indirectDiffuse += diffuse;
+	vec3 diffuseTerm = irradiance * BRDF_Lambert( material.diffuseContribution ) * ( 1.0 - singleScattering - multiScattering ); // three names this diffuse; that is a record macro in batched programs
+	indirectDiffuse += diffuseTerm;
 }
 void RE_IndirectSpecular_Physical( const in vec3 radiance, const in vec3 irradiance, const in PhysicalMaterial material, inout vec3 indirectDiffuse, inout vec3 indirectSpecular ) {
 	// Both indirect specular and indirect diffuse light accumulate here
@@ -521,11 +606,11 @@ void RE_IndirectSpecular_Physical( const in vec3 radiance, const in vec3 irradia
 	vec3 multiScattering = mix( multiScatteringDielectric, multiScatteringMetallic, material.metalness );
 	// Diffuse energy conservation uses dielectric path
 	vec3 totalScatteringDielectric = singleScatteringDielectric + multiScatteringDielectric;
-	vec3 diffuse = material.diffuseContribution * ( 1.0 - totalScatteringDielectric );
+	vec3 diffuseTerm = material.diffuseContribution * ( 1.0 - totalScatteringDielectric );
 	vec3 cosineWeightedIrradiance = irradiance * RECIPROCAL_PI;
 	vec3 indirectSpecularAdd = radiance * singleScattering;
 	indirectSpecularAdd += multiScattering * cosineWeightedIrradiance;
-	vec3 indirectDiffuseAdd = diffuse * cosineWeightedIrradiance;
+	vec3 indirectDiffuseAdd = diffuseTerm * cosineWeightedIrradiance;
 	indirectSpecular += indirectSpecularAdd;
 	indirectDiffuse += indirectDiffuseAdd;
 }
@@ -972,7 +1057,13 @@ export function buildBuiltinShader(p) {
 	if (p.instancing) d('USE_INSTANCING');
 	if (p.instancingColor) d('USE_INSTANCING_COLOR');
 	if (p.objectTexture) d('USE_OBJECT_TEXTURE');
+	if (p.skinning) d('USE_SKINNING');
+	if (p.morphTargets) d('USE_MORPHTARGETS');
+	if (p.morphNormals && p.flatShading === false) d('USE_MORPHNORMALS');
+	if (p.morphColors) d('USE_MORPHCOLORS');
+	if (p.morphTargetsCount > 0) { d('MORPHTARGETS_TEXTURE_STRIDE', p.morphTextureStride); d('MORPHTARGETS_COUNT', p.morphTargetsCount); }
 	if (p.multiDraw) d('USE_MULTIDRAW');
+	if (p.materialArray) { d('USE_MATERIAL_ARRAY'); d('MATERIAL_ARRAY_SIZE', p.materialArraySize | 0); d('MATERIAL_PAD', p.materialPad | 0); }
 	if (p.flatShading) d('FLAT_SHADED');
 	if (p.doubleSided) d('DOUBLE_SIDED');
 	if (p.flipSided) d('FLIP_SIDED');
@@ -1092,6 +1183,12 @@ export function buildCustomShader(material, p) {
 			p.vertexAlphas ? '#define USE_COLOR_ALPHA' : '',
 			p.vertexUv1s ? '#define USE_UV1' : '',
 			p.flatShading ? '#define FLAT_SHADED' : '',
+			p.skinning ? '#define USE_SKINNING' : '',
+			p.morphTargets ? '#define USE_MORPHTARGETS' : '',
+			p.morphNormals && p.flatShading === false ? '#define USE_MORPHNORMALS' : '',
+			p.morphColors ? '#define USE_MORPHCOLORS' : '',
+			p.morphTargetsCount > 0 ? '#define MORPHTARGETS_TEXTURE_STRIDE ' + p.morphTextureStride : '',
+			p.morphTargetsCount > 0 ? '#define MORPHTARGETS_COUNT ' + p.morphTargetsCount : '',
 			p.doubleSided ? '#define DOUBLE_SIDED' : '',
 			p.flipSided ? '#define FLIP_SIDED' : '',
 			...envMapDefines(p, true),

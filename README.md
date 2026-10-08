@@ -40,7 +40,7 @@ application keeps working. WebGL2 is required (every current browser has it).
 | Recomposes and remultiplies **every** object's matrices every frame | Only objects whose position/rotation/scale (or ancestor) changed are touched; everything derived (normal matrix, bounding sphere, instance data) is cached by a per-object version counter |
 | 16-element `Array`s of doubles per matrix, converted on every upload | `Float32Array` records in shared slab pages; uploaded with zero-copy `srcOffset` calls |
 | Sorts an array of item objects with a JS comparator | Packs a 52-bit key per item into a `Float64Array` and uses the native comparator-free sort |
-| One draw call per mesh | Consecutive meshes sharing geometry and material become **one instanced draw call**; runs of *different* geometries sharing a material become **one multi-draw call** over shared mega-buffers with a `gl_DrawID`-indexed matrix texture; static scenes skip the uploads entirely |
+| One draw call per mesh | Consecutive meshes sharing geometry and material become **one instanced draw call**; runs of *different* geometries sharing a material become **one multi-draw call** over shared mega-buffers with a `gl_DrawID`-indexed matrix texture; batches also **span materials** that share a program, GL state and textures (each instance picks its material record from a uniform-block array); static scenes skip the uploads entirely |
 | Re-sends camera, light and material uniforms per draw/material | Camera, lights and all materials live in std140 uniform blocks: one upload per frame, one `bindBufferRange` per material switch |
 | Recompiles all shaders when the light count changes | Fixed-capacity light arrays, counts read from the block: no recompiles |
 | Raycasts test every triangle | Lazy bounding-volume hierarchy per geometry, built on first raycast |
@@ -56,9 +56,9 @@ over 60 frames after 10 warm-up frames, 320x240 (median frame time, so single ga
 
 | Scenario | Objects | three.js r186 (median) | jrs (median) | Speed-up | Worst frame (three → jrs) | Draw calls (three → jrs) | Pixel diff (mean / max, 0–255) |
 |---|---:|---:|---:|---:|---|---|---|
-| shared-static: one geometry + one material, static | 10,000 | 16.1 ms | 3.1 ms | **5.2x** | 114 → 4 ms | 10000 → 1 | 0.347 / 8 |
+| shared-static: one geometry + one material, static | 10,000 | 16.1 ms | 3.1 ms | **5.2x** | 114 → 4 ms | 10000 → 1 | 0 / 0 |
 | shared-animated: same, every object rotating | 10,000 | 11.8 ms | 5.4 ms | **2.2x** | 103 → 3288 ms | 10000 → 1 | 0.346 / 9 |
-| many-materials: 3 geometries x 200 Phong materials, point + hemisphere light | 5,000 | 8.2 ms | 3.8 ms | **2.2x** | 80 → 1091 ms | 5000 → 600 | 0 / 0 |
+| many-materials: 3 geometries x 200 Phong materials, point + hemisphere light (batches span materials) | 5,000 | 8.1 ms | 2.8 ms | **2.9x** | 98 → 7 ms | 5000 → 3 | 0 / 0 |
 | unique-geometries: a distinct geometry per mesh (multi-draw over the mega-buffer) | 2,000 | 3.1 ms | 1.2 ms | **2.6x** | 7 → 2 ms | 2000 → 1 | 0 / 0 |
 | hierarchy-animated: 200 chains of 40 nested objects, roots rotating | 8,000 | 12.4 ms | 4.2 ms | **3.0x** | 35 → 2632 ms | 8000 → 1 | 0 / 0 |
 | instanced-100k: one InstancedMesh, 100 000 instances | 100,000 | 0.0 ms | 0.0 ms | n/a (both < 0.1 ms) | 0 → 0 ms | 1 → 1 | 0 / 0 |
@@ -66,6 +66,7 @@ over 60 frames after 10 warm-up frames, 320x240 (median frame time, so single ga
 | shader-client-static: same materials, fixed camera, nothing moving, 3 passes per frame (2 shadow render targets with `scene.overrideMaterial`, main pass with stencil shadow volumes), ~215 draws per pass | 211 | 34.7 ms | 23.5 ms | **1.5x** | 618 → 615 ms | 217 → 217 | 0 / 0 |
 | shadows: 2 000 casters/receivers, 1024² directional shadow map | 2,000 | 81.8 ms | 1.4 ms | **58.4x** | 240 → 5 ms | 4001 → 3 | 0.134 / 33 |
 | shadows-animated: same scene, every third caster moving each frame | 2,000 | 55.2 ms | 2.0 ms | **27.6x** | 192 → 11 ms | 4001 → 3 | 0.121 / 31 |
+| skinned-crowd: 200 skinned meshes, 20 bones each, every bone animated by an `AnimationMixer` | 200 | 5.0 ms | 3.0 ms | **1.7x** | 7 → 4 ms | 200 → 200 | 0 / 2 |
 
 The instanced scenario is a single draw call in both libraries; it measures only the fixed per-frame cost. Full data: `bench/results/latest.json`.
 
@@ -87,25 +88,41 @@ Diagnosing uploads in your own app: set `renderer.debug.traceUniforms = true` an
 switches, draws, distinct programs, and `programSequence`, one entry per `useProgram` as
 `<program id><list o/t/s>[/r<renderOrder>]:<material type>`). `renderer.info.render.programSwitches`
 counts `useProgram` calls per frame. `renderer.autoBatchMinimum` (default 4) is the shortest run of
-identical geometry + material that becomes one instanced draw.
+identical geometry + material that becomes one instanced draw. `renderer.autoBatchMaterials`
+(default true) lets a batch span built-in materials that share a program, GL state and textures:
+each instance reads its own material record from a uniform-block array indexed by a slot stored
+with its matrices (see ARCHITECTURE.md §4c; needs dynamic indexing of uniform arrays, probed at
+start-up).
 
 `npm run bench -- --compare` additionally renders each scene with both libraries and reports
 the mean absolute pixel difference, writing both images to `bench/results/`. Lambert / Phong /
-Basic scenes are pixel-identical; Standard-material scenes differ by a few levels because jrs
-does not implement three.js's environment multi-scatter term.
+Basic and Standard scenes (including image-based lighting) are pixel-identical: the Standard
+shader carries three.js r186's physical model (DFG lookup table, multi-scattering compensation).
 
 ## Compatibility
 
 Implemented with the three.js API and semantics (r186 conventions: linear working colour
 space, sRGB output, physically based light units):
 
-* **Core:** `Object3D`, `Scene`, `Group`, `Mesh`, `InstancedMesh`, `Line`, `LineSegments`,
-  `LineLoop`, `Points`, `Sprite`, `BufferGeometry`, `BufferAttribute` (all typed variants),
-  `InstancedBufferAttribute`, `InstancedBufferGeometry`, `Raycaster`, `Layers`, `Clock`, `Timer`,
-  `EventDispatcher`.
+* **Core:** `Object3D`, `Scene`, `Group`, `Mesh`, `InstancedMesh`, `SkinnedMesh`, `Skeleton`, `Bone`,
+  `Line`, `LineSegments`, `LineLoop`, `Points`, `Sprite`, `BufferGeometry`, `BufferAttribute` (all typed
+  variants), `InstancedBufferAttribute`, `InstancedBufferGeometry`, `Raycaster`, `Layers`, `Clock`,
+  `Timer`, `EventDispatcher`.
+* **Skinning & morph targets:** `SkinnedMesh` (`bind`, `bindMode` attached/detached, `pose`,
+  `normalizeSkinWeights`, skinned `raycast` / `computeBoundingBox` / `computeBoundingSphere`),
+  `Skeleton` (`update`, `computeBoneTexture`, `getBoneByName`, JSON), bone texture skinning with
+  `skinIndex` / `skinWeight`; geometry `morphAttributes.position / normal / color`, `morphTargetsRelative`,
+  `morphTargetInfluences` / `morphTargetDictionary` through the same morph texture layout as three r186.
+  Pixel-identical to three.js (see the conformance checks). Skinned and morphed meshes draw individually
+  (they are excluded from auto-batching).
+* **Animation:** `AnimationMixer`, `AnimationAction`, `AnimationClip`, `AnimationObjectGroup`,
+  `AnimationUtils`, `KeyframeTrack` and the Number/Vector/Quaternion/Color/Boolean/String tracks,
+  `PropertyBinding`, `PropertyMixer`, and the Linear / Discrete / Cubic / Bezier / QuaternionLinear
+  interpolants: the three.js r186 sources, verified against three.js by sampling the same clips.
 * **Cameras:** `PerspectiveCamera`, `OrthographicCamera` (incl. view offsets, zoom, film offset).
 * **Materials:** `MeshBasicMaterial`, `MeshLambertMaterial`, `MeshPhongMaterial`,
-  `MeshStandardMaterial` (`MeshPhysicalMaterial` renders as Standard), `MeshNormalMaterial`,
+  `MeshStandardMaterial` (`MeshPhysicalMaterial` renders as Standard: `ior`, clearcoat, sheen,
+  transmission and the other extra layers are not shaded), `MeshNormalMaterial`,
   `MeshDepthMaterial`, `LineBasicMaterial`, `LineDashedMaterial` (solid), `PointsMaterial`,
   `SpriteMaterial`, `ShaderMaterial`, `RawShaderMaterial`. Maps: `map`, `alphaMap`, `normalMap`,
   `emissiveMap`, `roughnessMap`, `metalnessMap`, `aoMap`, `specularMap`; vertex colours,
@@ -124,6 +141,16 @@ space, sRGB output, physically based light units):
 * **Lights:** `AmbientLight`, `HemisphereLight`, `DirectionalLight`, `PointLight`, `SpotLight`
   (`RectAreaLight` is accepted but not shaded). Shadow maps for directional and spot lights
   (`castShadow`, `receiveShadow`, `shadow.mapSize/bias/normalBias/radius/camera`).
+* **Environment maps / IBL:** `scene.environment` and `material.envMap` on `MeshStandardMaterial` /
+  `MeshPhysicalMaterial` through the PMREM path (`envMapIntensity`, `envMapRotation`,
+  `scene.environmentIntensity` / `environmentRotation`), cube and equirectangular `envMap` on
+  `MeshBasicMaterial` / `MeshLambertMaterial` / `MeshPhongMaterial` (`combine` Multiply / Mix / Add,
+  `reflectivity`, `refractionRatio`, `envMapRotation`, `specularMap` strength, all mapping modes
+  incl. `CubeUVReflectionMapping`), `scene.environment` irradiance on Lambert / Phong,
+  `PMREMGenerator` (`fromScene`, `fromEquirectangular`, `fromCubemap`), `WebGLCubeRenderTarget`
+  (`fromEquirectangularTexture`), `CubeCamera`, `scene.background` as a cube / equirect texture
+  (`backgroundBlurriness`, `backgroundIntensity`, `backgroundRotation`) or a 2D texture. Output is
+  pixel-identical to three.js (`node bench/conformance.mjs` compares eight env-map scenes).
 * **Scene:** `Fog`, `FogExp2`, `background` colour, `renderOrder`, `visible`, `frustumCulled`,
   `onBeforeRender/onAfterRender`, tone mapping (`Linear`, `Reinhard`, `Cineon`, `ACESFilmic`,
   `Neutral`), `outputColorSpace`, render targets (`WebGLRenderTarget`, `DepthTexture`).
@@ -141,8 +168,9 @@ space, sRGB output, physically based light units):
   `OrbitControls` and `BufferGeometryUtils` import and run unchanged through an import map
   (`"three/addons/": "<three>/examples/jsm/"`). Verified with `node bench/addons.mjs`.
 
-Not implemented (yet): environment maps / IBL on built-in materials, point-light shadows,
-skinning and morph targets, clipping planes, `Scene.background` textures, `ShaderMaterial`
+Not implemented (yet): `MeshPhysicalMaterial`'s extra layers, `lightMap`, `bumpMap`, point-light shadows,
+`InstancedMesh` morph targets (`morphTexture`), `SkeletonHelper`, clipping planes, rendering into
+mip levels of a render target (`setRenderTarget(target, face, level > 0)`), `ShaderMaterial`
 `lights: true`, `onBeforeCompile` for built-in materials, rendering of `InterleavedBufferAttribute`
 geometry (the classes exist for API compatibility),
 post-processing, loaders beyond textures (GLTFLoader etc. live in three's `examples/`, as do
@@ -184,11 +212,12 @@ MIT. Geometry generators and parts of the math library are ported from three.js 
 
 Open `bench/conformance.html` from any static host (GitHub Pages, `npm run bench:serve` then
 `http://<your-machine>:8765/bench/conformance.html` on the phone). It reports the device's WebGL2
-limits, runs 23 rendering checks with pixel probes (lighting, batching vs. individual draws,
+limits, runs 28 rendering checks with pixel probes (lighting, batching vs. individual draws,
 multi-draw of mixed geometries vs. individual draws, instancing, transparency, 2D/3D/array/cube
 textures, stencil, fog, shadows, sprites, ShaderMaterial with chunks, shared programs and custom
-attributes, render targets, raycasting), times a 2 000-object scene, and when a CDN is reachable runs the same scene with
-three.js for a side-by-side number. "Copy report" puts the JSON on the clipboard.
+attributes, render targets, raycasting, skinning, morph targets and the animation mixer), times a 2 000-object scene, and
+when three.js can be loaded (the local copy, else a CDN) renders the skinning / morph scenes with both libraries and compares
+the pixels, and runs the same scene with three.js for a side-by-side number. "Copy report" puts the JSON on the clipboard.
 `node bench/conformance.mjs` runs the same page in headless Chromium.
 
 ## Using the single-file build (import map swap)

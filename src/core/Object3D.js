@@ -86,6 +86,8 @@ class Object3D extends EventDispatcher {
 		this._normalVersion = -1;
 		this._flipVersion = -1; this._frontFaceCW = false;
 		this._cullVersion = -1; this._cullSphere = null; // cull-cache doubles (radius, centre) live in the snapshot record at +10..+13
+		// cached frustum test result per pass (0 = camera, 1 = shadow): frustum version it was computed for, and the result
+		this._cullFV0 = -1; this._cullVis0 = false; this._cullFV1 = -1; this._cullVis1 = false;
 
 		this.matrixAutoUpdate = Object3D.DEFAULT_MATRIX_AUTO_UPDATE;
 		this.matrixWorldAutoUpdate = Object3D.DEFAULT_MATRIX_WORLD_AUTO_UPDATE;

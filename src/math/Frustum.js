@@ -5,6 +5,7 @@ import { Plane } from './Plane.js';
 
 const _sphere = /*@__PURE__*/ new Sphere();
 const _vector = /*@__PURE__*/ new Vector3();
+let _versionCounter = 0;
 
 /**
  * Frustum keeps a flat Float32Array mirror of its six planes so the renderer
@@ -15,6 +16,8 @@ class Frustum {
 	constructor(p0 = new Plane(), p1 = new Plane(), p2 = new Plane(), p3 = new Plane(), p4 = new Plane(), p5 = new Plane()) {
 		this.planes = [p0, p1, p2, p3, p4, p5];
 		this.flat = new Float32Array(24);
+		/** Unique id of the current plane values; changes (to a never-before-used number) only when one of the 24 floats changes. */
+		this.version = 0;
 	}
 	set(p0, p1, p2, p3, p4, p5) {
 		const planes = this.planes;
@@ -55,10 +58,15 @@ class Frustum {
 	}
 	_syncFlat() {
 		const f = this.flat, planes = this.planes;
+		let changed = false;
 		for (let i = 0; i < 6; i++) {
-			const p = planes[i], o = i * 4;
-			f[o] = p.normal.x; f[o + 1] = p.normal.y; f[o + 2] = p.normal.z; f[o + 3] = p.constant;
+			const p = planes[i], o = i * 4, n = p.normal;
+			if (f[o] !== n.x || f[o + 1] !== n.y || f[o + 2] !== n.z || f[o + 3] !== p.constant) {
+				f[o] = n.x; f[o + 1] = n.y; f[o + 2] = n.z; f[o + 3] = p.constant;
+				changed = true;
+			}
 		}
+		if (changed) this.version = ++_versionCounter;
 	}
 	intersectsObject(object) {
 		if (object.boundingSphere !== undefined) {

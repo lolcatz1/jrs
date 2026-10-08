@@ -134,10 +134,22 @@ export const LinearSRGBColorSpace = 'srgb-linear';
 export const LinearTransfer = 'linear';
 export const SRGBTransfer = 'srgb';
 
-// Loop modes etc. (parity only)
+// Animation system
 export const LoopOnce = 2200;
 export const LoopRepeat = 2201;
 export const LoopPingPong = 2202;
+export const InterpolateDiscrete = 2300;
+export const InterpolateLinear = 2301;
+export const InterpolateSmooth = 2302;
+export const InterpolateBezier = 2303;
+export const ZeroCurvatureEnding = 2400;
+export const ZeroSlopeEnding = 2401;
+export const WrapAroundEnding = 2402;
+export const NormalAnimationBlendMode = 2500;
+export const AdditiveAnimationBlendMode = 2501;
+// SkinnedMesh bind modes
+export const AttachedBindMode = 'attached';
+export const DetachedBindMode = 'detached';
 
 // Draw modes (BufferGeometryUtils.toTrianglesDrawMode)
 export const TrianglesDrawMode = 0;
