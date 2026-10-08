@@ -8,6 +8,7 @@ import { Matrix3 } from '../math/Matrix3.js';
 import * as MathUtils from '../math/MathUtils.js';
 import { transformSlab, LOCAL_OFFSET, WORLD_OFFSET } from './TransformSlab.js';
 import { epochs, trackRenderProperty } from './epochs.js';
+import { notifyAdd, notifyRemove } from './FlatGraph.js';
 
 let _object3DId = 0;
 
@@ -97,6 +98,8 @@ class Object3D extends EventDispatcher {
 		this.layers = new Layers();
 		this._visible = true; this._receiveShadow = false; this._frustumCulled = true; this._renderOrder = 0; // tracked accessors (see epochs.js)
 		this._countsWorld = true; // Camera sets this to false: a moving camera must not look like a moving scene
+		// flat scene update (see FlatGraph.js): the graph this object is an entry of and its index; roots keep their graph
+		this._flat = null; this._flatIndex = -1; this._flatGraph = null;
 		this.castShadow = false;
 		this.animations = [];
 		this.customDepthMaterial = undefined;
@@ -165,6 +168,7 @@ class Object3D extends EventDispatcher {
 			object.parent = this;
 			this.children.push(object);
 			epochs.structure++;
+			notifyAdd(this, object);
 			object.matrixWorldNeedsUpdate = true;
 			object.dispatchEvent(_addedEvent);
 			_childaddedEvent.child = object;
@@ -185,6 +189,7 @@ class Object3D extends EventDispatcher {
 			object.parent = null;
 			this.children.splice(index, 1);
 			epochs.structure++;
+			notifyRemove(this, object);
 			object.dispatchEvent(_removedEvent);
 			_childremovedEvent.child = object;
 			this.dispatchEvent(_childremovedEvent);
@@ -206,6 +211,7 @@ class Object3D extends EventDispatcher {
 		object.parent = this;
 		this.children.push(object);
 		epochs.structure++;
+		notifyAdd(this, object);
 		object.updateWorldMatrix(false, true);
 		object.dispatchEvent(_addedEvent);
 		_childaddedEvent.child = object;
@@ -299,10 +305,13 @@ class Object3D extends EventDispatcher {
 		if (this.matrixWorldNeedsUpdate || force || (parent !== null && parent._worldVersion !== this._parentWorldVersion)) {
 			if (this.matrixWorldAutoUpdate === true) {
 				if (parent === null) this._matrixWorld.copy(this._matrix);
-				else { this._matrixWorld.multiplyMatrices(parent._matrixWorld, this._matrix); this._parentWorldVersion = parent._worldVersion; }
+				else this._matrixWorld.multiplyMatrices(parent._matrixWorld, this._matrix);
 				this._worldVersion++;
 				if (this._countsWorld) epochs.world++;
 			}
+			// also noted for a user-owned world matrix (matrixWorldAutoUpdate = false), so its children are recomputed when the
+			// parent moves or the flag is set, not on every frame
+			if (parent !== null) this._parentWorldVersion = parent._worldVersion;
 			this.matrixWorldNeedsUpdate = false;
 			force = true;
 		}
@@ -385,6 +394,12 @@ for (const hook of ['onBeforeRender', 'onAfterRender']) {
 		set(fn) { epochs.structure++; Object.defineProperty(this, hook, { value: fn, writable: true, configurable: true, enumerable: true }); },
 	});
 }
+
+// Flat scene update (FlatGraph.js): `_flatUMW` is the updateMatrixWorld the flat pass knows how to replace; an object whose
+// `updateMatrixWorld` differs (a subclass override) is updated by calling it, recursively, for its whole subtree.
+// `_flatPostUpdate` runs after the pass recomputed an object's world matrix (Camera / SkinnedMesh set it).
+Object3D.prototype._flatUMW = Object3D.prototype.updateMatrixWorld;
+Object3D.prototype._flatPostUpdate = null;
 
 Object3D.DEFAULT_UP = /*@__PURE__*/ new Vector3(0, 1, 0);
 Object3D.DEFAULT_MATRIX_AUTO_UPDATE = true;

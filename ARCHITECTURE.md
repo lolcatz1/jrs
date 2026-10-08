@@ -22,6 +22,45 @@ For a static object the per-frame cost is ten float compares.
 The `rotation` (Euler) and `quaternion` objects stay synchronised through the same
 `_onChange` callbacks three.js uses, so `mesh.rotation.y += 0.01` keeps working.
 
+### 1b. Flat scene update (`src/core/FlatGraph.js`, `WebGLRenderer._flatPass`)
+
+three.js (and jrs until now) walk the scene twice per frame: `scene.updateMatrixWorld()` recurses through
+`children` to update matrices, then `projectObject` recurses again to cull and collect render items. Both walks
+are call-heavy and every property they read (`children`, `visible`, `matrixAutoUpdate`, `layers`, `parent`, ...)
+comes from receivers of many shapes.
+
+jrs keeps, per rendered scene, a `FlatGraph`: the objects in `traverse` order in one array (parent before
+child), with the parent index, the end of each subtree, the child count and a kind bitmask (renderable / light /
+sprite / LOD / custom `updateMatrixWorld` / camera or skinned-mesh post hook) in typed arrays, plus per-frame
+scratch (world version seen, "descendants must recompute", effective visibility). One loop over that array does
+what the two walks did: change-detect and recompose the local matrix, remultiply the world matrix straight in the
+slab (same expression order as `Matrix4.multiplyMatrices`, so results are bit-identical), refresh the world
+bounding sphere, test the frustum, compute the normal matrix while the record is hot, and push the render item.
+Items come out in exactly `traverseVisible` order, so draw order and `onBeforeRender` / `onAfterRender` order are
+unchanged.
+
+Invalidation: `add` / `remove` / `attach` patch the array in place (the subtree is spliced in after its parent's
+last descendant, or spliced out; more than 16 patches between two frames, or a parent that is not in the graph,
+mark it for a rebuild). The pass also compares every entry's `children.length` with the count it was built with,
+so a direct `children` edit rebuilds the graph and reruns the pass. Nested scenes rendered alternately each keep
+their own graph; a scene rendered by two renderers shares one.
+
+Semantics kept exactly (see `test/flat-scene-update.test.js` and `bench/flat-check.mjs`): `matrixAutoUpdate =
+false` (user-written `matrix`), `matrixWorldAutoUpdate = false` (user-written `matrixWorld`, children recomputed
+only when the object is flagged or its parent moves), `updateMatrixWorld(force)` / `updateWorldMatrix()` called
+by the app between frames (they still run recursively and the pass finds nothing to do), subclasses overriding
+`updateMatrixWorld` (the override is called, recursively, for its subtree), cameras in the hierarchy (updated with
+their ancestor chain before the frustum is built), lights (collected in traversal order; targets are read later),
+skinned meshes whose bones follow them in traversal order (`skeleton.update()` is deferred to the end of the pass),
+invisible subtrees (matrices updated, nothing pushed), layers, `frustumCulled = false`, a scene with
+`matrixWorldAutoUpdate = false` (projected, not updated).
+
+The pass runs in one of two modes per `render()`: when the list cannot be reused anyway (no recorded
+dependencies, an epoch moved, or the previous pass recomputed a world matrix: the scene is animating) matrices
+and items are produced in the same loop; otherwise an update-only loop runs first so an unchanged frame reuses
+its render list (§3b) without projecting. `renderer.flatSceneUpdate = false` restores the recursive walks;
+`renderer.debug.flatUpdate` counts merged / split passes and rebuilds.
+
 ## 2. Slab-allocated matrices (`src/core/TransformSlab.js`)
 
 Every `Object3D` owns a 48-float record in a large `Float32Array` page:
@@ -199,7 +238,10 @@ Only the number of shadow-casting lights is a compile-time constant, because GLS
 3.00 sampler arrays must be indexed with constants.
 
 Sampler uniforms are bound to fixed texture units at link time (`map` → 0,
-`alphaMap` → 1, …, shadow maps → 8–15) and never set again.
+`alphaMap` → 1, …, shadow maps → 8–14, the environment map → 15, the vertex-shader data
+textures (bones, morph targets, batched matrices) → 16–18) and never set again. The DFG
+lookup table of the physical model shares unit 7 with `specularMap` / `bumpMap`, which a
+`MeshStandardMaterial` never uses.
 
 ## 6. Program cache keyed by integer (`src/renderers/webgl/WebGLPrograms.js`)
 
@@ -292,12 +334,44 @@ The animation system (`src/animation/`) is the three.js r186 code, which already
 per-frame allocation; `AnimationMixer.update` writes into bone `position` / `quaternion` / `scale`
 and the change-detected `updateMatrix` picks it up.
 
+## 12. Environment maps and image-based lighting (`src/renderers/webgl/WebGLEnvironments.js`)
+
+The texture a material samples is resolved once per material per frame from `material.envMap`
+or `scene.environment`, exactly as three.js does: equirectangular textures become cube maps
+(a `WebGLCubeRenderTarget` of the image height), and the PMREM path (`MeshStandardMaterial`,
+`scene.environment`, blurred backgrounds) turns cube and equirectangular textures into the
+CubeUV layout of `PMREMGenerator`, which is a verbatim port (same GGX VNDF prefilter, same
+`cube_uv_reflection_fragment` sampling with `CUBEUV_TEXEL_WIDTH/HEIGHT` and `CUBEUV_MAX_MIP`
+defines). Conversions are cached per source texture and redone when a `CubeCamera` target sets
+`needsPMREMUpdate`. They render while a frame may be in flight, so the renderer parks the
+frame's collected lights, render-order ranks, dense-id counters and trace state around them
+(`_beginNestedRender` / `_endNestedRender`).
+
+The built-in `Standard` shader is three.js r186's physical model: the DFG lookup table (a 16x16
+RG16F `DataTexture` copied from three), `computeMultiscattering`, the multi-scattering
+compensation of direct specular, the Fresnel-weighted direct diffuse and the
+single/multi-scatter split of the indirect terms. Lighting stays in world space; the only
+view-space conversion is the geometric-roughness derivative, which three.js takes on the
+view-space normal. Basic / Lambert / Phong get three's `envmap_fragment` blending (reflection
+or refraction vector, `combine`, `reflectivity`, `specularMap` strength), with
+`MeshBasicMaterial`'s reflection vector computed per vertex and interpolated like three does.
+The per-material environment data (`envMapIntensity`, `reflectivity`, `refractionRatio`, `ior`
+and the inverse rotation matrix, with the px/nx flip of non-render-target cube textures) lives
+in the material record, so batches spanning several materials keep working; materials that
+sample different environment textures are kept in separate batches, because the environment
+map is one sampler unit per draw.
+
+`scene.background` textures are drawn like three.js draws them: the `backgroundCube` shader on
+a camera-centred BackSide box (cube map, or the PMREM layout when `backgroundBlurriness > 0`),
+or the `background` shader on a screen plane for 2D textures, through the ShaderMaterial path,
+before the opaque list and without depth writes.
+
 ## What is intentionally not there (yet)
 
-* Environment maps / image-based lighting, `MeshPhysicalMaterial`'s extra layers
-  (the class exists; it renders as `MeshStandardMaterial`).
-* VSM (and `BasicShadowMap` for directional/spot lights, which always use hardware PCF), `Scene.background` textures, `InstancedMesh`
-  morph targets (`morphTexture`), clipping planes, WebGL1.
+* `MeshPhysicalMaterial`'s extra layers (the class exists; it renders as `MeshStandardMaterial`
+  with the 0.04 dielectric F0), `lightMap`, `bumpMap`.
+* VSM (and `BasicShadowMap` for directional/spot lights, which always use hardware PCF), rendering
+  into mip levels of a render target, `InstancedMesh` morph targets (`morphTexture`), clipping planes, WebGL1.
 * `ShaderMaterial` with `lights: true`: three.js fills light uniforms from the scene in
   view space; here lighting data lives in the `Lights` block, which custom shaders do not
   see. Everything else about `ShaderMaterial` (prefix, chunks, `UniformsLib`, GLSL 1.00
