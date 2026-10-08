@@ -2,6 +2,7 @@
 // the diff per object, so an interaction bug (all objects differ, none alone) is told apart from a per-object one.
 //   node bench/fuzz-isolate.mjs <seed> [--frame=N] [--only=features] [--nobatch] [--noshadow] [--singlepass]
 //   --loo        leave-one-out: hide each object in turn (which object's removal makes the difference vanish)
+//   --jrs=prop=value,...   set jrs renderer properties, e.g. --jrs=autoBatchMaterials=false,reuseRenderLists=false,debug.verifyListReuse=true
 //   --pair=a,b   render only objects a and b, then b nudged in depth, then both forced draw orders; writes
 //                bench/results/fuzz/pair-{three,jrs}.png
 import { startServer } from './serve.mjs';
@@ -20,7 +21,8 @@ const loo = args.includes('--loo');
 const pair = opt('pair', '');
 page.on('console', (m) => { if (m.type() === 'log') console.log('[page]', m.text()); });
 const singlepass = args.includes('--singlepass');
-const r = await page.evaluate(async ([seed, frame, only, nobatch, noshadow, loo, pair, singlepass]) => {
+const jrsProps = opt('jrs', '');
+const r = await page.evaluate(async ([seed, frame, only, nobatch, noshadow, loo, pair, singlepass, jrsProps]) => {
 	const { buildFuzzScene, defaultFeatures } = await import('/bench/fuzz-scene.js');
 	const { comparePixels } = await import('/bench/pixel-compare.js');
 	const features = defaultFeatures();
@@ -35,6 +37,7 @@ const r = await page.evaluate(async ([seed, frame, only, nobatch, noshadow, loo,
 		const built = buildFuzzScene(T, seed, features, { width: 320, height: 240, frames: 6 });
 		built.setup(renderer);
 		if (nobatch && lib === 'jrs') { renderer.autoBatch = false; renderer.autoMultiDraw = false; }
+		if (jrsProps && lib === 'jrs') for (const kv of jrsProps.split(',')) { const [k, v] = kv.split('='); const path = k.split('.'); let o = renderer; for (let i = 0; i < path.length - 1; i++) o = o[path[i]]; o[path[path.length - 1]] = v === 'true' ? true : v === 'false' ? false : isNaN(+v) ? v : +v; }
 		if (noshadow) renderer.shadowMap.enabled = false;
 		const meshes = []; built.scene.traverse((o) => { if (o.isMesh) { meshes.push(o); if (singlepass) (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => { m.forceSinglePass = true; }); } });
 		setups[lib] = { renderer, built, meshes, gl: renderer.getContext(), T };
@@ -81,7 +84,7 @@ const r = await page.evaluate(async ([seed, frame, only, nobatch, noshadow, loo,
 		results.push({ k, desc: describe(setups.three.meshes[k]), meanAbsDiff: c.meanAbsDiff, maxDiff: c.maxDiff, pixelsOverMax: c.pixelsOverMax, differingPixels: c.differingPixels, samples: c.samples.slice(0, 2) });
 	}
 	return { notes: setups.three.built.notes, results };
-}, [seed, frame, only, nobatch, noshadow, loo, pair, singlepass]);
+}, [seed, frame, only, nobatch, noshadow, loo, pair, singlepass, jrsProps]);
 if (pair) { const imgs = await page.evaluate(() => window.__pairImages); const fs = await import('node:fs'); const path = await import('node:path'); const { fileURLToPath } = await import('node:url'); const dir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'results', 'fuzz'); fs.mkdirSync(dir, { recursive: true }); for (const k of ['three', 'jrs']) fs.writeFileSync(path.join(dir, `pair-${k}.png`), Buffer.from(imgs[k].split(',')[1], 'base64')); console.log(`pair images: ${path.relative(process.cwd(), dir)}/pair-{three,jrs}.png`); }
 console.log(r.notes.join('; '));
 for (const x of r.results) console.log(`${String(x.k).padStart(3)} mean ${x.meanAbsDiff.toFixed(3).padStart(7)} max ${String(x.maxDiff).padStart(3)} over ${String(x.pixelsOverMax).padStart(5)} diff ${String(x.differingPixels).padStart(6)}  ${x.desc}${x.samples && x.samples.length ? '  e.g. ' + x.samples.map((s) => `(${s.x},${s.y}) ${s.a}|${s.b}`).join(' ') : ''}`);

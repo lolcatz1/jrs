@@ -386,6 +386,41 @@ export function conformanceTests() {
 			}
 		},
 		{
+			name: 'Point light shadow map (cube depth, PCF and BasicShadowMap)', run(T, renderer) {
+				const { scene, camera } = baseScene(T);
+				renderer.shadowMap.enabled = true;
+				const mat = () => new T.MeshLambertMaterial({ color: 0xffffff });
+				const floor = new T.Mesh(new T.PlaneGeometry(10, 10), mat());
+				floor.rotation.x = -Math.PI / 2; floor.position.y = -1; floor.receiveShadow = true; scene.add(floor);
+				const wall = new T.Mesh(new T.PlaneGeometry(10, 10), mat());
+				wall.position.z = -3; wall.receiveShadow = true; scene.add(wall);
+				const box = new T.Mesh(new T.BoxGeometry(1, 1, 1), mat()); box.castShadow = true; scene.add(box);
+				const lamp = new T.PointLight(0xffffff, 120); lamp.position.set(0, 3, 0); lamp.castShadow = true; lamp.shadow.bias = -0.001; scene.add(lamp);
+				scene.add(new T.AmbientLight(0xffffff, 0.3));
+				camera.position.set(4, 3, 6); camera.lookAt(0, -0.5, -1); camera.updateMatrixWorld();
+				const px = (x, y, z) => { const v = new T.Vector3(x, y, z).project(camera); return [Math.round((v.x + 1) * 128), Math.round((1 - v.y) * 128)]; };
+				const probe = (p) => readPixel(renderer, p[0], p[1]);
+				const under = px(0, -1, 0), lit = px(2.2, -1, 0.6);
+				const out = {};
+				for (const [label, type] of [['pcf', T.PCFShadowMap], ['basic', T.BasicShadowMap]]) {
+					renderer.shadowMap.type = type;
+					renderer.render(scene, camera);
+					out[label] = { shadow: probe(under), lit: probe(lit) };
+				}
+				// the light now sits in front of the box: its shadow falls on the wall behind (the -Z cube face)
+				lamp.position.set(0, 0.2, 3); renderer.shadowMap.type = T.PCFShadowMap; renderer.render(scene, camera);
+				const wallShadow = probe(px(0, 0.2, -3)), wallLit = probe(px(2.6, 0.2, -3));
+				// a second casting point light must not mix up the cube maps
+				const lamp2 = new T.PointLight(0xffffff, 120); lamp2.position.set(-3, 2, 3); lamp2.castShadow = true; scene.add(lamp2);
+				renderer.render(scene, camera);
+				const two = probe(px(0, 0.2, -3));
+				renderer.shadowMap.enabled = false; renderer.shadowMap.type = T.PCFShadowMap;
+				const ok = (r) => lum(r.shadow) < lum(r.lit) * 0.6 && lum(r.lit) > 60;
+				const wallOk = lum(wallShadow) < lum(wallLit) * 0.6 && lum(wallLit) > 40;
+				return { pass: ok(out.pcf) && ok(out.basic) && wallOk && lum(two) < lum(wallLit), detail: `PCF in shadow ${fmt(out.pcf.shadow)} vs lit ${fmt(out.pcf.lit)}; Basic ${fmt(out.basic.shadow)} vs ${fmt(out.basic.lit)}; wall shadow ${fmt(wallShadow)} vs lit ${fmt(wallLit)}; with a second casting light ${fmt(two)}` };
+			}
+		},
+		{
 			name: 'Render target + readRenderTargetPixels', run(T, renderer) {
 				const { scene, camera } = baseScene(T);
 				scene.add(new T.Mesh(new T.BoxGeometry(2, 2, 2), new T.MeshBasicMaterial({ color: 0x00ff00 })));
@@ -574,6 +609,50 @@ export function conformanceTests() {
 				const pa = readPixel(renderer, 128 - 44, 128), pb = readPixel(renderer, 128 + 44, 128), pc = readPixel(renderer, 128, 128 - 66);
 				const switches = renderer.info.render.programSwitches;
 				return { pass: added === 2 && near(pa, [255, 0, 0], 2) && near(pb, [0, 0, 255], 2) && near(pc, [0, 255, 0], 2) && switches === 2, detail: `programs created ${added} (expected 2: same source -> shared, different defines -> own), colours ${fmt(pa)} ${fmt(pb)} ${fmt(pc)}, program switches per frame ${switches} (expected 2)` };
+			}
+		},
+		{
+			name: 'ShaderMaterial custom attributes drawn from mega-buffer pages (matches three.js)', run(T, renderer, ref) {
+				const vs = 'attribute vec3 aTint; attribute float aMix; varying vec3 vTint; varying float vMix; void main(){ vTint = aTint; vMix = aMix; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }';
+				const fs = 'uniform vec3 base; varying vec3 vTint; varying float vMix; void main(){ gl_FragColor = vec4(mix(base, vTint, vMix), 1.0); }';
+				const tinted = (L, geometry, seed) => {
+					const n = geometry.attributes.position.count, tint = new Float32Array(n * 3), mixv = new Float32Array(n);
+					for (let i = 0; i < n; i++) { tint[i * 3] = ((i + seed) % 3) / 2; tint[i * 3 + 1] = ((i * 2 + seed) % 5) / 4; tint[i * 3 + 2] = (seed % 2); mixv[i] = 0.5 + 0.5 * ((i + seed) % 2); }
+					geometry.setAttribute('aTint', new L.BufferAttribute(tint, 3)); geometry.setAttribute('aMix', new L.BufferAttribute(mixv, 1));
+					return geometry;
+				};
+				const build = (L, frame) => {
+					const { scene, camera } = baseScene(L, 7);
+					const mats = [0, 1].map((k) => new L.ShaderMaterial({ uniforms: { base: { value: new L.Color(0.1 + 0.4 * k, 0.2, 0.3) } }, vertexShader: vs, fragmentShader: fs }));
+					const make = (geometry, x, y, m) => { const mesh = new L.Mesh(geometry, m); mesh.position.set(x, y, 0); mesh.rotation.set(0.3 * x, 0.4 + 0.2 * y, 0); scene.add(mesh); return mesh; };
+					const g0 = tinted(L, new L.BoxGeometry(1.2, 1.2, 1.2), 1), g1 = tinted(L, new L.SphereGeometry(0.7, 12, 8), 2), g2 = tinted(L, new L.PlaneGeometry(1.4, 1.4).toNonIndexed(), 3);
+					const g3 = tinted(L, new L.BoxGeometry(1, 1, 1, 2, 2, 2), 4); g3.clearGroups(); g3.addGroup(0, 36, 0); g3.addGroup(36, 36, 1);
+					const a = make(g0, -2.2, 1.2, mats[0]), b = make(g1, 0, 1.2, mats[1]), c = make(g2, 2.2, 1.2, mats[0]), d = make(g0, -2.2, -1.2, mats[1]), e = make(g3, 0, -1.2, mats);
+					const w = make(g1, 2.2, -1.2, mats[0]);
+					if (frame > 0) { // dynamic update of a custom attribute, and wireframe toggled
+						const t = g1.attributes.aTint; for (let i = 0; i < t.array.length; i++) t.array[i] = 1 - t.array[i]; t.needsUpdate = true;
+						w.material = new L.ShaderMaterial({ uniforms: { base: { value: new L.Color(1, 1, 0) } }, vertexShader: vs, fragmentShader: fs, wireframe: true });
+					}
+					return { scene, camera, mats, g1 };
+				};
+				const run = (L, rend, frame) => {
+					const s = build(L, frame);
+					// a depth-only pass first (position only), as a shadow pass would: page layouts are made before the colour programs exist
+					const depth = new L.ShaderMaterial({ vertexShader: 'void main(){ gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }', fragmentShader: 'void main(){ gl_FragColor = vec4(1.0); }' });
+					if (rend === renderer) { s.scene.overrideMaterial = depth; renderer.render(s.scene, s.camera); s.scene.overrideMaterial = null; }
+					return s;
+				};
+				const s0 = run(T, renderer, 0);
+				renderer.render(s0.scene, s0.camera);
+				const px0 = readAll(renderer);
+				const d0 = compareWithReference(ref, (L) => build(L, 0), px0);
+				const s1 = run(T, renderer, 1);
+				renderer.render(s1.scene, s1.camera);
+				const px1 = readAll(renderer);
+				const d1 = compareWithReference(ref, (L) => build(L, 1), px1);
+				const rec = renderer.megaBuffers ? renderer.megaBuffers.records.get(s1.g1) : null; // the sphere must have been drawn from a page that carries the custom attributes
+				const paged = rec === null || (rec.page !== null && rec.layout.customNames.has('aTint') && rec.layout.customNames.has('aMix'));
+				return { pass: paged && refOk(d0) && refOk(d1) && diffImages(px0, px1).badFraction > 0.001, detail: `${paged ? 'paged' : 'NOT paged'}; static: ${refDetail(d0)}; after attribute update + wireframe: ${refDetail(d1)}` };
 			}
 		},
 		{

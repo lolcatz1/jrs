@@ -18,6 +18,8 @@ export const MAX_DIR_LIGHTS = 4;
 export const MAX_POINT_LIGHTS = 8;
 export const MAX_SPOT_LIGHTS = 4;
 export const MAX_HEMI_LIGHTS = 2;
+/** Point lights that can cast shadows at once (one cube depth map each; they share texture units 8-14 with directional and spot shadow maps). */
+export const MAX_POINT_SHADOWS = 4;
 
 export const MATERIAL_BASIC = 1;
 export const MATERIAL_LAMBERT = 2;
@@ -39,10 +41,22 @@ export const TEXTURE_UNITS = {
 	dfgLUT: 7, // MeshStandardMaterial's DFG lookup table (Standard has no specularMap; bumpMap is not implemented)
 	dirShadowMap0: 8, dirShadowMap1: 9, dirShadowMap2: 10, dirShadowMap3: 11,
 	spotShadowMap0: 12, spotShadowMap1: 13, spotShadowMap2: 14, spotShadowMap3: 15,
+	// pointShadowMap[i] takes the free units of 8-14 after directional and spot shadow maps, see pointShadowUnit()
 	objectMatrices: 15, // multi-draw matrix texture (spot shadow maps are capped at 3 when it is used)
 	// vertex-shader data textures live above the 16 fragment units (WebGL2 guarantees 32 combined units)
 	boneTexture: 16, morphTargetsTexture: 17,
 };
+/**
+ * Texture unit of the i-th point shadow cube map: the i-th unit of 8..14 not used by the directional (8..8+numDir-1)
+ * or spot (12..12+numSpot-1) shadow maps. Returns -1 when none is left.
+ */
+export function pointShadowUnit(i, numDir, numSpot) {
+	for (let u = 8; u < 15; u++) {
+		if (u < 8 + numDir || (u >= 12 && u < 12 + numSpot)) continue;
+		if (i-- === 0) return u;
+	}
+	return -1;
+}
 export const MATRIX_TEXTURE_WIDTH = 1024; // texels
 export const TEXELS_PER_OBJECT = 8; // model matrix (4) + normal matrix columns (3) + spare -> 128 objects per row
 
@@ -74,11 +88,13 @@ layout(std140) uniform Lights {
 	vec4 dirShadowParams[${MAX_DIR_LIGHTS}];   // bias, normalBias, radius / mapSize.x, intensity
 	mat4 spotShadowMatrix[${MAX_SPOT_LIGHTS}];
 	vec4 spotShadowParams[${MAX_SPOT_LIGHTS}];
+	vec4 pointShadowParams[${MAX_POINT_SHADOWS}]; // bias, normalBias, radius, intensity
+	vec4 pointShadowInfo[${MAX_POINT_SHADOWS}];   // mapSize, camera near, camera far
 };
 `;
 
 // Byte size of the Lights block (std140): 16 + 16 + 4*32 + 8*48 + 4*64 + 2*48 + 4*64 + 4*16 + 4*64 + 4*16
-export const LIGHTS_BLOCK_SIZE = 16 + 16 + MAX_DIR_LIGHTS * 32 + MAX_POINT_LIGHTS * 48 + MAX_SPOT_LIGHTS * 64 + MAX_HEMI_LIGHTS * 48 + MAX_DIR_LIGHTS * 64 + MAX_DIR_LIGHTS * 16 + MAX_SPOT_LIGHTS * 64 + MAX_SPOT_LIGHTS * 16;
+export const LIGHTS_BLOCK_SIZE = 16 + 16 + MAX_DIR_LIGHTS * 32 + MAX_POINT_LIGHTS * 48 + MAX_SPOT_LIGHTS * 64 + MAX_HEMI_LIGHTS * 48 + MAX_DIR_LIGHTS * 64 + MAX_DIR_LIGHTS * 16 + MAX_SPOT_LIGHTS * 64 + MAX_SPOT_LIGHTS * 16 + MAX_POINT_SHADOWS * 32;
 export const FRAME_BLOCK_SIZE = 64 * 3 + 16 * 4;
 
 export const MATERIAL_BLOCK = /* glsl */`
@@ -145,7 +161,7 @@ precision highp int;
 precision highp sampler2DArray;
 ${FRAME_BLOCK}
 ${MATERIAL_BLOCK}
-#if NUM_DIR_SHADOWS > 0 || NUM_SPOT_SHADOWS > 0
+#if NUM_DIR_SHADOWS > 0 || NUM_SPOT_SHADOWS > 0 || NUM_POINT_SHADOWS > 0
 ${LIGHTS_BLOCK}
 #endif
 uniform mat4 modelMatrix;
@@ -246,6 +262,9 @@ out vec4 vDirShadowCoord[ NUM_DIR_SHADOWS ];
 #endif
 #if NUM_SPOT_SHADOWS > 0
 out vec4 vSpotShadowCoord[ NUM_SPOT_SHADOWS ];
+#endif
+#if NUM_POINT_SHADOWS > 0
+out vec3 vPointShadowCoord[ NUM_POINT_SHADOWS ];
 #endif
 
 void main() {
@@ -389,6 +408,17 @@ void main() {
 		vSpotShadowCoord[ i ] = spotShadowMatrix[ i ] * shadowWorldPosition;
 	}
 	#endif
+	#if NUM_POINT_SHADOWS > 0
+	for ( int i = 0; i < NUM_POINT_SHADOWS; i ++ ) {
+		vec3 shadowWorldNormal = vec3( 0.0 );
+		#ifdef USE_NORMAL
+		shadowWorldNormal = vNormal;
+		#endif
+		vec4 shadowWorldPosition = worldPosition + vec4( shadowWorldNormal * pointShadowParams[ i ].y, 0.0 );
+		// the vector from the light to the shadowed position (three.js: translation matrix times position)
+		vPointShadowCoord[ i ] = shadowWorldPosition.xyz - pointLights[ i ].position.xyz;
+	}
+	#endif
 }
 `;
 
@@ -396,6 +426,7 @@ const fragmentShader = /* glsl */`
 precision highp float;
 precision highp int;
 precision highp sampler2DShadow;
+precision highp samplerCubeShadow;
 ${FRAME_BLOCK}
 ${LIGHTS_BLOCK}
 #ifdef USE_MATERIAL_ARRAY
@@ -473,6 +504,14 @@ uniform sampler2DShadow dirShadowMap[ NUM_DIR_SHADOWS ];
 in vec4 vSpotShadowCoord[ NUM_SPOT_SHADOWS ];
 uniform sampler2DShadow spotShadowMap[ NUM_SPOT_SHADOWS ];
 #endif
+#if NUM_POINT_SHADOWS > 0
+in vec3 vPointShadowCoord[ NUM_POINT_SHADOWS ];
+#ifdef POINT_SHADOW_BASIC
+uniform samplerCube pointShadowMap[ NUM_POINT_SHADOWS ];
+#else
+uniform samplerCubeShadow pointShadowMap[ NUM_POINT_SHADOWS ];
+#endif
+#endif
 out vec4 fragColor;
 
 #if NUM_DIR_SHADOWS > 0 || NUM_SPOT_SHADOWS > 0
@@ -506,6 +545,72 @@ float sampleShadow( sampler2DShadow shadowMap, vec4 shadowCoord, vec4 params ) {
 	}
 	return mix( 1.0, shadow, params.w );
 }
+#endif
+
+#if NUM_POINT_SHADOWS > 0
+#define PI2 6.283185307179586
+// three.js r186 shadowmap_pars_fragment: Vogel disk + interleaved gradient noise taps around the light-to-fragment direction
+#ifndef POINT_SHADOW_BASIC
+#if !( NUM_DIR_SHADOWS > 0 || NUM_SPOT_SHADOWS > 0 )
+// (already defined above when directional or spot shadows are present)
+float interleavedGradientNoise( vec2 position ) {
+	return fract( 52.9829189 * fract( dot( position, vec2( 0.06711056, 0.00583715 ) ) ) );
+}
+vec2 vogelDiskSample( int sampleIndex, int samplesCount, float phi ) {
+	const float goldenAngle = 2.399963229728653;
+	float r = sqrt( ( float( sampleIndex ) + 0.5 ) / float( samplesCount ) );
+	float theta = float( sampleIndex ) * goldenAngle + phi;
+	return vec2( cos( theta ), sin( theta ) ) * r;
+}
+#endif
+float getPointShadow( samplerCubeShadow shadowMap, vec4 params, vec4 info, vec3 lightToPosition ) {
+	float shadow = 1.0;
+	float shadowBias = params.x, shadowRadius = params.z, shadowIntensity = params.w;
+	float shadowMapSize = info.x, shadowCameraNear = info.y, shadowCameraFar = info.z;
+	vec3 bd3D = normalize( lightToPosition );
+	vec3 absVec = abs( lightToPosition );
+	float viewSpaceZ = max( max( absVec.x, absVec.y ), absVec.z );
+	if ( viewSpaceZ - shadowCameraFar <= 0.0 && viewSpaceZ - shadowCameraNear >= 0.0 ) {
+		float dp = ( shadowCameraFar * ( viewSpaceZ - shadowCameraNear ) ) / ( viewSpaceZ * ( shadowCameraFar - shadowCameraNear ) );
+		dp += shadowBias;
+		float texelSize = shadowRadius / shadowMapSize;
+		vec3 absDir = abs( bd3D );
+		vec3 tangent = absDir.x > absDir.z ? vec3( 0.0, 1.0, 0.0 ) : vec3( 1.0, 0.0, 0.0 );
+		tangent = normalize( cross( bd3D, tangent ) );
+		vec3 bitangent = cross( bd3D, tangent );
+		float phi = interleavedGradientNoise( gl_FragCoord.xy ) * PI2;
+		vec2 sample0 = vogelDiskSample( 0, 5, phi );
+		vec2 sample1 = vogelDiskSample( 1, 5, phi );
+		vec2 sample2 = vogelDiskSample( 2, 5, phi );
+		vec2 sample3 = vogelDiskSample( 3, 5, phi );
+		vec2 sample4 = vogelDiskSample( 4, 5, phi );
+		shadow = (
+			texture( shadowMap, vec4( bd3D + ( tangent * sample0.x + bitangent * sample0.y ) * texelSize, dp ) ) +
+			texture( shadowMap, vec4( bd3D + ( tangent * sample1.x + bitangent * sample1.y ) * texelSize, dp ) ) +
+			texture( shadowMap, vec4( bd3D + ( tangent * sample2.x + bitangent * sample2.y ) * texelSize, dp ) ) +
+			texture( shadowMap, vec4( bd3D + ( tangent * sample3.x + bitangent * sample3.y ) * texelSize, dp ) ) +
+			texture( shadowMap, vec4( bd3D + ( tangent * sample4.x + bitangent * sample4.y ) * texelSize, dp ) )
+		) * 0.2;
+	}
+	return mix( 1.0, shadow, shadowIntensity );
+}
+#else
+float getPointShadow( samplerCube shadowMap, vec4 params, vec4 info, vec3 lightToPosition ) {
+	float shadow = 1.0;
+	float shadowBias = params.x, shadowIntensity = params.w;
+	float shadowCameraNear = info.y, shadowCameraFar = info.z;
+	vec3 absVec = abs( lightToPosition );
+	float viewSpaceZ = max( max( absVec.x, absVec.y ), absVec.z );
+	if ( viewSpaceZ - shadowCameraFar <= 0.0 && viewSpaceZ - shadowCameraNear >= 0.0 ) {
+		float dp = ( shadowCameraFar * ( viewSpaceZ - shadowCameraNear ) ) / ( viewSpaceZ * ( shadowCameraFar - shadowCameraNear ) );
+		dp += shadowBias;
+		vec3 bd3D = normalize( lightToPosition );
+		float depth = texture( shadowMap, bd3D ).r;
+		shadow = step( dp, depth );
+	}
+	return mix( 1.0, shadow, shadowIntensity );
+}
+#endif
 #endif
 
 #ifdef USE_NORMALMAP
@@ -793,6 +898,11 @@ void main() {
 			float lightDistance = length( lVector );
 			dotNL = clamp( dot( normal, L ), 0.0, 1.0 );
 			irradiance = dotNL * pointLights[ i ].color.rgb * getDistanceAttenuation( lightDistance, pointLights[ i ].params.x, pointLights[ i ].params.y );
+			#if NUM_POINT_SHADOWS > 0
+			if ( i < NUM_POINT_SHADOWS ) {
+				irradiance *= pointShadowFactor( i );
+			}
+			#endif
 			#if defined( LIGHTING_STANDARD )
 			RE_Direct_Standard( irradiance, L, viewDir, normal, specularF0, roughness, msComp, diffuseBase, directDiffuse, directSpecular );
 			#else
@@ -889,7 +999,7 @@ void main() {
 `;
 
 // shadow factor helpers need the sampler arrays indexed by a constant; generate unrolled functions
-function shadowFactorFunctions(numDir, numSpot) {
+function shadowFactorFunctions(numDir, numSpot, numPoint) {
 	let s = '';
 	if (numDir > 0) {
 		s += 'float dirShadowFactor( int i ) {\n';
@@ -899,6 +1009,11 @@ function shadowFactorFunctions(numDir, numSpot) {
 	if (numSpot > 0) {
 		s += 'float spotShadowFactor( int i ) {\n';
 		for (let i = 0; i < numSpot; i++) s += `\tif ( i == ${i} ) return sampleShadow( spotShadowMap[ ${i} ], vSpotShadowCoord[ ${i} ], spotShadowParams[ ${i} ] );\n`;
+		s += '\treturn 1.0;\n}\n';
+	}
+	if (numPoint > 0) {
+		s += 'float pointShadowFactor( int i ) {\n';
+		for (let i = 0; i < numPoint; i++) s += `\tif ( i == ${i} ) return getPointShadow( pointShadowMap[ ${i} ], pointShadowParams[ ${i} ], pointShadowInfo[ ${i} ], vPointShadowCoord[ ${i} ] );\n`;
 		s += '\treturn 1.0;\n}\n';
 	}
 	return s;
@@ -966,6 +1081,8 @@ export function buildBuiltinShader(p) {
 	d('TONE_MAPPING', p.toneMapping | 0);
 	d('NUM_DIR_SHADOWS', p.numDirShadows | 0);
 	d('NUM_SPOT_SHADOWS', p.numSpotShadows | 0);
+	d('NUM_POINT_SHADOWS', p.numPointShadows | 0);
+	if (p.pointShadowBasic) d('POINT_SHADOW_BASIC');
 	const prefix = '#version 300 es\n' + defines.join('\n') + '\n';
 	const vsExtra = (p.multiDraw ? '#extension GL_ANGLE_multi_draw : require\n' : '') + (p.materialType === MATERIAL_SPRITE ? spriteUniform : '');
 	const vs = prefix + vsExtra + vertexShader;
@@ -975,7 +1092,7 @@ export function buildBuiltinShader(p) {
 	}
 	// insert shadow helper functions after sampleShadow definition
 	let fs = fragmentShader;
-	const helpers = shadowFactorFunctions(p.numDirShadows | 0, p.numSpotShadows | 0);
+	const helpers = shadowFactorFunctions(p.numDirShadows | 0, p.numSpotShadows | 0, p.numPointShadows | 0);
 	if (helpers !== '') fs = fs.replace('#ifdef USE_NORMALMAP\nvec3 perturbNormal2Arb', helpers + '#ifdef USE_NORMALMAP\nvec3 perturbNormal2Arb');
 	return { vertexShader: vs, fragmentShader: prefix + fs };
 }
