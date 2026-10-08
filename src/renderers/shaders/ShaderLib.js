@@ -127,7 +127,6 @@ struct MaterialRecord {
 	vec4 mUvTransform2;
 	vec4 mEnvParams;
 	mat3 mEnvMapRotation;
-	vec4 mMapUv[ 16 ];   // per-map uv transform (a, b, c, d | tx, ty, 0, 0): map, alphaMap, normalMap, emissiveMap, roughnessMap, metalnessMap, aoMap, specularMap
 	#if MATERIAL_PAD > 0
 	vec4 mPad[ MATERIAL_PAD ];
 	#endif
@@ -143,7 +142,6 @@ layout(std140) uniform Materials {
 #define uvTransform0 materials[ matIdx ].mUvTransform0
 #define uvTransform1 materials[ matIdx ].mUvTransform1
 #define uvTransform2 materials[ matIdx ].mUvTransform2
-#define mapUv materials[ matIdx ].mMapUv
 #define envParams materials[ matIdx ].mEnvParams
 #define envMapRotation materials[ matIdx ].mEnvMapRotation
 #else
@@ -158,16 +156,13 @@ layout(std140) uniform Material {
 	vec4 uvTransform2;
 	vec4 envParams;      // envMapIntensity, reflectivity, refractionRatio, ior
 	mat3 envMapRotation; // three vec4 columns
-	vec4 mapUv[ 16 ];    // per-map uv transform (a, b, c, d | tx, ty, 0, 0): map, alphaMap, normalMap, emissiveMap, roughnessMap, metalnessMap, aoMap, specularMap
 };
 #endif
 #define envMapIntensity envParams.x
 #define reflectivity envParams.y
 #define refractionRatio envParams.z
-// three.js has one uv transform per map (mapTransform, alphaMapTransform, ...): uv' = ( a c tx ; b d ty ) * ( u, v, 1 )
-vec2 applyMapUv( vec4 a, vec4 b, vec2 uv ) { return vec2( a.x * uv.x + a.z * uv.y + b.x, a.y * uv.x + a.w * uv.y + b.y ); }
 `;
-export const MATERIAL_BLOCK_SIZE = 16 * 28;
+export const MATERIAL_BLOCK_SIZE = 16 * 12;
 
 const common = /* glsl */`
 #define PI 3.141592653589793
@@ -274,28 +269,6 @@ out vec2 vUv;
 #endif
 #ifdef USE_UV1
 out vec2 vUv1;
-#endif
-// per-map uvs (three.js: vAlphaMapUv, vNormalMapUv, ...), each through its own transform
-#ifdef USE_ALPHAMAP
-out vec2 vAlphaMapUv;
-#endif
-#ifdef USE_NORMALMAP
-out vec2 vNormalMapUv;
-#endif
-#ifdef USE_EMISSIVEMAP
-out vec2 vEmissiveMapUv;
-#endif
-#ifdef USE_ROUGHNESSMAP
-out vec2 vRoughnessMapUv;
-#endif
-#ifdef USE_METALNESSMAP
-out vec2 vMetalnessMapUv;
-#endif
-#ifdef USE_AOMAP
-out vec2 vAoMapUv;
-#endif
-#ifdef USE_SPECULARMAP
-out vec2 vSpecularMapUv;
 #endif
 #ifdef IS_DEPTH
 out vec2 vHighPrecisionZW;
@@ -439,31 +412,6 @@ void main() {
 	#endif
 	#ifdef USE_UV
 	vUv = ( mat3( uvTransform0.xyz, uvTransform1.xyz, uvTransform2.xyz ) * vec3( uv, 1.0 ) ).xy;
-	#ifdef USE_ALPHAMAP
-	vAlphaMapUv = applyMapUv( mapUv[ 2 ], mapUv[ 3 ], uv );
-	#endif
-	#ifdef USE_NORMALMAP
-	vNormalMapUv = applyMapUv( mapUv[ 4 ], mapUv[ 5 ], uv );
-	#endif
-	#ifdef USE_EMISSIVEMAP
-	vEmissiveMapUv = applyMapUv( mapUv[ 6 ], mapUv[ 7 ], uv );
-	#endif
-	#ifdef USE_ROUGHNESSMAP
-	vRoughnessMapUv = applyMapUv( mapUv[ 8 ], mapUv[ 9 ], uv );
-	#endif
-	#ifdef USE_METALNESSMAP
-	vMetalnessMapUv = applyMapUv( mapUv[ 10 ], mapUv[ 11 ], uv );
-	#endif
-	#ifdef USE_AOMAP
-		#ifdef USE_UV1
-		vAoMapUv = applyMapUv( mapUv[ 12 ], mapUv[ 13 ], uv1 );
-		#else
-		vAoMapUv = applyMapUv( mapUv[ 12 ], mapUv[ 13 ], uv );
-		#endif
-	#endif
-	#ifdef USE_SPECULARMAP
-	vSpecularMapUv = applyMapUv( mapUv[ 14 ], mapUv[ 15 ], uv );
-	#endif
 	#endif
 	#ifdef USE_UV1
 	vUv1 = uv1;
@@ -569,27 +517,6 @@ in vec2 vUv;
 #endif
 #ifdef USE_UV1
 in vec2 vUv1;
-#endif
-#ifdef USE_ALPHAMAP
-in vec2 vAlphaMapUv;
-#endif
-#ifdef USE_NORMALMAP
-in vec2 vNormalMapUv;
-#endif
-#ifdef USE_EMISSIVEMAP
-in vec2 vEmissiveMapUv;
-#endif
-#ifdef USE_ROUGHNESSMAP
-in vec2 vRoughnessMapUv;
-#endif
-#ifdef USE_METALNESSMAP
-in vec2 vMetalnessMapUv;
-#endif
-#ifdef USE_AOMAP
-in vec2 vAoMapUv;
-#endif
-#ifdef USE_SPECULARMAP
-in vec2 vSpecularMapUv;
 #endif
 #ifdef IS_DEPTH
 in vec2 vHighPrecisionZW;
@@ -975,9 +902,9 @@ void main() {
 	#endif
 	#ifdef USE_ALPHAMAP
 		#ifdef IS_POINTS
-		diffuseColor.a *= texture( alphaMap, applyMapUv( mapUv[ 2 ], mapUv[ 3 ], pointUv ) ).g;
+		diffuseColor.a *= texture( alphaMap, pointUv ).g;
 		#else
-		diffuseColor.a *= texture( alphaMap, vAlphaMapUv ).g;
+		diffuseColor.a *= texture( alphaMap, vUv ).g;
 		#endif
 	#endif
 	#ifdef USE_ALPHATEST
@@ -1019,7 +946,7 @@ void main() {
 		#endif
 		vec3 nonPerturbedNormal = normal;
 		#ifdef USE_NORMALMAP
-		vec3 mapN = texture( normalMap, vNormalMapUv ).xyz * 2.0 - 1.0;
+		vec3 mapN = texture( normalMap, vUv ).xyz * 2.0 - 1.0;
 		mapN.xy *= matParams2.xy;
 		normal = perturbNormal2Arb( vWorldPosition - cameraPosition.xyz, normal, mapN, faceDirection );
 		#endif
@@ -1036,7 +963,7 @@ void main() {
 	vec3 outgoingLight = vec3( 0.0 );
 	float specularStrength = 1.0;
 	#ifdef USE_SPECULARMAP
-	specularStrength = texture( specularMap, vSpecularMapUv ).r;
+	specularStrength = texture( specularMap, vUv ).r;
 	#endif
 
 	#if defined( LIGHTING_LAMBERT ) || defined( LIGHTING_PHONG ) || defined( LIGHTING_STANDARD )
@@ -1045,10 +972,10 @@ void main() {
 		float roughnessFactor = matParams.x;
 		float metalnessFactor = matParams.y;
 		#ifdef USE_ROUGHNESSMAP
-		roughnessFactor *= texture( roughnessMap, vRoughnessMapUv ).g;
+		roughnessFactor *= texture( roughnessMap, vUv ).g;
 		#endif
 		#ifdef USE_METALNESSMAP
-		metalnessFactor *= texture( metalnessMap, vMetalnessMapUv ).b;
+		metalnessFactor *= texture( metalnessMap, vUv ).b;
 		#endif
 		#if defined( LIGHTING_STANDARD )
 		vec3 diffuseBase = diffuseColor.rgb * ( 1.0 - metalnessFactor );
@@ -1176,9 +1103,9 @@ void main() {
 		#endif
 		#ifdef USE_AOMAP
 			#ifdef USE_UV1
-			float ambientOcclusion = ( texture( aoMap, vAoMapUv ).r - 1.0 ) * matParams.z + 1.0;
+			float ambientOcclusion = ( texture( aoMap, vUv1 ).r - 1.0 ) * matParams.z + 1.0;
 			#else
-			float ambientOcclusion = ( texture( aoMap, vAoMapUv ).r - 1.0 ) * matParams.z + 1.0;
+			float ambientOcclusion = ( texture( aoMap, vUv ).r - 1.0 ) * matParams.z + 1.0;
 			#endif
 		indirectDiffuse *= ambientOcclusion;
 			#if defined( USE_ENVMAP ) && defined( LIGHTING_STANDARD )
@@ -1188,7 +1115,7 @@ void main() {
 		#endif
 		vec3 totalEmissive = emissive.rgb * matParams.w;
 		#ifdef USE_EMISSIVEMAP
-		totalEmissive *= texture( emissiveMap, vEmissiveMapUv ).rgb;
+		totalEmissive *= texture( emissiveMap, vUv ).rgb;
 		#endif
 		#if defined( LIGHTING_STANDARD )
 		vec3 totalDiffuse = directDiffuse + indirectDiffuse;
@@ -1202,9 +1129,9 @@ void main() {
 		outgoingLight = diffuseColor.rgb;
 		#ifdef USE_AOMAP
 			#ifdef USE_UV1
-			float ambientOcclusion = ( texture( aoMap, vAoMapUv ).r - 1.0 ) * matParams.z + 1.0;
+			float ambientOcclusion = ( texture( aoMap, vUv1 ).r - 1.0 ) * matParams.z + 1.0;
 			#else
-			float ambientOcclusion = ( texture( aoMap, vAoMapUv ).r - 1.0 ) * matParams.z + 1.0;
+			float ambientOcclusion = ( texture( aoMap, vUv ).r - 1.0 ) * matParams.z + 1.0;
 			#endif
 		outgoingLight *= ambientOcclusion;
 		#endif

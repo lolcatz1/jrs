@@ -242,7 +242,7 @@ class WebGLRenderer {
 		this._lightsBuffer = gl.createBuffer();
 		gl.bindBuffer(gl.UNIFORM_BUFFER, this._lightsBuffer);
 		gl.bufferData(gl.UNIFORM_BUFFER, LIGHTS_BLOCK_SIZE, gl.DYNAMIC_DRAW);
-		this._materialStride = Math.ceil(MATERIAL_BLOCK_SIZE / this.state.uboAlignment) * this.state.uboAlignment; // records start at an aligned offset
+		this._materialStride = Math.max(MATERIAL_BLOCK_SIZE, this.state.uboAlignment);
 		// Material-index batching binds a window of `_materialWindow` consecutive material records as one
 		// block; the window must fit MAX_UNIFORM_BLOCK_SIZE (16 KB on some mobile GPUs -> 128 records of
 		// 128 B) and is capped so the shader's array stays small. Records are padded to the buffer stride.
@@ -1517,7 +1517,7 @@ class WebGLRenderer {
 	_materialProps(material) {
 		let props = this._materialProperties.get(material);
 		if (props === undefined) {
-			props = { programs: [], blockData: new Float32Array(MATERIAL_BLOCK_SIZE / 4), blockSlot: -1, blockStamp: -1, textureStamp: -1, batchSig: null, batchGroup: null, mapMask: -1, envStamp: -1, envMap: null, envMapRotation: null, envMapIntensity: 1, envPending: false };
+			props = { programs: [], blockData: new Float32Array(MATERIAL_BLOCK_SIZE / 4), blockSlot: -1, blockStamp: -1, textureStamp: -1, batchSig: null, batchGroup: null, envStamp: -1, envMap: null, envMapRotation: null, envMapIntensity: 1, envPending: false };
 			this._materialProperties.set(material, props);
 			material.addEventListener('dispose', this._onMaterialDispose);
 		}
@@ -1626,7 +1626,7 @@ class WebGLRenderer {
 			slot = this._materialSlotsUsed++;
 		}
 		props.blockSlot = slot;
-		props.blockData.fill(NaN); props.mapMask = -1; // force upload
+		props.blockData.fill(NaN); // force upload
 	}
 
 	/** Refresh the material's uniform block (once per frame per material) and return its byte offset. */
@@ -1682,35 +1682,9 @@ class WebGLRenderer {
 		const b = props.blockData;
 		let dirty = false;
 		for (let i = 0; i < 48; i++) { if (b[i] !== s[i]) { dirty = true; break; } }
-		if (dirty) for (let i = 0; i < 48; i++) b[i] = s[i]; // the map part below is kept in place
-		// three.js: every map has its own transform (mapTransform, alphaMapTransform, ...): one 2D affine per map in
-		// MAP_KEYS order, compared in place against the record (a missing map costs two compares; a NaN-filled fresh
-		// record is dirty). Direct property reads: the keyed form costs ~10% of a 5000-material frame.
-		const t0 = material.map, t1 = material.alphaMap, t2 = material.normalMap, t3 = material.emissiveMap;
-		const t4 = material.roughnessMap, t5 = material.metalnessMap, t6 = material.aoMap, t7 = material.specularMap;
-		let mask = 0;
-		if (t0) mask |= 1; if (t1) mask |= 2; if (t2) mask |= 4; if (t3) mask |= 8;
-		if (t4) mask |= 16; if (t5) mask |= 32; if (t6) mask |= 64; if (t7) mask |= 128;
-		if (mask !== props.mapMask) {
-			// a map appeared or went away (or the record is fresh): refresh every slot, identity for the missing ones
-			props.mapMask = mask;
-			if (syncMapUv(b, 48, t0)) dirty = true; if (syncMapUv(b, 56, t1)) dirty = true;
-			if (syncMapUv(b, 64, t2)) dirty = true; if (syncMapUv(b, 72, t3)) dirty = true;
-			if (syncMapUv(b, 80, t4)) dirty = true; if (syncMapUv(b, 88, t5)) dirty = true;
-			if (syncMapUv(b, 96, t6)) dirty = true; if (syncMapUv(b, 104, t7)) dirty = true;
-		} else if (mask !== 0) {
-			// only the present maps can change their transform; a material without maps never touches this part
-			if ((mask & 1) !== 0 && syncMapUv(b, 48, t0)) dirty = true;
-			if ((mask & 2) !== 0 && syncMapUv(b, 56, t1)) dirty = true;
-			if ((mask & 4) !== 0 && syncMapUv(b, 64, t2)) dirty = true;
-			if ((mask & 8) !== 0 && syncMapUv(b, 72, t3)) dirty = true;
-			if ((mask & 16) !== 0 && syncMapUv(b, 80, t4)) dirty = true;
-			if ((mask & 32) !== 0 && syncMapUv(b, 88, t5)) dirty = true;
-			if ((mask & 64) !== 0 && syncMapUv(b, 96, t6)) dirty = true;
-			if ((mask & 128) !== 0 && syncMapUv(b, 104, t7)) dirty = true;
-		}
 		const offset = props.blockSlot * this._materialStride;
 		if (dirty) {
+			b.set(s);
 			this.state.bindUniformBuffer(this._materialBuffer);
 			gl.bufferSubData(gl.UNIFORM_BUFFER, offset, b);
 		}
@@ -2442,20 +2416,6 @@ const MAP_KEYS = ['map', 'alphaMap', 'normalMap', 'emissiveMap', 'roughnessMap',
 const BATCH_SIG_SIZE = MAP_KEYS.length + 34; // see _batchGroupOf
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 const _mv = new Float32Array(16); // modelViewMatrix scratch (uploaded straight after it is built)
-
-/** Writes a map's uv transform (a, b, c, d | tx, ty) into the material record at `o` if it changed; identity for no map. */
-function syncMapUv(b, o, tex) {
-	if (tex !== undefined && tex !== null && tex.isTexture === true) {
-		if (tex.matrixAutoUpdate === true) tex.updateMatrix();
-		const m = tex.matrix.elements;
-		if (b[o] === m[0] && b[o + 1] === m[1] && b[o + 2] === m[3] && b[o + 3] === m[4] && b[o + 4] === m[6] && b[o + 5] === m[7]) return false;
-		b[o] = m[0]; b[o + 1] = m[1]; b[o + 2] = m[3]; b[o + 3] = m[4]; b[o + 4] = m[6]; b[o + 5] = m[7]; b[o + 6] = 0; b[o + 7] = 0;
-		return true;
-	}
-	if (b[o] === 1 && b[o + 4] === 0 && b[o + 1] === 0 && b[o + 2] === 0 && b[o + 3] === 1 && b[o + 5] === 0) return false;
-	b[o] = 1; b[o + 1] = 0; b[o + 2] = 0; b[o + 3] = 1; b[o + 4] = 0; b[o + 5] = 0; b[o + 6] = 0; b[o + 7] = 0;
-	return true;
-}
 
 /** out = view * world (column-major), the products and sums in double precision, rounded once into `out`. */
 function multiplyViewWorld(out, a, b, bo) {
