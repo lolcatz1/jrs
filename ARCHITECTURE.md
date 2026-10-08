@@ -140,6 +140,42 @@ key carries an "indexed" bit so geometries of one mega-buffer layout stay adjace
 
 Effect: the 2,000 distinct-geometry benchmark goes from 2,000 draw calls to 1.
 
+### 4c. Batches that span materials (material-index batching)
+
+A batch used to end at every material change, because the `Material` block (§5) is bound per
+material. Built-in materials that would be drawn with the same program, the same GL state
+(blending, depth, stencil, side, …) and the same texture objects are now put into one **batch
+group**: the opaque sort key carries the group's id in place of the material's, so their meshes
+interleave and a geometry run spans all of them. When a run contains more than one material it is
+drawn with a program variant whose material block is an array of records,
+`layout(std140) uniform Materials { MaterialRecord materials[N]; }`, bound once per run as a
+*window* of `N` consecutive records of the shared material buffer. Every instance / sub-draw
+stores the index of its record inside that window in the eighth (previously spare) texel of its
+matrix-texture entry; the vertex shader fetches it next to the matrices and hands it to the
+fragment shader as a `flat` varying. The shader body is unchanged (the block members are
+remapped with macros), so the lighting arithmetic is bit-for-bit the same as in the
+per-material path and the many-materials benchmark stays pixel-identical to three.js.
+
+Limits and fallbacks:
+
+* `N` = `MAX_UNIFORM_BLOCK_SIZE / record stride`, capped at 256 (the stride is the material
+  block size rounded up to `UNIFORM_BUFFER_OFFSET_ALIGNMENT`, so records are padded to it in
+  the shader). With a 16 KB limit and 128-byte records that is 128 materials per window. The
+  buffer is divided into fixed windows ("pages"); a material's page is part of its group key, so
+  materials on different pages simply form separate runs instead of overflowing a window.
+* Dynamic indexing of the uniform array is probed at start-up with a tiny program; if the driver
+  rejects it the renderer keeps the per-material path (`autoBatchMaterials` reports it off).
+* Single-material runs keep using the plain `Material` block, so scenes with one material pay
+  nothing for the feature; `ShaderMaterial`s never merge.
+* Materials whose maps differ are in different groups (textures are bound per run, not per
+  record), as are materials with different GL state. Opaque materials with `depthWrite = false`
+  merge like any other, which changes their draw order relative to their neighbours; their
+  result was order-dependent before too.
+
+`renderer.autoBatchMaterials = false` turns it off. Effect: the many-materials benchmark (5,000
+meshes, 200 Phong materials, 3 geometries) goes from 600 instanced draws plus 200 block binds to
+3 draws.
+
 ## 5. Uniform blocks instead of uniform uploads (`src/renderers/shaders/ShaderLib.js`)
 
 Three std140 blocks replace most `uniform*` calls:
@@ -151,7 +187,8 @@ Three std140 blocks replace most `uniform*` calls:
 | `Material` | colour, opacity, emissive, specular/shininess, roughness/metalness, uv transform … (128 B) | when the material's values change |
 
 All materials live in one large uniform buffer; switching material is a single
-`bindBufferRange`. The material block is refreshed by comparing 32 floats against the
+`bindBufferRange`, and a batch that spans materials binds a window of consecutive records
+instead (§4c). The material block is refreshed by comparing 32 floats against the
 last uploaded copy, once per frame per material, so `material.color.set(...)` without
 `needsUpdate = true` still works, but costs nothing when nothing changed.
 

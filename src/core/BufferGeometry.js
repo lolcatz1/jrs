@@ -47,6 +47,7 @@ class BufferGeometry extends EventDispatcher {
 		/** Bumped whenever attributes/index are (re)assigned so the renderer can rebuild VAOs. */
 		this._layoutVersion = 0;
 		this._frameStamp = -1; this._frameRid = 0;
+		this._shadowSigStamp = -1; this._shadowSig = 0;
 		this._attrBits = 0; this._attrBitsVersion = -1;
 	}
 	getIndex() { return this.index; }

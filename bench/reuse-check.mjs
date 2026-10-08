@@ -154,6 +154,14 @@ const report = await page.evaluate(async () => {
 		both('hook adds object mid-frame', (w) => { w.hooked = w.meshes[30]; w.hooked.onBeforeRender = function () { if (!w.late) { w.late = new w.T.Mesh(w.box, w.mats[1]); w.late.position.set(-5, 5, 5); w.scene.add(w.late); } }; }, 4);
 		both('hook removes object mid-frame', (w) => { w.hooked.onBeforeRender = function () { if (w.late && w.late.parent) w.scene.remove(w.late); }; }, 4);
 		both('stable again', () => {}, 4);
+		// batches spanning several materials (material-index batching): record refresh on replay
+		both('multi-material batch', (w) => { w.mm = []; for (let i = 0; i < 12; i++) { const m = new w.T.Mesh(w.box, w.mats[i % 3]); m.position.set(i - 6, -5, 4); w.scene.add(m); w.mm.push(m); } }, 4);
+		both('batch material colour', (w) => { w.mats[1].color.setHex(0x00ffff); }, 3);
+		both('batch material roughness', (w) => { w.mats[2].roughness = 0.05; w.mats[0].emissive.setHex(0x330000); }, 3);
+		both('batch material swap', (w) => { w.mm[4].material = w.mats[0]; w.mm[5].material = w.mats[2]; }, 3);
+		both('batch material side', (w) => { w.mats[1].side = w.T.DoubleSide; }, 3);
+		both('batch material opacity (transparent)', (w) => { w.mats[0].transparent = true; w.mats[0].opacity = 0.5; w.mats[0].needsUpdate = true; }, 3);
+		both('batch material back', (w) => { w.mats[0].transparent = false; w.mats[0].opacity = 1; w.mats[0].needsUpdate = true; }, 3);
 		// render target in between (same scene, same camera, other target)
 		step = 'render target interleave';
 		for (let i = 0; i < 4; i++) {
@@ -175,6 +183,32 @@ const report = await page.evaluate(async () => {
 
 	const runs = [];
 	for (const [n, sh] of [['plain', false], ['shadows', true]]) { try { runs.push(await script(n, sh)); } catch (e) { failures.push(`${n}: aborted: ${e.message}`); } }
+
+	// ---- opaque-only scene whose geometry runs span several materials: command replay must refresh every material's record
+	{
+		const rOn = makeRenderer(true, false), rOff = makeRenderer(false, false);
+		const make = () => {
+			const scene = new JRS.Scene(), cam = new JRS.PerspectiveCamera(60, W / H, 0.1, 100); cam.position.set(0, 0, 14);
+			scene.add(new JRS.AmbientLight(0xffffff, 1));
+			const box = new JRS.BoxGeometry(1, 1, 1);
+			const mats = [0xff0000, 0x00ff00, 0x0000ff].map((c) => new JRS.MeshStandardMaterial({ color: c }));
+			const meshes = [];
+			for (let i = 0; i < 24; i++) { const m = new JRS.Mesh(box, mats[i % 3]); m.position.set(i - 12, 0, 0); scene.add(m); meshes.push(m); }
+			return { scene, cam, mats, meshes };
+		};
+		const a = make(), b = make();
+		const steps = [['static', () => {}], ['static', () => {}], ['static', () => {}], ['colour', (w) => w.mats[1].color.setHex(0x00ffff)], ['colour again', (w) => w.mats[2].color.setHex(0xffff00)],
+			['roughness', (w) => { w.mats[0].roughness = 0.1; }], ['swap', (w) => { w.meshes[3].material = w.mats[2]; }], ['static', () => {}], ['colour back', (w) => w.mats[1].color.setHex(0x00ff00)], ['static', () => {}]];
+		for (const [label, fn] of steps) {
+			fn(a); fn(b);
+			for (let k = 0; k < 3; k++) { frames++; rOn.render(a.scene, a.cam); rOff.render(b.scene, b.cam); if (!same(pixels(rOn), pixels(rOff))) failures.push(`multi-material opaque: pixels differ at "${label}"`); }
+		}
+		const st = rOn.debug.listReuse;
+		if (st.commandsReplayed === 0) failures.push('multi-material opaque: commands never replayed');
+		if (st.mismatches > 0) failures.push(`multi-material opaque: ${st.mismatches} verify mismatches`);
+		runs.push({ name: 'multi-material', stats: { ...st } });
+		rOn.dispose(); rOff.dispose();
+	}
 
 	// ---- bench scenarios: reuse on vs off, verify on ------------------------------------------------------------
 	for (const name of ['shared-static', 'shared-animated', 'many-materials', 'unique-geometries', 'hierarchy-animated', 'instanced-100k', 'shadows']) {

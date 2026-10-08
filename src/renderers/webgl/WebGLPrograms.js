@@ -73,7 +73,9 @@ class WebGLProgram {
 		};
 		this.hasFrameBlock = bind('Frame', BLOCK_FRAME);
 		this.hasLightsBlock = bind('Lights', BLOCK_LIGHTS);
-		this.hasMaterialBlock = bind('Material', BLOCK_MATERIAL);
+		this.hasMaterialBlock = bind('Material', BLOCK_MATERIAL) || bind('Materials', BLOCK_MATERIAL);
+		/** true when the program reads its material from a window of the material buffer indexed per instance (see ShaderLib MATERIAL_BLOCK). */
+		this.materialArray = parameters.materialArray === true;
 
 		// attributes; names outside the fixed table (custom ShaderMaterial attributes) get linker-assigned locations
 		this.attributes = {};
@@ -222,6 +224,8 @@ class WebGLPrograms {
 			instancingColor: variant.instancing && variant.instancingColor,
 			objectTexture: variant.objectTexture === true || variant.multiDraw === true,
 			multiDraw: variant.multiDraw === true,
+			materialArray: variant.materialArray === true && (variant.objectTexture === true || variant.multiDraw === true),
+			materialArraySize: renderer._materialWindow, materialPad: renderer._materialPad,
 			flatShading: isLit && material.flatShading === true,
 			doubleSided: !leanShadow && material.side === DoubleSide,
 			leanShadow,
@@ -244,6 +248,7 @@ class WebGLPrograms {
 		key = key * 2 + (fog ? 1 : 0); key = key * 2 + (p.alphaTest ? 1 : 0); key = key * 2 + (p.sizeAttenuation ? 1 : 0); key = key * 2 + (p.premultipliedAlpha ? 1 : 0);
 		key = key * 2 + (p.dithering ? 1 : 0); key = key * 2 + (hasUv1 ? 1 : 0); key = key * 8 + toneMapping; key = key * 2 + (sRGBOutput ? 1 : 0);
 		key = key * 8 + numDirShadows; key = key * 8 + numSpotShadows; key = key * 2 + (p.multiDraw ? 1 : 0); key = key * 2 + (p.objectTexture ? 1 : 0); key = key * 2 + (leanShadow ? 1 : 0);
+		key = key * 2 + (p.materialArray ? 1 : 0);
 		p.key = key;
 		return p;
 	}

@@ -35,7 +35,7 @@ class RenderListCache {
 		this.geomSet = new Set(); this.geoms = []; this.gLayout = []; this.gBS = []; this.gR = []; this.gCx = []; this.gCy = []; this.gCz = []; this.gIdx = []; this.gRid = [];
 		this.matSet = new Set(); this.mats = []; this.mFlags = [];
 		this.instSet = new Set(); this.inst = []; this.iBS = []; this.iR = []; this.iCx = []; this.iCy = []; this.iCz = []; this.iColor = [];
-		this.pairSet = new Set(); this.pMat = []; this.pVariant = []; this.pObject = []; this.pProgram = []; this.pMatRid = []; this.pProgRid = [];
+		this.pairSet = new Set(); this.pMat = []; this.pVariant = []; this.pObject = []; this.pProgram = []; this.pMatRid = []; this.pProgRid = []; this.pGroup = []; this.pSlot = [];
 		this.renderOrders = [];
 		this.materialCounter = 0; this.geometryCounter = 0; this.programCounter = 0;
 		this.lastGeom = null; this.lastMat = null;
@@ -127,6 +127,7 @@ class CommandCache {
 		this.mdCounts = null; this.mdOffsets = null;
 		this.texCount = 0; this.texHash = 0;
 		this.megaGeoms = []; this.megaRecs = []; this.megaPages = [];
+		this.syncMats = null;        // materials whose records must be refreshed on replay (runs that span several materials)
 		this.autoBatch = false; this.autoMultiDraw = false; this.minimum = 0; this.multi = false;
 	}
 	invalidate() { this.version = -1; }

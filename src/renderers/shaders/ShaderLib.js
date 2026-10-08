@@ -79,6 +79,37 @@ export const LIGHTS_BLOCK_SIZE = 16 + 16 + MAX_DIR_LIGHTS * 32 + MAX_POINT_LIGHT
 export const FRAME_BLOCK_SIZE = 64 * 3 + 16 * 4;
 
 export const MATERIAL_BLOCK = /* glsl */`
+#ifdef USE_MATERIAL_ARRAY
+// Batched draws spanning several materials: the block holds a window of MATERIAL_ARRAY_SIZE
+// consecutive material records of the shared material buffer (each padded to the buffer's
+// slot stride) and every instance / sub-draw selects its record with the slot index stored
+// in the spare texel of its matrix-texture record. The member names below are remapped so
+// the shader body reads the same identifiers either way.
+struct MaterialRecord {
+	vec4 mDiffuse;
+	vec4 mEmissive;
+	vec4 mSpecular;
+	vec4 mParams;
+	vec4 mParams2;
+	vec4 mUvTransform0;
+	vec4 mUvTransform1;
+	vec4 mUvTransform2;
+	#if MATERIAL_PAD > 0
+	vec4 mPad[ MATERIAL_PAD ];
+	#endif
+};
+layout(std140) uniform Materials {
+	MaterialRecord materials[ MATERIAL_ARRAY_SIZE ];
+};
+#define diffuse materials[ matIdx ].mDiffuse
+#define emissive materials[ matIdx ].mEmissive
+#define specular materials[ matIdx ].mSpecular
+#define matParams materials[ matIdx ].mParams
+#define matParams2 materials[ matIdx ].mParams2
+#define uvTransform0 materials[ matIdx ].mUvTransform0
+#define uvTransform1 materials[ matIdx ].mUvTransform1
+#define uvTransform2 materials[ matIdx ].mUvTransform2
+#else
 layout(std140) uniform Material {
 	vec4 diffuse;        // rgb, a = opacity
 	vec4 emissive;       // rgb, a = alphaTest
@@ -89,6 +120,7 @@ layout(std140) uniform Material {
 	vec4 uvTransform1;
 	vec4 uvTransform2;
 };
+#endif
 `;
 export const MATERIAL_BLOCK_SIZE = 16 * 8;
 
@@ -158,6 +190,11 @@ mat4 fetchObjectMatrix() {
 mat3 fetchObjectNormalMatrix() {
 	return mat3( texelFetch( objectMatrices, objectTexel + ivec2( 4, 0 ), 0 ).xyz, texelFetch( objectMatrices, objectTexel + ivec2( 5, 0 ), 0 ).xyz, texelFetch( objectMatrices, objectTexel + ivec2( 6, 0 ), 0 ).xyz );
 }
+	#ifdef USE_MATERIAL_ARRAY
+	// spare texel: x = index of the object's material record inside the bound Materials window
+	int matIdx;
+	flat out int vMaterialIndex;
+	#endif
 #endif
 #ifndef SHADOW_LEAN
 out vec3 vWorldPosition;
@@ -191,6 +228,10 @@ void main() {
 	#endif
 	#ifdef USE_OBJECT_TEXTURE
 	model = model * fetchObjectMatrix();
+		#ifdef USE_MATERIAL_ARRAY
+		matIdx = int( texelFetch( objectMatrices, objectTexel + ivec2( 7, 0 ), 0 ).x );
+		vMaterialIndex = matIdx;
+		#endif
 	#endif
 	#ifdef IS_SPRITE
 		// billboard: sprite plane in view space
@@ -281,6 +322,10 @@ precision highp int;
 precision highp sampler2DShadow;
 ${FRAME_BLOCK}
 ${LIGHTS_BLOCK}
+#ifdef USE_MATERIAL_ARRAY
+flat in int vMaterialIndex;
+#define matIdx vMaterialIndex
+#endif
 ${MATERIAL_BLOCK}
 ${common}
 in vec3 vWorldPosition;
@@ -742,6 +787,7 @@ export function buildBuiltinShader(p) {
 	if (p.instancingColor) d('USE_INSTANCING_COLOR');
 	if (p.objectTexture) d('USE_OBJECT_TEXTURE');
 	if (p.multiDraw) d('USE_MULTIDRAW');
+	if (p.materialArray) { d('USE_MATERIAL_ARRAY'); d('MATERIAL_ARRAY_SIZE', p.materialArraySize | 0); d('MATERIAL_PAD', p.materialPad | 0); }
 	if (p.flatShading) d('FLAT_SHADED');
 	if (p.doubleSided) d('DOUBLE_SIDED');
 	if (p.fog) d('USE_FOG');
