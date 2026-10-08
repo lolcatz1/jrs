@@ -8,8 +8,12 @@ report asked for, and swept seeds 1-600.
 
 Branch: `swarm/fuzz-residuals` = integration tip `6858f51` + `origin/swarm/parity-fuzzer` (merged here,
 four conflict hunks resolved; see the merge commit) + the commits below, then the integration tip merged
-twice more (round 4 `7cb3b47`, round 5 `03b5251`: flat scene update, ShaderMaterial batching, environment
-maps, texture formats). Round 5 and this branch both grew the material record: the merged record is 28
+three times more (round 4 `7cb3b47`; round 5 `03b5251`: flat scene update, ShaderMaterial batching,
+environment maps, texture formats; round 6 `9290f22`: lines / points / sprites, skinning-perf). In the
+round-6 merge, batched lines and points keep the integration's `( viewMatrix * model ) * position`, per-object
+lines and points take this branch's CPU modelViewMatrix (`bench/lps.mjs`: all cases within tolerance), the
+diffuseColor block keeps `IS_SHADOW_PASS` / `IS_DEPTH`, `INSTANCE_MATERIAL` and `pointUv`, both alpha-test
+forms are kept, and `getParameters` assigns `alphaTest` / `alphaTestHalf` on the reusable parameters object. Round 5 and this branch both grew the material record: the merged record is 28
 vec4 (the env-map fields, then the 16 vec4 of per-map transforms); round 5 had also made the same
 render-target tone-mapping and OPAQUE fixes as fixes 1-2 here, so those hunks took the integration's
 text. One merge slip (a lost `#endif` between the per-map varyings and `vHighPrecisionZW`) broke every
@@ -246,6 +250,23 @@ edge-class seeds that also fail on the integration tip `03b5251` itself, with mo
 25 / 14 here), `node bench/run.mjs --compare --frames=60`: all 18 scenes (now including pbr-envmap) at or
 below the round-5 baseline's mean / max diff (skinned-crowd 2 -> 1); medians within this container's
 noise band against the baseline file (three.js's own medians move 10-30% between the two runs).
+
+After the round-6 merge (final pushed state): `npm test` 179 / 179, conformance 44 / 44, smoke and addons
+pass, `node bench/lps.mjs` all cases within tolerance, `node bench/flat-check.mjs` 328 frame pairs
+pixel-identical with the two "list was never reused (same=0)" failures that the integration tip `9290f22`
+reports as well (pre-existing, not this branch's), seeds 23 27 28 93 142 145 160 192 pass, fuzz 1-100: 96
+pass (12 63 78 85 as before; the tip fails 8 12 27 in 1-30), fuzz 1-30 with `--enable=points,lines`: 9 12
+14 27 fail here and on the tip (tip worse or equal: seed 14 mean 0.215 there, 0.144 here; the lines /
+points feature's own residuals). `node bench/run.mjs --compare --frames=60`: all 23 scenes at or below
+the round-6 baseline's mean / max diff (skinned-crowd 2 -> 1, morph-crowd 1 -> 0). skinned-crowd's jrs
+median looked slow in that run (5.1 ms vs the baseline file's 1.6), so it was A/B'd against the tip on
+this container: tip 2.1 / 3.1 ms, this branch 2.4 / 2.4 ms (skinned-crowd-large 28.4 / 25.8 vs 27.4 /
+28.6; CPU-stubbed 3.19 vs 3.29 ms): noise, no regression.
+
+Note for the integrator: `origin/swarm/per-map-transform` implements the same feature as fix 5 in
+parallel; whichever lands second needs a merge of the material-record layout (this branch: 16 vec4
+`mapUv[16]` after the env-map fields, synced by `syncMapUv` in `_syncMaterialBlock`, read through
+`applyMapUv` and one varying per map).
 
 `bench/results/latest.json` is left as the integration tip's file (the numbers from this container
 would only record the slower machine); `build/` is not committed.
