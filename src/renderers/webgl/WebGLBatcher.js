@@ -72,7 +72,39 @@ class WebGLBatcher {
 		if (this.textureHash === this.texHash && this.textureCount === this.texCount) return;
 		gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
 		gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-		gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, MATRIX_TEXTURE_WIDTH, rows, gl.RGBA, gl.FLOAT, this.texData, 0);
+		const mode = this.uploadMode || 'sub';
+		if (mode === 'sub') {
+			gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, MATRIX_TEXTURE_WIDTH, rows, gl.RGBA, gl.FLOAT, this.texData, 0);
+		} else if (mode.startsWith('rows')) {
+			const k = +mode.slice(4) || 4;
+			for (let y = 0; y < rows; y += k) { const h = Math.min(k, rows - y); gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, y, MATRIX_TEXTURE_WIDTH, h, gl.RGBA, gl.FLOAT, this.texData, y * MATRIX_TEXTURE_WIDTH * 4); }
+		} else if (mode.startsWith('rowsflush')) {
+			const k = +mode.slice(9) || 4;
+			for (let y = 0; y < rows; y += k) { const h = Math.min(k, rows - y); gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, y, MATRIX_TEXTURE_WIDTH, h, gl.RGBA, gl.FLOAT, this.texData, y * MATRIX_TEXTURE_WIDTH * 4); gl.flush(); }
+		} else if (mode === 'flush') {
+			gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, MATRIX_TEXTURE_WIDTH, rows, gl.RGBA, gl.FLOAT, this.texData, 0);
+			gl.flush();
+		} else if (mode === 'pbo' || mode === 'pbosub') {
+			if (!this.pbo) { this.pbo = gl.createBuffer(); this.pboSize = 0; }
+			gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, this.pbo);
+			const bytes = rows * MATRIX_TEXTURE_WIDTH * 16;
+			if (mode === 'pbo') gl.bufferData(gl.PIXEL_UNPACK_BUFFER, this.texData, gl.STREAM_DRAW, 0, rows * MATRIX_TEXTURE_WIDTH * 4);
+			else { if (this.pboSize < bytes) { gl.bufferData(gl.PIXEL_UNPACK_BUFFER, bytes, gl.STREAM_DRAW); this.pboSize = bytes; } gl.bufferSubData(gl.PIXEL_UNPACK_BUFFER, 0, this.texData, 0, rows * MATRIX_TEXTURE_WIDTH * 4); }
+			gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, MATRIX_TEXTURE_WIDTH, rows, gl.RGBA, gl.FLOAT, 0);
+			gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, null);
+		} else if (mode.startsWith('ring')) {
+			const nTex = +mode.slice(4) || 3;
+			if (!this.ring || this.ring.length !== nTex || this.ringRows !== this.textureRows) { if (this.ring) for (const t of this.ring) gl.deleteTexture(t); this.ring = []; this.ringRows = this.textureRows; for (let i = 0; i < nTex; i++) { const t = gl.createTexture(); state.bindTexture(gl.TEXTURE_2D, t, unit); gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA32F, MATRIX_TEXTURE_WIDTH, this.textureRows); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST); this.ring.push(t); } this.ringIndex = 0; }
+			this.ringIndex = (this.ringIndex + 1) % nTex; this.texture = this.ring[this.ringIndex];
+			state.bindTexture(gl.TEXTURE_2D, this.texture, unit);
+			gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, MATRIX_TEXTURE_WIDTH, rows, gl.RGBA, gl.FLOAT, this.texData, 0);
+		} else if (mode === 'teximage') {
+			if (!this.mutableTex) { this.mutableTex = gl.createTexture(); }
+			this.texture = this.mutableTex;
+			state.bindTexture(gl.TEXTURE_2D, this.texture, unit);
+			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+			gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, MATRIX_TEXTURE_WIDTH, rows, 0, gl.RGBA, gl.FLOAT, this.texData, 0);
+		}
 		this.textureHash = this.texHash; this.textureCount = this.texCount;
 	}
 	dispose() { if (this.texture !== null) this.gl.deleteTexture(this.texture); }
