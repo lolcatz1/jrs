@@ -4996,6 +4996,9 @@ var BufferGeometry = class _BufferGeometry extends EventDispatcher {
     this._layoutVersion = 0;
     this._frameStamp = -1;
     this._frameRid = 0;
+    this._mdFrame = -1;
+    this._mdRec = null;
+    this._mdTouch = -1;
     this._shadowSigStamp = -1;
     this._shadowSig = 0;
     this._attrBits = 0;
@@ -14886,6 +14889,40 @@ var BLOCK_LIGHTS = 1;
 var BLOCK_MATERIAL = 2;
 var _programId = 0;
 var FIXED_ATTRIBUTES = { position: 0, normal: 1, uv: 2, color: 3, uv1: 4, instanceColor: 5, skinIndex: 6, skinWeight: 7, instanceMatrix: 8 };
+var CUSTOM_ATTRIBUTE_BASE = 9;
+var customAttributeIndex = /* @__PURE__ */ new Map();
+function customAttributeLocation(name) {
+  const i = customAttributeIndex.get(name);
+  return i === void 0 ? -1 : CUSTOM_ATTRIBUTE_BASE + i;
+}
+function customAttributeCount() {
+  return customAttributeIndex.size;
+}
+var ATTRIBUTE_DECLARATION = /(?<=^|[;}\n])\s*(?:attribute|in)\s+(?:(?:highp|mediump|lowp)\s+)?(\w+)\s+([^;(){}]+);/g;
+function bindCustomAttributeLocations(gl, program, vertexSource, maxAttributes) {
+  if (/layout\s*\(\s*location/.test(vertexSource)) return;
+  const usesInstanceMatrix = /^[ \t]*#define[ \t]+USE_INSTANCING\b/m.test(vertexSource);
+  const hasTangent = /^[ \t]*#define[ \t]+USE_TANGENT\b/m.test(vertexSource);
+  ATTRIBUTE_DECLARATION.lastIndex = 0;
+  let m;
+  while ((m = ATTRIBUTE_DECLARATION.exec(vertexSource)) !== null) {
+    if (m[1].startsWith("mat")) continue;
+    const names = m[2].split(",");
+    for (let k = 0; k < names.length; k++) {
+      if (names[k].indexOf("[") !== -1) continue;
+      const name = names[k].trim();
+      if (name === "" || FIXED_ATTRIBUTES[name] !== void 0 || name === "tangent" && !hasTangent) continue;
+      let i = customAttributeIndex.get(name);
+      if (i === void 0) {
+        i = customAttributeIndex.size;
+        customAttributeIndex.set(name, i);
+      }
+      const location = CUSTOM_ATTRIBUTE_BASE + i;
+      if (location >= maxAttributes || usesInstanceMatrix && location < 12) continue;
+      gl.bindAttribLocation(program, location, name);
+    }
+  }
+}
 var WebGLProgram = class {
   constructor(gl, parameters, vertexSource, fragmentSource) {
     this.id = _programId++;
@@ -14905,6 +14942,7 @@ var WebGLProgram = class {
     gl.bindAttribLocation(program, 6, "skinIndex");
     gl.bindAttribLocation(program, 7, "skinWeight");
     gl.bindAttribLocation(program, 8, "instanceMatrix");
+    if (parameters.materialType === MATERIAL_SHADER) bindCustomAttributeLocations(gl, program, vertexSource, gl.getParameter(gl.MAX_VERTEX_ATTRIBS));
     gl.linkProgram(program);
     if (gl.getProgramParameter(program, gl.LINK_STATUS) === false) {
       const log = gl.getProgramInfoLog(program);
@@ -14964,6 +15002,14 @@ var WebGLProgram = class {
       if (FIXED_ATTRIBUTES[info.name] === void 0 && location >= 0) this.customAttributes.push(record);
     }
     this.hasCustomAttributes = this.customAttributes.length > 0;
+    this.customFixed = true;
+    for (let i = 0; i < this.customAttributes.length; i++) {
+      const r = this.customAttributes[i];
+      if (r.locationSize !== 1 || customAttributeLocation(r.name) !== r.location) {
+        this.customFixed = false;
+        break;
+      }
+    }
     const isCustom = parameters.materialType === MATERIAL_SHADER;
     this.samplerUniforms = [];
     let nextUnit = 0;
@@ -15602,6 +15648,7 @@ var WebGLRenderList = class {
   constructor() {
     this.items = [];
     this.count = 0;
+    this.flags = new Uint8Array(1024);
     this.opaque = new SortSlot(1024);
     this.transparent = new SortSlot(256);
     this.opaqueCount = 0;
@@ -15647,13 +15694,19 @@ var WebGLRenderList = class {
   /**
    * Adds an item. `item.program` is resolved later by the renderer (once the frame's lights are known).
    */
-  push(object, geometry, material, group, materialRid, geometryRid, variant, batchGroup) {
+  push(object, geometry, material, group, materialRid, geometryRid, variant, batchGroup, flags = 0) {
     if (this.count >= INDEX_RANGE) return;
     const item = this._getItem(object, geometry, material, group, variant);
     item.materialRid = materialRid;
     item.geometryRid = geometryRid;
     item.batchGroup = batchGroup;
     const index = this.count - 1;
+    if (index >= this.flags.length) {
+      const nf = new Uint8Array(this.flags.length * 2);
+      nf.set(this.flags);
+      this.flags = nf;
+    }
+    this.flags[index] = flags;
     if (material.transparent === true) {
       const slot = this.transparent;
       if (slot.n === slot.ids.length) {
@@ -16014,6 +16067,20 @@ var WebGLBindingStates = class {
     for (const name in geometry.attributes) this.attributes.remove(geometry.attributes[name]);
     if (geometry.index !== null) this.attributes.remove(geometry.index);
   }
+  _entry(geometry) {
+    let entry = this.cache.get(geometry);
+    if (entry === void 0) {
+      entry = { vaos: [null, null, null], layoutVersion: -1, instancedFor: null, hadInstanceColor: false, custom: null, attrList: null, versionSum: -1, epoch: -1, epochMode: -1 };
+      this.cache.set(geometry, entry);
+      geometry.addEventListener("dispose", this._onGeometryDispose);
+      if (this.info !== null) this.info.memory.geometries++;
+    }
+    return entry;
+  }
+  /** Counts a geometry that is drawn from a mega-buffer page (it never gets a VAO of its own) in info.memory and hooks its disposal. */
+  register(geometry) {
+    this._entry(geometry);
+  }
   /**
    * Make sure the geometry's GPU buffers are current and bind the right VAO.
    * mode: 0 plain, 1 InstancedMesh (its own instance attributes), 2 batched (renderer's instance buffer).
@@ -16025,13 +16092,7 @@ var WebGLBindingStates = class {
    */
   bind(geometry, mode, instancedObject, batchBuffer, program = null) {
     const gl = this.gl, attributes = this.attributes;
-    let entry = this.cache.get(geometry);
-    if (entry === void 0) {
-      entry = { vaos: [null, null, null], layoutVersion: -1, instancedFor: null, hadInstanceColor: false, custom: null, attrList: null, versionSum: -1, epoch: -1, epochMode: -1 };
-      this.cache.set(geometry, entry);
-      geometry.addEventListener("dispose", this._onGeometryDispose);
-      if (this.info !== null) this.info.memory.geometries++;
-    }
+    const entry = this._entry(geometry);
     const useCustom = program !== null && program.hasCustomAttributes === true;
     if (entry.layoutVersion === geometry._layoutVersion && entry.attrList !== null && (mode !== 1 || entry.instancedFor === instancedObject)) {
       let valid = entry.epoch === attributeEpoch.value && entry.epochMode === mode;
@@ -16241,6 +16302,8 @@ var WebGLBatcher = class {
     this.texData = new Float32Array(this.texCapacity * TEX_STRIDE_FLOATS);
     this.texCount = 0;
     this.texHash = 0;
+    this.texIds = new Int32Array(this.texCapacity).fill(-1);
+    this.texVersions = new Float64Array(this.texCapacity);
   }
   begin() {
     this.texCount = 0;
@@ -16254,6 +16317,12 @@ var WebGLBatcher = class {
       const nd = new Float32Array(cap * TEX_STRIDE_FLOATS);
       nd.set(this.texData);
       this.texData = nd;
+      const ids = new Int32Array(cap).fill(-1);
+      ids.set(this.texIds);
+      this.texIds = ids;
+      const vers = new Float64Array(cap);
+      vers.set(this.texVersions);
+      this.texVersions = vers;
       this.texCapacity = cap;
     }
   }
@@ -16263,36 +16332,42 @@ var WebGLBatcher = class {
    * is single-material) goes into the spare eighth texel. Returns the object's index in the texture.
    */
   addTex(object, materialIndex) {
-    const d = this.texData, o = this.texCount * TEX_STRIDE_FLOATS;
-    const s = object._slabData, so = object._slabOffset + 16;
-    for (let i = 0; i < 16; i++) d[o + i] = s[so + i];
-    if (object._normalVersion !== object._worldVersion) {
-      computeNormalMatrix(s, object._slabOffset);
-      object._normalVersion = object._worldVersion;
+    const p = this.texCount, id = object.id, version = object._worldVersion;
+    const d = this.texData, o = p * TEX_STRIDE_FLOATS;
+    if (this.texIds[p] !== id || this.texVersions[p] !== version || d[o + 28] !== materialIndex) {
+      const s = object._slabData, so = object._slabOffset + 16;
+      for (let i = 0; i < 16; i++) d[o + i] = s[so + i];
+      if (object._normalVersion !== version) {
+        computeNormalMatrix(s, object._slabOffset);
+        object._normalVersion = version;
+      }
+      const no = object._slabOffset + 32;
+      d[o + 16] = s[no];
+      d[o + 17] = s[no + 1];
+      d[o + 18] = s[no + 2];
+      d[o + 19] = 0;
+      d[o + 20] = s[no + 3];
+      d[o + 21] = s[no + 4];
+      d[o + 22] = s[no + 5];
+      d[o + 23] = 0;
+      d[o + 24] = s[no + 6];
+      d[o + 25] = s[no + 7];
+      d[o + 26] = s[no + 8];
+      d[o + 27] = 0;
+      d[o + 28] = materialIndex;
+      d[o + 29] = 0;
+      d[o + 30] = 0;
+      d[o + 31] = 0;
+      this.texIds[p] = id;
+      this.texVersions[p] = version;
     }
-    const no = object._slabOffset + 32;
-    d[o + 16] = s[no];
-    d[o + 17] = s[no + 1];
-    d[o + 18] = s[no + 2];
-    d[o + 19] = 0;
-    d[o + 20] = s[no + 3];
-    d[o + 21] = s[no + 4];
-    d[o + 22] = s[no + 5];
-    d[o + 23] = 0;
-    d[o + 24] = s[no + 6];
-    d[o + 25] = s[no + 7];
-    d[o + 26] = s[no + 8];
-    d[o + 27] = 0;
-    d[o + 28] = materialIndex;
-    d[o + 29] = 0;
-    d[o + 30] = 0;
-    d[o + 31] = 0;
     let h = this.texHash;
-    h = Math.imul(h ^ object.id, 16777619);
-    h = Math.imul(h ^ object._worldVersion, 16777619);
+    h = Math.imul(h ^ id, 16777619);
+    h = Math.imul(h ^ version, 16777619);
     h = Math.imul(h ^ materialIndex, 16777619);
     this.texHash = h;
-    return this.texCount++;
+    this.texCount = p + 1;
+    return p;
   }
   /**
    * Upload the frame's matrices into the matrix texture (unit `unit`) if they changed. The texture stays bound to `unit`.
@@ -16445,6 +16520,7 @@ var WebGLMegaBuffers = class {
     this.gl = gl;
     this.state = state;
     this.info = info;
+    this.maxAttributes = gl.getParameter(gl.MAX_VERTEX_ATTRIBS);
     this.layouts = /* @__PURE__ */ new Map();
     this.records = /* @__PURE__ */ new WeakMap();
     this._onGeometryDispose = this._onGeometryDispose.bind(this);
@@ -16471,7 +16547,9 @@ var WebGLMegaBuffers = class {
           return null;
         }
         const position = geometry.attributes.position, index = geometry.index;
-        if (position.count === rec.vertexCount && (rec.indexed ? index !== null && index.count === rec.indexCount : index === null)) return rec;
+        const known = customAttributeCount();
+        const stale = rec.registered !== known && (rec.registered = known, this._missesCustomAttribute(rec, geometry));
+        if (!stale && position.count === rec.vertexCount && (rec.indexed ? index !== null && index.count === rec.indexCount : index === null)) return rec;
       }
       this._free(rec);
     }
@@ -16479,6 +16557,39 @@ var WebGLMegaBuffers = class {
     this.records.set(geometry, rec);
     if (rec.page !== null) geometry.addEventListener("dispose", this._onGeometryDispose);
     return rec.page !== null ? rec : null;
+  }
+  _missesCustomAttribute(rec, geometry) {
+    const names = rec.layout.customNames;
+    for (const name in geometry.attributes) {
+      if (ATTRIBUTE_LOCATIONS[name] !== void 0 || names.has(name)) continue;
+      const location = customAttributeLocation(name);
+      if (location >= 0 && location < this.maxAttributes) return true;
+    }
+    return false;
+  }
+  /** True when this record's page carries every custom attribute `program` reads, at the locations the program uses. */
+  supports(rec, program) {
+    if (!program.hasCustomAttributes) return true;
+    if (rec.okProgram === program) return true;
+    if (rec.badProgram === program) return false;
+    let ok = program.customFixed;
+    if (ok) {
+      const list = program.customAttributes;
+      for (let i = 0; i < list.length; i++) if (!rec.layout.customNames.has(list[i].name)) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) rec.okProgram = program;
+    else rec.badProgram = program;
+    return ok;
+  }
+  /** Uploads what changed in `geometry` since the record was last synchronised (nothing, cheaply, when no attribute was touched). */
+  sync(rec, geometry) {
+    if (rec.epoch === attributeEpoch.value) return;
+    this.queue(rec, geometry);
+    this.flush();
+    rec.epoch = attributeEpoch.value;
   }
   _onGeometryDispose(event) {
     const geometry = event.target;
@@ -16499,13 +16610,23 @@ var WebGLMegaBuffers = class {
     if (attributes.position === void 0 || attributes.position.isInterleavedBufferAttribute) return null;
     const list = [];
     for (const name in attributes) {
-      const location = ATTRIBUTE_LOCATIONS[name];
-      if (location === void 0) continue;
+      let location = ATTRIBUTE_LOCATIONS[name];
+      const custom = location === void 0;
+      if (custom) {
+        location = customAttributeLocation(name);
+        if (location < 0 || location >= this.maxAttributes) continue;
+      }
       const a = attributes[name];
-      if (a.isInterleavedBufferAttribute || a.isInstancedBufferAttribute || a.onUploadCallback !== NO_HOOK) return null;
+      if (a.isInterleavedBufferAttribute || a.isInstancedBufferAttribute || a.onUploadCallback !== NO_HOOK || a.isFloat16BufferAttribute === true) {
+        if (custom) continue;
+        return null;
+      }
       const glType = glTypeOf(this.gl, a.array);
-      if (glType === 0) return null;
-      if (a.count !== attributes.position.count) return null;
+      const integerType = glType === this.gl.INT || glType === this.gl.UNSIGNED_INT;
+      if (glType === 0 || a.gpuType === 1013 && !integerType || a.count !== attributes.position.count) {
+        if (custom) continue;
+        return null;
+      }
       list.push({ name, itemSize: a.itemSize, glType, bytes: a.array.BYTES_PER_ELEMENT, normalized: a.normalized === true, location });
     }
     list.sort((x, y) => x.location - y.location);
@@ -16514,7 +16635,8 @@ var WebGLMegaBuffers = class {
     const signature = list.map((a) => `${a.name}:${a.itemSize}:${a.glType}:${a.normalized ? 1 : 0}`).join("|") + (indexed ? "|i" : "");
     let layout = this.layouts.get(signature);
     if (layout === void 0) {
-      layout = { signature, attributes: list, indexed, pages: [] };
+      layout = { signature, attributes: list, indexed, pages: [], customNames: /* @__PURE__ */ new Set() };
+      for (const a of list) if (ATTRIBUTE_LOCATIONS[a.name] === void 0) layout.customNames.add(a.name);
       this.layouts.set(signature, layout);
     }
     return layout;
@@ -16563,7 +16685,12 @@ var WebGLMegaBuffers = class {
       layoutVersion: geometry._layoutVersion,
       indexed: layout.indexed,
       reuploads: 0,
-      dynamic: false
+      dynamic: false,
+      epoch: -1,
+      okProgram: null,
+      badProgram: null,
+      registered: customAttributeCount(),
+      counted: false
     };
     if (this._registry !== null) this._registry.register(geometry, rec, rec);
     return rec;
@@ -18263,6 +18390,8 @@ var V_MORPH_COLOR = 16384;
 var V_MORPH_COUNT_SHIFT = 15;
 var V_SIDE_BACK = 1 << 23;
 var V_SIDE_FRONT = 1 << 24;
+var ITEM_BATCHABLE = 1;
+var ITEM_MULTIDRAWABLE = 2;
 var defaultOnBeforeRender = Object3D.prototype.onBeforeRender;
 var defaultOnAfterRender = Object3D.prototype.onAfterRender;
 var WebGLRenderer = class {
@@ -18291,6 +18420,7 @@ var WebGLRenderer = class {
     this.autoBatch = true;
     this.autoBatchMinimum = 4;
     this.autoMultiDraw = true;
+    this.pagedDraws = true;
     this.autoBatchMaterials = true;
     this.clippingPlanes = [];
     this.localClippingEnabled = false;
@@ -18439,6 +18569,8 @@ var WebGLRenderer = class {
     this.reuseRenderLists = true;
     this._zTmp = new Float64Array(1);
     this._rec = null;
+    this._buildSeq = 0;
+    this._touchMap = /* @__PURE__ */ new Map();
     this._megaTouch = null;
     this._verifyList = null;
     this._currentProgram = null;
@@ -19259,7 +19391,13 @@ var WebGLRenderer = class {
       geometry._frameStamp = frame;
       geometry._frameRid = this._geometryCounter++;
     }
-    list.push(object, geometry, material, group, material._frameRid, geometry._frameRid, variant, material._batchGroup);
+    let flags = 0;
+    if (group === null && material.isShaderMaterial !== true && object.isMesh === true && object.isInstancedMesh !== true && object.isSkinnedMesh !== true && object.morphTargetInfluences === void 0 && object.onBeforeRender === defaultOnBeforeRender && object.onAfterRender === defaultOnAfterRender && isTwoPass(material, shadowPass) === false) {
+      flags = ITEM_BATCHABLE;
+      const dr = geometry.drawRange;
+      if (material.wireframe !== true && object.isSprite !== true && dr.start === 0 && dr.count === Infinity) flags |= ITEM_MULTIDRAWABLE;
+    }
+    list.push(object, geometry, material, group, material._frameRid, geometry._frameRid, variant, material._batchGroup, flags);
     const rec = this._rec;
     if (rec !== null && shadowPass === false) {
       rec.regMaterial(material);
@@ -19619,26 +19757,23 @@ var WebGLRenderer = class {
     if (material.isMeshStandardMaterial) t.setTexture2D(getDFGLUT(), TEXTURE_UNITS.dfgLUT);
   }
   // ------------------------------------------------------------------ drawing
-  _isBatchable(item) {
-    if (item.material.isShaderMaterial === true || item.group !== null) return false;
-    if (isTwoPass(item.material, this._listShadowPass)) return false;
-    const object = item.object;
-    return object.isMesh === true && object.isInstancedMesh !== true && object.isSkinnedMesh !== true && object.morphTargetInfluences === void 0 && object.onBeforeRender === defaultOnBeforeRender && object.onAfterRender === defaultOnAfterRender;
-  }
   /**
-   * Build draw commands (singles and batches) from a sorted key list, then execute them.
+   * Mega-buffer record of a geometry (null: draw it the regular way), resolved once per geometry per frame
+   * (`ensure` compares attribute layout and sizes). Geometries are also noted once per command build in the
+   * touch map, which a draw-command cache uses to validate a replay.
    */
-  _isMultiDrawable(item) {
-    if (!this._isBatchable(item)) return false;
-    const object = item.object, material = item.material;
-    if (object.isMesh !== true || material.wireframe === true || object.isSprite === true) return false;
-    const dr = item.geometry.drawRange;
-    if (dr.start !== 0 || dr.count !== Infinity) return false;
-    const rec = this.megaBuffers.ensure(item.geometry);
-    if (this._megaTouch !== null) this._megaTouch.set(item.geometry, rec);
-    if (rec === null || rec.page === null) return false;
-    item.mdRecord = rec;
-    return true;
+  _mdRecordOf(geometry) {
+    let rec;
+    if (geometry._mdFrame !== this._frameId || geometry._mdRec !== null && geometry._mdRec.layoutVersion !== geometry._layoutVersion) {
+      geometry._mdFrame = this._frameId;
+      rec = geometry._mdRec = this.megaBuffers.ensure(geometry);
+      geometry._mdTouch = -1;
+    } else rec = geometry._mdRec;
+    if (this._megaTouch !== null && geometry._mdTouch !== this._buildSeq) {
+      geometry._mdTouch = this._buildSeq;
+      this._megaTouch.set(geometry, rec);
+    }
+    return rec;
   }
   /**
    * Build draw commands from a sorted key list, then execute them. Commands are:
@@ -19660,28 +19795,41 @@ var WebGLRenderer = class {
     }
     batcher.begin();
     let cmdN = 0, mdN = 0;
-    const touch = commandCache !== null ? this._megaTouch = /* @__PURE__ */ new Map() : null;
+    const touch = commandCache !== null ? this._megaTouch = this._touchMap : null;
+    if (touch !== null) touch.clear();
+    this._buildSeq++;
+    const items = list.items, flags = list.flags, megaBuffers = this.megaBuffers;
     let i = 0;
     while (i < n) {
-      const item = list.itemFromKey(keys[i]);
+      const itemIndex = keys[i];
+      const item = items[itemIndex];
+      const fl = flags[itemIndex];
       const material = item.material, bg = item.batchGroup;
       let j = i + 1;
       let kind = 0;
       let firstOtherMaterial = -1;
-      if (multi && this._isMultiDrawable(item)) {
-        const page = item.mdRecord.page, indexed = item.mdRecord.indexed;
+      let rec0;
+      if (multi && (fl & ITEM_MULTIDRAWABLE) !== 0 && (rec0 = this._mdRecordOf(item.geometry)) !== null) {
+        item.mdRecord = rec0;
+        const page = rec0.page, indexed = rec0.indexed, program = item.program, renderOrder = item.renderOrder;
         let distinct = 1, lastGeometry = item.geometry, firstGroupEnd = -1;
         while (j < n) {
-          const next = list.itemFromKey(keys[j]);
-          if ((next.material === material || bg !== null && next.batchGroup === bg) && next.program === item.program && next.renderOrder === item.renderOrder && this._isMultiDrawable(next) && next.mdRecord.page === page && next.mdRecord.indexed === indexed) {
-            if (next.geometry !== lastGeometry) {
+          const nextIndex = keys[j];
+          const next = items[nextIndex];
+          if ((flags[nextIndex] & ITEM_MULTIDRAWABLE) === 0 || next.program !== program || next.renderOrder !== renderOrder) break;
+          if (next.material !== material && (bg === null || next.batchGroup !== bg)) break;
+          const geometry = next.geometry;
+          if (geometry !== lastGeometry || geometry._mdFrame !== this._frameId) {
+            const rec = this._mdRecordOf(geometry);
+            if (rec === null || rec.page !== page || rec.indexed !== indexed) break;
+            if (geometry !== lastGeometry) {
               distinct++;
-              lastGeometry = next.geometry;
+              lastGeometry = geometry;
               if (firstGroupEnd < 0) firstGroupEnd = j;
             }
-            if (firstOtherMaterial < 0 && next.material !== material) firstOtherMaterial = j;
-            j++;
-          } else break;
+          }
+          if (firstOtherMaterial < 0 && next.material !== material) firstOtherMaterial = j;
+          j++;
         }
         if (firstGroupEnd < 0) firstGroupEnd = j;
         if (distinct * 2 >= j - i) {
@@ -19690,10 +19838,12 @@ var WebGLRenderer = class {
           j = firstGroupEnd;
           if (j - i >= minimum) kind = 1;
         }
-      } else if (autoBatch && this._isBatchable(item)) {
+      } else if (autoBatch && (fl & ITEM_BATCHABLE) !== 0) {
+        const geometry = item.geometry, program = item.program, renderOrder = item.renderOrder;
         while (j < n) {
-          const next = list.itemFromKey(keys[j]);
-          if (next.geometry === item.geometry && (next.material === material || bg !== null && next.batchGroup === bg) && next.program === item.program && next.renderOrder === item.renderOrder && this._isBatchable(next)) {
+          const nextIndex = keys[j];
+          const next = items[nextIndex];
+          if (next.geometry === geometry && (next.material === material || bg !== null && next.batchGroup === bg) && next.program === program && next.renderOrder === renderOrder && (flags[nextIndex] & ITEM_BATCHABLE) !== 0) {
             if (firstOtherMaterial < 0 && next.material !== material) firstOtherMaterial = j;
             j++;
           } else break;
@@ -19712,10 +19862,10 @@ var WebGLRenderer = class {
         this._cmdKind[cmdN] = multiMaterial ? 4 : 2;
         this._cmdMdStart[cmdN] = mdN;
         for (let k = i; k < j; k++) {
-          const it = list.itemFromKey(keys[k]);
+          const it = items[keys[k]];
           batcher.addTex(it.object, multiMaterial ? this._materialRecordIndex(it.material, windowBase) : 0);
-          const rec = it.mdRecord;
-          this.megaBuffers.queue(rec, it.geometry);
+          const geometry = it.geometry, rec = geometry._mdRec;
+          megaBuffers.queue(rec, geometry);
           if (rec.indexed) {
             this._mdCounts[mdN] = rec.indexCount;
             this._mdOffsets[mdN] = rec.byteOffset;
@@ -19732,11 +19882,11 @@ var WebGLRenderer = class {
         this._cmdKind[cmdN] = multiMaterial ? 3 : 1;
         if (multiMaterial) {
           for (let k = i; k < j; k++) {
-            const it = list.itemFromKey(keys[k]);
+            const it = items[keys[k]];
             batcher.addTex(it.object, this._materialRecordIndex(it.material, windowBase));
           }
         } else {
-          for (let k = i; k < j; k++) batcher.addTex(list.itemFromKey(keys[k]).object, 0);
+          for (let k = i; k < j; k++) batcher.addTex(items[keys[k]].object, 0);
         }
       } else {
         j = i + 1;
@@ -20032,6 +20182,12 @@ var WebGLRenderer = class {
     if (program.spriteCenterLocation !== null) gl.uniform2f(program.spriteCenterLocation, object.center.x, object.center.y);
     if (object.isSkinnedMesh === true) this._uploadSkinning(program, object);
     if (object.morphTargetInfluences !== void 0 && program.morphInfluencesUniform !== null) this._uploadMorphTargets(program, object, geometry);
+    const page = this.pagedDraws && this.megaBuffers !== null && object.isMesh === true && object.isInstancedMesh !== true && object.isSkinnedMesh !== true && material.wireframe !== true && geometry.isInstancedBufferGeometry !== true ? this.megaBuffers.ensure(geometry) : null;
+    if (page !== null && this.megaBuffers.supports(page, program)) {
+      this._drawPaged(page, geometry, group, object);
+      if (object.onAfterRender !== defaultOnAfterRender) object.onAfterRender(this, scene, camera, geometry, material, group);
+      return;
+    }
     const mode = object.isInstancedMesh ? 1 : 0;
     const record = this.bindingStates.bind(geometry, mode, object, null, program);
     let instanceCount = 1, instanced = false;
@@ -20121,6 +20277,31 @@ var WebGLRenderer = class {
     this._draw(record, geometry, null, this._drawMode(object, material), instanceCount, true);
     this.info.render.batches++;
     this.info.render.instances += instanceCount;
+  }
+  /**
+   * Single draw of a geometry that lives in a mega-buffer page: the page's VAO is shared by every geometry of the
+   * layout, so consecutive draws of different geometries (of different programs too, when their attribute
+   * locations agree) keep it bound. Indices were rebased to the page when uploaded, so the draw only needs the
+   * geometry's index offset (or first vertex), no base-vertex extension.
+   */
+  _drawPaged(rec, geometry, group, object) {
+    const gl = this._gl, mega = this.megaBuffers;
+    mega.sync(rec, geometry);
+    if (!rec.counted) {
+      rec.counted = true;
+      this.bindingStates.register(geometry);
+    }
+    this.state.bindVertexArray(rec.page.vao);
+    let drawStart = 0, drawCount = rec.indexed ? rec.indexCount : rec.vertexCount;
+    if (group !== null) {
+      const end = Math.min(drawCount, group.start + group.count);
+      drawStart = group.start;
+      drawCount = end - drawStart;
+    }
+    if (drawCount <= 0) return;
+    if (rec.indexed) gl.drawElements(gl.TRIANGLES, drawCount, gl.UNSIGNED_INT, rec.byteOffset + drawStart * 4);
+    else gl.drawArrays(gl.TRIANGLES, rec.baseVertex + drawStart, drawCount);
+    this.info.update(drawCount, gl.TRIANGLES, 1);
   }
   _draw(record, geometry, group, mode, instanceCount, instanced) {
     const gl = this._gl;
