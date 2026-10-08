@@ -15671,6 +15671,40 @@ var BLOCK_LIGHTS = 1;
 var BLOCK_MATERIAL = 2;
 var _programId = 0;
 var FIXED_ATTRIBUTES = { position: 0, normal: 1, uv: 2, color: 3, uv1: 4, instanceColor: 5, skinIndex: 6, skinWeight: 7, instanceMatrix: 8 };
+var CUSTOM_ATTRIBUTE_BASE = 9;
+var customAttributeIndex = /* @__PURE__ */ new Map();
+function customAttributeLocation(name) {
+  const i = customAttributeIndex.get(name);
+  return i === void 0 ? -1 : CUSTOM_ATTRIBUTE_BASE + i;
+}
+function customAttributeCount() {
+  return customAttributeIndex.size;
+}
+var ATTRIBUTE_DECLARATION = /(?<=^|[;}\n])\s*(?:attribute|in)\s+(?:(?:highp|mediump|lowp)\s+)?(\w+)\s+([^;(){}]+);/g;
+function bindCustomAttributeLocations(gl, program, vertexSource, maxAttributes) {
+  if (/layout\s*\(\s*location/.test(vertexSource)) return;
+  const usesInstanceMatrix = /^[ \t]*#define[ \t]+USE_INSTANCING\b/m.test(vertexSource);
+  const hasTangent = /^[ \t]*#define[ \t]+USE_TANGENT\b/m.test(vertexSource);
+  ATTRIBUTE_DECLARATION.lastIndex = 0;
+  let m;
+  while ((m = ATTRIBUTE_DECLARATION.exec(vertexSource)) !== null) {
+    if (m[1].startsWith("mat")) continue;
+    const names = m[2].split(",");
+    for (let k = 0; k < names.length; k++) {
+      if (names[k].indexOf("[") !== -1) continue;
+      const name = names[k].trim();
+      if (name === "" || FIXED_ATTRIBUTES[name] !== void 0 || name === "tangent" && !hasTangent) continue;
+      let i = customAttributeIndex.get(name);
+      if (i === void 0) {
+        i = customAttributeIndex.size;
+        customAttributeIndex.set(name, i);
+      }
+      const location = CUSTOM_ATTRIBUTE_BASE + i;
+      if (location >= maxAttributes || usesInstanceMatrix && location < 12) continue;
+      gl.bindAttribLocation(program, location, name);
+    }
+  }
+}
 var WebGLProgram = class {
   constructor(gl, parameters, vertexSource, fragmentSource) {
     this.id = _programId++;
@@ -15690,6 +15724,7 @@ var WebGLProgram = class {
     gl.bindAttribLocation(program, 6, "skinIndex");
     gl.bindAttribLocation(program, 7, "skinWeight");
     gl.bindAttribLocation(program, 8, "instanceMatrix");
+    if (parameters.materialType === MATERIAL_SHADER) bindCustomAttributeLocations(gl, program, vertexSource, gl.getParameter(gl.MAX_VERTEX_ATTRIBS));
     gl.linkProgram(program);
     if (gl.getProgramParameter(program, gl.LINK_STATUS) === false) {
       const log = gl.getProgramInfoLog(program);
@@ -15749,6 +15784,14 @@ var WebGLProgram = class {
       if (FIXED_ATTRIBUTES[info.name] === void 0 && location >= 0) this.customAttributes.push(record);
     }
     this.hasCustomAttributes = this.customAttributes.length > 0;
+    this.customFixed = true;
+    for (let i = 0; i < this.customAttributes.length; i++) {
+      const r = this.customAttributes[i];
+      if (r.locationSize !== 1 || customAttributeLocation(r.name) !== r.location) {
+        this.customFixed = false;
+        break;
+      }
+    }
     const isCustom = parameters.materialType === MATERIAL_SHADER;
     this.samplerUniforms = [];
     let nextUnit = 0;
@@ -16804,6 +16847,20 @@ var WebGLBindingStates = class {
     for (const name in geometry.attributes) this.attributes.remove(geometry.attributes[name]);
     if (geometry.index !== null) this.attributes.remove(geometry.index);
   }
+  _entry(geometry) {
+    let entry = this.cache.get(geometry);
+    if (entry === void 0) {
+      entry = { vaos: [null, null, null], layoutVersion: -1, instancedFor: null, hadInstanceColor: false, custom: null, attrList: null, versionSum: -1, epoch: -1, epochMode: -1 };
+      this.cache.set(geometry, entry);
+      geometry.addEventListener("dispose", this._onGeometryDispose);
+      if (this.info !== null) this.info.memory.geometries++;
+    }
+    return entry;
+  }
+  /** Counts a geometry that is drawn from a mega-buffer page (it never gets a VAO of its own) in info.memory and hooks its disposal. */
+  register(geometry) {
+    this._entry(geometry);
+  }
   /**
    * Make sure the geometry's GPU buffers are current and bind the right VAO.
    * mode: 0 plain, 1 InstancedMesh (its own instance attributes), 2 batched (renderer's instance buffer).
@@ -16815,13 +16872,7 @@ var WebGLBindingStates = class {
    */
   bind(geometry, mode, instancedObject, batchBuffer, program = null) {
     const gl = this.gl, attributes = this.attributes;
-    let entry = this.cache.get(geometry);
-    if (entry === void 0) {
-      entry = { vaos: [null, null, null], layoutVersion: -1, instancedFor: null, hadInstanceColor: false, custom: null, attrList: null, versionSum: -1, epoch: -1, epochMode: -1 };
-      this.cache.set(geometry, entry);
-      geometry.addEventListener("dispose", this._onGeometryDispose);
-      if (this.info !== null) this.info.memory.geometries++;
-    }
+    const entry = this._entry(geometry);
     const useCustom = program !== null && program.hasCustomAttributes === true;
     if (entry.layoutVersion === geometry._layoutVersion && entry.attrList !== null && (mode !== 1 || entry.instancedFor === instancedObject)) {
       let valid = entry.epoch === attributeEpoch.value && entry.epochMode === mode;
@@ -17235,6 +17286,7 @@ var WebGLMegaBuffers = class {
     this.gl = gl;
     this.state = state;
     this.info = info;
+    this.maxAttributes = gl.getParameter(gl.MAX_VERTEX_ATTRIBS);
     this.layouts = /* @__PURE__ */ new Map();
     this.records = /* @__PURE__ */ new WeakMap();
     this._onGeometryDispose = this._onGeometryDispose.bind(this);
@@ -17261,7 +17313,9 @@ var WebGLMegaBuffers = class {
           return null;
         }
         const position = geometry.attributes.position, index = geometry.index;
-        if (position.count === rec.vertexCount && (rec.indexed ? index !== null && index.count === rec.indexCount : index === null)) return rec;
+        const known = customAttributeCount();
+        const stale = rec.registered !== known && (rec.registered = known, this._missesCustomAttribute(rec, geometry));
+        if (!stale && position.count === rec.vertexCount && (rec.indexed ? index !== null && index.count === rec.indexCount : index === null)) return rec;
       }
       this._free(rec);
     }
@@ -17269,6 +17323,39 @@ var WebGLMegaBuffers = class {
     this.records.set(geometry, rec);
     if (rec.page !== null) geometry.addEventListener("dispose", this._onGeometryDispose);
     return rec.page !== null ? rec : null;
+  }
+  _missesCustomAttribute(rec, geometry) {
+    const names = rec.layout.customNames;
+    for (const name in geometry.attributes) {
+      if (ATTRIBUTE_LOCATIONS[name] !== void 0 || names.has(name)) continue;
+      const location = customAttributeLocation(name);
+      if (location >= 0 && location < this.maxAttributes) return true;
+    }
+    return false;
+  }
+  /** True when this record's page carries every custom attribute `program` reads, at the locations the program uses. */
+  supports(rec, program) {
+    if (!program.hasCustomAttributes) return true;
+    if (rec.okProgram === program) return true;
+    if (rec.badProgram === program) return false;
+    let ok = program.customFixed;
+    if (ok) {
+      const list = program.customAttributes;
+      for (let i = 0; i < list.length; i++) if (!rec.layout.customNames.has(list[i].name)) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) rec.okProgram = program;
+    else rec.badProgram = program;
+    return ok;
+  }
+  /** Uploads what changed in `geometry` since the record was last synchronised (nothing, cheaply, when no attribute was touched). */
+  sync(rec, geometry) {
+    if (rec.epoch === attributeEpoch.value) return;
+    this.queue(rec, geometry);
+    this.flush();
+    rec.epoch = attributeEpoch.value;
   }
   _onGeometryDispose(event) {
     const geometry = event.target;
@@ -17289,13 +17376,23 @@ var WebGLMegaBuffers = class {
     if (attributes.position === void 0 || attributes.position.isInterleavedBufferAttribute) return null;
     const list = [];
     for (const name in attributes) {
-      const location = ATTRIBUTE_LOCATIONS[name];
-      if (location === void 0) continue;
+      let location = ATTRIBUTE_LOCATIONS[name];
+      const custom = location === void 0;
+      if (custom) {
+        location = customAttributeLocation(name);
+        if (location < 0 || location >= this.maxAttributes) continue;
+      }
       const a = attributes[name];
-      if (a.isInterleavedBufferAttribute || a.isInstancedBufferAttribute || a.onUploadCallback !== NO_HOOK) return null;
+      if (a.isInterleavedBufferAttribute || a.isInstancedBufferAttribute || a.onUploadCallback !== NO_HOOK || a.isFloat16BufferAttribute === true) {
+        if (custom) continue;
+        return null;
+      }
       const glType = glTypeOf(this.gl, a.array);
-      if (glType === 0) return null;
-      if (a.count !== attributes.position.count) return null;
+      const integerType = glType === this.gl.INT || glType === this.gl.UNSIGNED_INT;
+      if (glType === 0 || a.gpuType === 1013 && !integerType || a.count !== attributes.position.count) {
+        if (custom) continue;
+        return null;
+      }
       list.push({ name, itemSize: a.itemSize, glType, bytes: a.array.BYTES_PER_ELEMENT, normalized: a.normalized === true, location });
     }
     list.sort((x, y) => x.location - y.location);
@@ -17304,7 +17401,8 @@ var WebGLMegaBuffers = class {
     const signature = list.map((a) => `${a.name}:${a.itemSize}:${a.glType}:${a.normalized ? 1 : 0}`).join("|") + (indexed ? "|i" : "");
     let layout = this.layouts.get(signature);
     if (layout === void 0) {
-      layout = { signature, attributes: list, indexed, pages: [] };
+      layout = { signature, attributes: list, indexed, pages: [], customNames: /* @__PURE__ */ new Set() };
+      for (const a of list) if (ATTRIBUTE_LOCATIONS[a.name] === void 0) layout.customNames.add(a.name);
       this.layouts.set(signature, layout);
     }
     return layout;
@@ -17353,7 +17451,12 @@ var WebGLMegaBuffers = class {
       layoutVersion: geometry._layoutVersion,
       indexed: layout.indexed,
       reuploads: 0,
-      dynamic: false
+      dynamic: false,
+      epoch: -1,
+      okProgram: null,
+      badProgram: null,
+      registered: customAttributeCount(),
+      counted: false
     };
     if (this._registry !== null) this._registry.register(geometry, rec, rec);
     return rec;
@@ -19083,6 +19186,7 @@ var WebGLRenderer = class {
     this.autoBatch = true;
     this.autoBatchMinimum = 4;
     this.autoMultiDraw = true;
+    this.pagedDraws = true;
     this.autoBatchMaterials = true;
     this.clippingPlanes = [];
     this.localClippingEnabled = false;
@@ -20967,6 +21071,12 @@ var WebGLRenderer = class {
     if (program.spriteCenterLocation !== null) gl.uniform2f(program.spriteCenterLocation, object.center.x, object.center.y);
     if (object.isSkinnedMesh === true) this._uploadSkinning(program, object);
     if (object.morphTargetInfluences !== void 0 && program.morphInfluencesUniform !== null) this._uploadMorphTargets(program, object, geometry);
+    const page = this.pagedDraws && this.megaBuffers !== null && object.isMesh === true && object.isInstancedMesh !== true && object.isSkinnedMesh !== true && material.wireframe !== true && geometry.isInstancedBufferGeometry !== true ? this.megaBuffers.ensure(geometry) : null;
+    if (page !== null && this.megaBuffers.supports(page, program)) {
+      this._drawPaged(page, geometry, group, object);
+      if (object.onAfterRender !== defaultOnAfterRender) object.onAfterRender(this, scene, camera, geometry, material, group);
+      return;
+    }
     const mode = object.isInstancedMesh ? 1 : 0;
     const record = this.bindingStates.bind(geometry, mode, object, null, program);
     let instanceCount = 1, instanced = false;
@@ -21056,6 +21166,31 @@ var WebGLRenderer = class {
     this._draw(record, geometry, null, this._drawMode(object, material), instanceCount, true);
     this.info.render.batches++;
     this.info.render.instances += instanceCount;
+  }
+  /**
+   * Single draw of a geometry that lives in a mega-buffer page: the page's VAO is shared by every geometry of the
+   * layout, so consecutive draws of different geometries (of different programs too, when their attribute
+   * locations agree) keep it bound. Indices were rebased to the page when uploaded, so the draw only needs the
+   * geometry's index offset (or first vertex), no base-vertex extension.
+   */
+  _drawPaged(rec, geometry, group, object) {
+    const gl = this._gl, mega = this.megaBuffers;
+    mega.sync(rec, geometry);
+    if (!rec.counted) {
+      rec.counted = true;
+      this.bindingStates.register(geometry);
+    }
+    this.state.bindVertexArray(rec.page.vao);
+    let drawStart = 0, drawCount = rec.indexed ? rec.indexCount : rec.vertexCount;
+    if (group !== null) {
+      const end = Math.min(drawCount, group.start + group.count);
+      drawStart = group.start;
+      drawCount = end - drawStart;
+    }
+    if (drawCount <= 0) return;
+    if (rec.indexed) gl.drawElements(gl.TRIANGLES, drawCount, gl.UNSIGNED_INT, rec.byteOffset + drawStart * 4);
+    else gl.drawArrays(gl.TRIANGLES, rec.baseVertex + drawStart, drawCount);
+    this.info.update(drawCount, gl.TRIANGLES, 1);
   }
   _draw(record, geometry, group, mode, instanceCount, instanced) {
     const gl = this._gl;
