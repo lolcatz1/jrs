@@ -511,6 +511,8 @@ float sampleShadow( sampler2DShadow shadowMap, vec4 shadowCoord, vec4 params ) {
 #define PI2 6.283185307179586
 // three.js r186 shadowmap_pars_fragment: Vogel disk + interleaved gradient noise taps around the light-to-fragment direction
 #ifndef POINT_SHADOW_BASIC
+#if !( NUM_DIR_SHADOWS > 0 || NUM_SPOT_SHADOWS > 0 )
+// (already defined above when directional or spot shadows are present)
 float interleavedGradientNoise( vec2 position ) {
 	return fract( 52.9829189 * fract( dot( position, vec2( 0.06711056, 0.00583715 ) ) ) );
 }
@@ -520,6 +522,7 @@ vec2 vogelDiskSample( int sampleIndex, int samplesCount, float phi ) {
 	float theta = float( sampleIndex ) * goldenAngle + phi;
 	return vec2( cos( theta ), sin( theta ) ) * r;
 }
+#endif
 float getPointShadow( samplerCubeShadow shadowMap, vec4 params, vec4 info, vec3 lightToPosition ) {
 	float shadow = 1.0;
 	float shadowBias = params.x, shadowRadius = params.z, shadowIntensity = params.w;

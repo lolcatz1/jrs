@@ -12,6 +12,44 @@ let _programId = 0;
 const FIXED_ATTRIBUTES = { position: 0, normal: 1, uv: 2, color: 3, uv1: 4, instanceColor: 5, skinIndex: 6, skinWeight: 7, instanceMatrix: 8 };
 
 /**
+ * Custom (ShaderMaterial) attribute names get one location per name, shared by every program and every
+ * renderer, so geometries holding them can live in a mega-buffer page whose VAO fits all those programs.
+ * Locations start at 9, just above instanceMatrix (a mat4, 8-11): a program that declares instanceMatrix
+ * cannot use 9-11 and keeps linker-chosen locations for the colliding names (see WebGLProgram.customFixed).
+ */
+const CUSTOM_ATTRIBUTE_BASE = 9;
+const customAttributeIndex = new Map();
+/** Fixed location for a custom attribute name, or -1 when it has none (not seen in any program yet). */
+export function customAttributeLocation(name) {
+	const i = customAttributeIndex.get(name);
+	return i === undefined ? -1 : CUSTOM_ATTRIBUTE_BASE + i;
+}
+/** Number of custom attribute names registered so far (grows when a program with a new name is linked). */
+export function customAttributeCount() { return customAttributeIndex.size; }
+const ATTRIBUTE_DECLARATION = /(?<=^|[;}\n])\s*(?:attribute|in)\s+(?:(?:highp|mediump|lowp)\s+)?(\w+)\s+([^;(){}]+);/g; // a declaration starts a line or follows ';' / '}' (function parameters follow '(' or ',')
+function bindCustomAttributeLocations(gl, program, vertexSource, maxAttributes) {
+	if (/layout\s*\(\s*location/.test(vertexSource)) return; // explicit locations: leave everything to the shader
+	const usesInstanceMatrix = /^[ \t]*#define[ \t]+USE_INSTANCING\b/m.test(vertexSource); // the prefix declares instanceMatrix only under this define
+	const hasTangent = /^[ \t]*#define[ \t]+USE_TANGENT\b/m.test(vertexSource);
+	ATTRIBUTE_DECLARATION.lastIndex = 0;
+	let m;
+	while ((m = ATTRIBUTE_DECLARATION.exec(vertexSource)) !== null) {
+		if (m[1].startsWith('mat')) continue; // multi-location attributes stay with the linker
+		const names = m[2].split(',');
+		for (let k = 0; k < names.length; k++) {
+			if (names[k].indexOf('[') !== -1) continue;
+			const name = names[k].trim();
+			if (name === '' || FIXED_ATTRIBUTES[name] !== undefined || (name === 'tangent' && !hasTangent)) continue; // the prefix declares tangent (and the other optional attributes) under defines
+			let i = customAttributeIndex.get(name);
+			if (i === undefined) { i = customAttributeIndex.size; customAttributeIndex.set(name, i); }
+			const location = CUSTOM_ATTRIBUTE_BASE + i;
+			if (location >= maxAttributes || (usesInstanceMatrix && location < 12)) continue;
+			gl.bindAttribLocation(program, location, name);
+		}
+	}
+}
+
+/**
  * A compiled program plus everything the renderer needs to drive it without
  * string lookups at draw time: uniform locations, attribute locations and
  * uniform block bindings resolved once at link time.
@@ -36,6 +74,7 @@ class WebGLProgram {
 		gl.bindAttribLocation(program, 6, 'skinIndex');
 		gl.bindAttribLocation(program, 7, 'skinWeight');
 		gl.bindAttribLocation(program, 8, 'instanceMatrix');
+		if (parameters.materialType === MATERIAL_SHADER) bindCustomAttributeLocations(gl, program, vertexSource, gl.getParameter(gl.MAX_VERTEX_ATTRIBS)); // built-in shaders have no custom attributes
 		gl.linkProgram(program);
 		if (gl.getProgramParameter(program, gl.LINK_STATUS) === false) {
 			const log = gl.getProgramInfoLog(program);
@@ -99,6 +138,12 @@ class WebGLProgram {
 			if (FIXED_ATTRIBUTES[info.name] === undefined && location >= 0) this.customAttributes.push(record);
 		}
 		this.hasCustomAttributes = this.customAttributes.length > 0;
+		/** every custom attribute sits at its per-name fixed location (so a mega-buffer page VAO can feed this program) */
+		this.customFixed = true;
+		for (let i = 0; i < this.customAttributes.length; i++) {
+			const r = this.customAttributes[i];
+			if (r.locationSize !== 1 || customAttributeLocation(r.name) !== r.location) { this.customFixed = false; break; }
+		}
 
 		// Texture units are assigned once per program at link time and never change:
 		// built-in programs use the fixed table, custom (ShaderMaterial) programs number their
@@ -107,7 +152,8 @@ class WebGLProgram {
 		const isCustom = parameters.materialType === MATERIAL_SHADER;
 		this.samplerUniforms = [];
 		let nextUnit = 0;
-		gl.useProgram(program);
+		gl.useProgram(program); // leaves this program current in GL: the renderer syncs its state cache (justLinked)
+		this.justLinked = true;
 		for (const name in this.uniforms) {
 			const u = this.uniforms[name];
 			const target = samplerTarget(gl, u.type);

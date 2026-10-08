@@ -89,6 +89,15 @@ same order for both libraries. Per seed, with the default feature set:
   50% `setColorAt`, under a rotated group 30% of the time.
 * **Frame:** 6 frames by default (`--frames=N`); some frames use `scene.overrideMaterial`
   (MeshNormal / MeshBasic / MeshDepth / MeshLambert) when the feature triggers (25% of seeds).
+* **Mutations (per frame, on by default):** on random frames after the first, 1-3 of: hide/show or
+  remove a mesh, add a mesh (pool geometry + order-insensitive material, optionally under a group),
+  change a material's colour / opacity / `transparent` (with `needsUpdate`) / `flatShading` (with
+  `needsUpdate`) / `map`, change a light's intensity, colour and position or add a point light,
+  change a mesh's `renderOrder`, set a geometry's `drawRange`, scale a geometry's position attribute
+  (`needsUpdate`, `computeBoundingSphere`), change fog near/far/density or add fog, change the
+  background colour or the tone-mapping exposure, change an InstancedMesh's `count`, rescale a mesh.
+  This is what catches renderers that reuse render lists or draw commands across frames (found fix 19
+  and exposed fix 18).
 * **Renderer:** tone mapping (None / Linear / Reinhard / Cineon / ACESFilmic / Neutral) and exposure,
   `shadowMap.enabled`, stencil buffer on, antialias off, pixel ratio 1.
 
@@ -143,6 +152,7 @@ Merge log (the branch keeps absorbing the integration tip; each row is one merge
 | Integration tip | Merged at | npm test / conformance / smoke / addons | bench --compare | fuzz 1-100 | New findings |
 |---|---|---|---|---|---|
 | 2c03d79 | 87e7aaf | 117/117, 27/27, ok, ok | all scenes 0 / 0 (shared-animated 0 / 1) | 88 pass, 12 known residuals | none |
+| 646caba | ad397c3 | 130/130, 33/33, ok, ok | all 12 scenes 0 mean (max 0; shared-animated 1 px, skinned-crowd 3 px ≤ 2) | 89 pass with the new mutation feature on; the 11 residuals are a subset of the known set (seed 78 now passes) | two real regressions/bugs, fixed in 8716722 (fixes 18, 19): material-array batches left their record window bound for the next plain batch of the same material (frame 0 of about 1 in 15 scenes with shared materials), and multi-draw ignored a drawRange set after the record was built (only reachable with the new per-frame mutations) |
 
 ## Mismatches found and what was done
 
@@ -220,6 +230,16 @@ each with the reasoning.
 17. **sRGB render targets encoded twice** (`WebGLPrograms`; the edit meant for fix 9 had been lost):
     content drawn into an sRGB render target was 2x encoded (e.g. (203,89,149) expected, (231,160,201)
     drawn); now identical to three.js for linear and sRGB targets.
+18. **Freshly linked programs skipped material setup** (`WebGLRenderer._setupMaterial`, found after
+    merging the material-index batching): a program linked during the draw loop is left current in GL by
+    its sampler-unit setup, so the GL-level "program changed" test was false for its first draw and the
+    material block, state and textures were not (re)bound. A single-material batch following a
+    material-array batch of the same material drew with the record window still bound, so every instance
+    took record 0's colour (first frame, and any frame that introduces a new program). The renderer now
+    tracks its own current program and syncs the state cache after linking.
+19. **Multi-draw ignored a drawRange set after the mega-buffer record was built** (`_isMultiDrawable`):
+    the range is only checked when the record is created; a later `setDrawRange` was drawn in full. Found
+    by the new mutation feature; the eligibility test now reads the live drawRange.
 
 ### Open (found, not fixed tonight)
 
