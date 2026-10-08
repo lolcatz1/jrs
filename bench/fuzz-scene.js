@@ -390,6 +390,8 @@ export function buildFuzzScene(T, seed, features = defaultFeatures(), opts = {})
 	const extraTextures = [];
 	let extraCounter = 0;
 	const addExtraMaps = (mat, kind) => {
+		// wireframe lines are 1 px wide: texture LOD / derivative-based normal maps there depend on the rasteriser's line setup
+		if (mat.wireframe) return;
 		const bases = textures.filter((t) => t.isDataTexture === true);
 		if (bases.length === 0) return;
 		const x = makeRng(seed * 7919 + (++extraCounter) * 104729);
