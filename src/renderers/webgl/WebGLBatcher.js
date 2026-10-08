@@ -90,8 +90,7 @@ class WebGLBatcher {
 		// texImage2D targets the *active* unit: when the cached bind above was a no-op (the texture was
 		// already on `unit`) the active unit may still be the one a material texture was uploaded to
 		state.activeTexture(unit);
-		gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
-		gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+		state.setUnpack(false, false, 4);
 		gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, MATRIX_TEXTURE_WIDTH, rows, 0, gl.RGBA, gl.FLOAT, this.texData, 0);
 		this.textureRows = rows; this.textureHash = this.texHash; this.textureCount = this.texCount;
 	}

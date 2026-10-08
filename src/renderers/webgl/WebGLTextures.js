@@ -243,18 +243,23 @@ class WebGLTextures {
 			texture.addEventListener('dispose', this._onTextureDispose);
 		}
 		state.bindTexture(gl.TEXTURE_2D, p.webglTexture, slot);
-		gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, texture.flipY);
-		gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, texture.premultiplyAlpha);
-		gl.pixelStorei(gl.UNPACK_ALIGNMENT, texture.unpackAlignment);
-		gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+		state.setUnpack(texture.flipY, texture.premultiplyAlpha, texture.unpackAlignment);
 		const image = texture.image;
 		const glFormat = this.glFormat(texture.format);
 		const glType = this.glType(texture.type);
 		const glInternalFormat = this.glInternalFormat(texture.internalFormat, glFormat, glType, texture.colorSpace, texture.isVideoTexture);
-		this._setTextureParameters(gl.TEXTURE_2D, texture);
+		const streamed = texture.isDataTexture && texture._stream === true;
+		if (!streamed || p.allocated !== true) this._setTextureParameters(gl.TEXTURE_2D, texture);
 		const mipmaps = texture.mipmaps;
 		const useMipmaps = this._textureNeedsMipmaps(texture);
-		if (texture.isDataTexture || texture.isDepthTexture) {
+		if (streamed) {
+			// Streamed data (bone matrices): redefine the level with texImage2D on every update. In Chromium a
+			// client-data texSubImage2D goes through the command buffer's ring transfer buffer and can stall for
+			// seconds once it is driven into chunked mode; texImage2D takes the mapped-memory path and does not
+			// (see bench/results/swarm/stall-hunter.md). Same bytes per upload, no stall.
+			gl.texImage2D(gl.TEXTURE_2D, 0, glInternalFormat, image.width, image.height, 0, glFormat, glType, image.data);
+			p.allocated = true; p.width = image.width; p.height = image.height;
+		} else if (texture.isDataTexture || texture.isDepthTexture) {
 			const levels = useMipmaps ? Math.floor(Math.log2(Math.max(image.width, image.height))) + 1 : 1;
 			if (p.allocated !== true || p.width !== image.width || p.height !== image.height) {
 				if (p.allocated === true) { gl.deleteTexture(p.webglTexture); p.webglTexture = gl.createTexture(); state.bindTexture(gl.TEXTURE_2D, p.webglTexture, slot); this._setTextureParameters(gl.TEXTURE_2D, texture); }
@@ -300,9 +305,7 @@ class WebGLTextures {
 		state.bindTexture(target, p.webglTexture, slot);
 		if (p.version === texture.version || texture.image === null) return;
 		const image = texture.image;
-		gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-		gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, texture.premultiplyAlpha);
-		gl.pixelStorei(gl.UNPACK_ALIGNMENT, texture.unpackAlignment);
+		state.setUnpack(false, texture.premultiplyAlpha, texture.unpackAlignment);
 		const glFormat = this.glFormat(texture.format), glType = this.glType(texture.type);
 		const glInternalFormat = this.glInternalFormat(texture.internalFormat, glFormat, glType, texture.colorSpace);
 		this._setTextureParameters(target, texture);
@@ -345,10 +348,7 @@ class WebGLTextures {
 		const images = texture.image;
 		if (p.version === texture.version || !Array.isArray(images) || images.length < 6) return;
 		for (let i = 0; i < 6; i++) { const im = images[i]; if (!im || (im.complete === false)) return; }
-		gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, texture.flipY);
-		gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, texture.premultiplyAlpha);
-		gl.pixelStorei(gl.UNPACK_ALIGNMENT, texture.unpackAlignment);
-		gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+		state.setUnpack(texture.flipY, texture.premultiplyAlpha, texture.unpackAlignment);
 		const glFormat = this.glFormat(texture.format), glType = this.glType(texture.type);
 		const glInternalFormat = this.glInternalFormat(texture.internalFormat, glFormat, glType, texture.colorSpace);
 		this._setTextureParameters(gl.TEXTURE_CUBE_MAP, texture);

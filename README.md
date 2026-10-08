@@ -66,6 +66,7 @@ over 60 frames after 10 warm-up frames, 320x240 (median frame time, so single ga
 | shader-client-static: same materials, fixed camera, nothing moving, 3 passes per frame (2 shadow render targets with `scene.overrideMaterial`, main pass with stencil shadow volumes), ~215 draws per pass | 211 | 34.7 ms | 23.5 ms | **1.5x** | 618 → 615 ms | 217 → 217 | 0 / 0 |
 | shadows: 2 000 casters/receivers, 1024² directional shadow map | 2,000 | 81.8 ms | 1.4 ms | **58.4x** | 240 → 5 ms | 4001 → 3 | 0.134 / 33 |
 | shadows-animated: same scene, every third caster moving each frame | 2,000 | 55.2 ms | 2.0 ms | **27.6x** | 192 → 11 ms | 4001 → 3 | 0.121 / 31 |
+| skinned-crowd: 200 skinned meshes, 20 bones each, every bone animated by an `AnimationMixer` | 200 | 5.0 ms | 3.0 ms | **1.7x** | 7 → 4 ms | 200 → 200 | 0 / 2 |
 
 The instanced scenario is a single draw call in both libraries; it measures only the fixed per-frame cost. Full data: `bench/results/latest.json`.
 
@@ -103,10 +104,21 @@ does not implement three.js's environment multi-scatter term.
 Implemented with the three.js API and semantics (r186 conventions: linear working colour
 space, sRGB output, physically based light units):
 
-* **Core:** `Object3D`, `Scene`, `Group`, `Mesh`, `InstancedMesh`, `Line`, `LineSegments`,
-  `LineLoop`, `Points`, `Sprite`, `BufferGeometry`, `BufferAttribute` (all typed variants),
-  `InstancedBufferAttribute`, `InstancedBufferGeometry`, `Raycaster`, `Layers`, `Clock`, `Timer`,
-  `EventDispatcher`.
+* **Core:** `Object3D`, `Scene`, `Group`, `Mesh`, `InstancedMesh`, `SkinnedMesh`, `Skeleton`, `Bone`,
+  `Line`, `LineSegments`, `LineLoop`, `Points`, `Sprite`, `BufferGeometry`, `BufferAttribute` (all typed
+  variants), `InstancedBufferAttribute`, `InstancedBufferGeometry`, `Raycaster`, `Layers`, `Clock`,
+  `Timer`, `EventDispatcher`.
+* **Skinning & morph targets:** `SkinnedMesh` (`bind`, `bindMode` attached/detached, `pose`,
+  `normalizeSkinWeights`, skinned `raycast` / `computeBoundingBox` / `computeBoundingSphere`),
+  `Skeleton` (`update`, `computeBoneTexture`, `getBoneByName`, JSON), bone texture skinning with
+  `skinIndex` / `skinWeight`; geometry `morphAttributes.position / normal / color`, `morphTargetsRelative`,
+  `morphTargetInfluences` / `morphTargetDictionary` through the same morph texture layout as three r186.
+  Pixel-identical to three.js (see the conformance checks). Skinned and morphed meshes draw individually
+  (they are excluded from auto-batching).
+* **Animation:** `AnimationMixer`, `AnimationAction`, `AnimationClip`, `AnimationObjectGroup`,
+  `AnimationUtils`, `KeyframeTrack` and the Number/Vector/Quaternion/Color/Boolean/String tracks,
+  `PropertyBinding`, `PropertyMixer`, and the Linear / Discrete / Cubic / Bezier / QuaternionLinear
+  interpolants: the three.js r186 sources, verified against three.js by sampling the same clips.
 * **Cameras:** `PerspectiveCamera`, `OrthographicCamera` (incl. view offsets, zoom, film offset).
 * **Materials:** `MeshBasicMaterial`, `MeshLambertMaterial`, `MeshPhongMaterial`,
   `MeshStandardMaterial` (`MeshPhysicalMaterial` renders as Standard), `MeshNormalMaterial`,
@@ -146,7 +158,7 @@ space, sRGB output, physically based light units):
   (`"three/addons/": "<three>/examples/jsm/"`). Verified with `node bench/addons.mjs`.
 
 Not implemented (yet): environment maps / IBL on built-in materials, point-light shadows,
-skinning and morph targets, clipping planes, `Scene.background` textures, `ShaderMaterial`
+`InstancedMesh` morph targets (`morphTexture`), `SkeletonHelper`, clipping planes, `Scene.background` textures, `ShaderMaterial`
 `lights: true`, `onBeforeCompile` for built-in materials, rendering of `InterleavedBufferAttribute`
 geometry (the classes exist for API compatibility),
 post-processing, loaders beyond textures (GLTFLoader etc. live in three's `examples/`, as do
@@ -188,11 +200,12 @@ MIT. Geometry generators and parts of the math library are ported from three.js 
 
 Open `bench/conformance.html` from any static host (GitHub Pages, `npm run bench:serve` then
 `http://<your-machine>:8765/bench/conformance.html` on the phone). It reports the device's WebGL2
-limits, runs 23 rendering checks with pixel probes (lighting, batching vs. individual draws,
+limits, runs 28 rendering checks with pixel probes (lighting, batching vs. individual draws,
 multi-draw of mixed geometries vs. individual draws, instancing, transparency, 2D/3D/array/cube
 textures, stencil, fog, shadows, sprites, ShaderMaterial with chunks, shared programs and custom
-attributes, render targets, raycasting), times a 2 000-object scene, and when a CDN is reachable runs the same scene with
-three.js for a side-by-side number. "Copy report" puts the JSON on the clipboard.
+attributes, render targets, raycasting, skinning, morph targets and the animation mixer), times a 2 000-object scene, and
+when three.js can be loaded (the local copy, else a CDN) renders the skinning / morph scenes with both libraries and compares
+the pixels, and runs the same scene with three.js for a side-by-side number. "Copy report" puts the JSON on the clipboard.
 `node bench/conformance.mjs` runs the same page in headless Chromium.
 
 ## Using the single-file build (import map swap)

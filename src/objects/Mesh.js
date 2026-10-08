@@ -126,7 +126,7 @@ class Mesh extends Object3D {
 
 		const useMorph = this.morphTargetInfluences !== undefined && geometry.morphAttributes.position !== undefined;
 		// `fast`: positions can be read straight from the typed array and rejected with scalar math
-		const fast = useMorph === false && position.isInterleavedBufferAttribute !== true && position.normalized !== true;
+		const fast = useMorph === false && this.isSkinnedMesh !== true && position.isInterleavedBufferAttribute !== true && position.normalized !== true;
 		const multi = Array.isArray(material);
 		const totalCount = index !== null ? index.count : position.count;
 		const triCount = totalCount / 3;

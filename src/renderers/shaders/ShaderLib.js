@@ -39,6 +39,8 @@ export const TEXTURE_UNITS = {
 	dirShadowMap0: 8, dirShadowMap1: 9, dirShadowMap2: 10, dirShadowMap3: 11,
 	spotShadowMap0: 12, spotShadowMap1: 13, spotShadowMap2: 14, spotShadowMap3: 15,
 	objectMatrices: 15, // multi-draw matrix texture (spot shadow maps are capped at 3 when it is used)
+	// vertex-shader data textures live above the 16 fragment units (WebGL2 guarantees 32 combined units)
+	boneTexture: 16, morphTargetsTexture: 17,
 };
 export const MATRIX_TEXTURE_WIDTH = 1024; // texels
 export const TEXELS_PER_OBJECT = 8; // model matrix (4) + normal matrix columns (3) + spare -> 128 objects per row
@@ -140,6 +142,7 @@ vec3 BRDF_Lambert( const in vec3 diffuseColor ) { return RECIPROCAL_PI * diffuse
 const vertexShader = /* glsl */`
 precision highp float;
 precision highp int;
+precision highp sampler2DArray;
 ${FRAME_BLOCK}
 ${MATERIAL_BLOCK}
 #if NUM_DIR_SHADOWS > 0 || NUM_SPOT_SHADOWS > 0
@@ -170,6 +173,12 @@ in mat4 instanceMatrix;
 	in vec3 instanceColor;
 	#endif
 #endif
+#ifdef USE_SKINNING
+in vec4 skinIndex;
+in vec4 skinWeight;
+#endif
+${ShaderChunk.skinning_pars_vertex}
+${ShaderChunk.morphtarget_pars_vertex}
 #ifdef USE_OBJECT_TEXTURE
 // Batched draws: each object's world matrix and normal matrix come from a per-frame matrix
 // texture. Instanced batches index it by gl_InstanceID, multi-draw batches by gl_DrawID.
@@ -233,6 +242,19 @@ void main() {
 		vMaterialIndex = matIdx;
 		#endif
 	#endif
+	vec3 transformed = vec3( position );
+	#ifdef USE_NORMAL
+	vec3 objectNormal = vec3( normal );
+	#endif
+	${ShaderChunk.morphtarget_vertex}
+	#ifdef USE_NORMAL
+	${ShaderChunk.morphnormal_vertex}
+	#endif
+	${ShaderChunk.skinbase_vertex}
+	#ifdef USE_NORMAL
+	${ShaderChunk.skinnormal_vertex}
+	#endif
+	${ShaderChunk.skinning_vertex}
 	#ifdef IS_SPRITE
 		// billboard: sprite plane in view space
 		vec4 mvPosition = viewMatrix * model * vec4( 0.0, 0.0, 0.0, 1.0 );
@@ -249,7 +271,7 @@ void main() {
 		vec3 camUp = vec3( viewMatrix[ 0 ][ 1 ], viewMatrix[ 1 ][ 1 ], viewMatrix[ 2 ][ 1 ] );
 		vec4 worldPosition = vec4( model[ 3 ].xyz + camRight * rotated.x + camUp * rotated.y, 1.0 );
 	#else
-		vec4 worldPosition = model * vec4( position, 1.0 );
+		vec4 worldPosition = model * vec4( transformed, 1.0 );
 		vec4 mvPosition = viewMatrix * worldPosition;
 	#endif
 	#ifndef SHADOW_LEAN
@@ -257,11 +279,11 @@ void main() {
 	#endif
 	#ifdef USE_NORMAL
 		#if defined( USE_OBJECT_TEXTURE )
-		vNormal = normalize( fetchObjectNormalMatrix() * normal );
+		vNormal = normalize( fetchObjectNormalMatrix() * objectNormal );
 		#elif defined( USE_INSTANCING )
-		vNormal = normalize( transpose( inverse( mat3( model ) ) ) * normal );
+		vNormal = normalize( transpose( inverse( mat3( model ) ) ) * objectNormal );
 		#else
-		vNormal = normalize( normalMatrix * normal );
+		vNormal = normalize( normalMatrix * objectNormal );
 		#endif
 	#endif
 	#ifdef USE_UV
@@ -281,6 +303,20 @@ void main() {
 		#endif
 		#ifdef USE_INSTANCING_COLOR
 		vColor.rgb *= instanceColor;
+		#endif
+		#ifdef USE_MORPHCOLORS
+		// three.js morphcolor_vertex, on a vec4 vColor: alpha only morphs with USE_COLOR_ALPHA
+			#ifdef USE_COLOR_ALPHA
+			vColor *= morphTargetBaseInfluence;
+			for ( int i = 0; i < MORPHTARGETS_COUNT; i ++ ) {
+				if ( morphTargetInfluences[ i ] != 0.0 ) vColor += getMorph( gl_VertexID, i, 2 ) * morphTargetInfluences[ i ];
+			}
+			#elif defined( USE_COLOR )
+			vColor.rgb *= morphTargetBaseInfluence;
+			for ( int i = 0; i < MORPHTARGETS_COUNT; i ++ ) {
+				if ( morphTargetInfluences[ i ] != 0.0 ) vColor.rgb += getMorph( gl_VertexID, i, 2 ).rgb * morphTargetInfluences[ i ];
+			}
+			#endif
 		#endif
 	#endif
 	gl_Position = projectionMatrix * mvPosition;
@@ -786,6 +822,11 @@ export function buildBuiltinShader(p) {
 	if (p.instancing) d('USE_INSTANCING');
 	if (p.instancingColor) d('USE_INSTANCING_COLOR');
 	if (p.objectTexture) d('USE_OBJECT_TEXTURE');
+	if (p.skinning) d('USE_SKINNING');
+	if (p.morphTargets) d('USE_MORPHTARGETS');
+	if (p.morphNormals && p.flatShading === false) d('USE_MORPHNORMALS');
+	if (p.morphColors) d('USE_MORPHCOLORS');
+	if (p.morphTargetsCount > 0) { d('MORPHTARGETS_TEXTURE_STRIDE', p.morphTextureStride); d('MORPHTARGETS_COUNT', p.morphTargetsCount); }
 	if (p.multiDraw) d('USE_MULTIDRAW');
 	if (p.materialArray) { d('USE_MATERIAL_ARRAY'); d('MATERIAL_ARRAY_SIZE', p.materialArraySize | 0); d('MATERIAL_PAD', p.materialPad | 0); }
 	if (p.flatShading) d('FLAT_SHADED');
@@ -901,6 +942,12 @@ export function buildCustomShader(material, p) {
 			p.vertexAlphas ? '#define USE_COLOR_ALPHA' : '',
 			p.vertexUv1s ? '#define USE_UV1' : '',
 			p.flatShading ? '#define FLAT_SHADED' : '',
+			p.skinning ? '#define USE_SKINNING' : '',
+			p.morphTargets ? '#define USE_MORPHTARGETS' : '',
+			p.morphNormals && p.flatShading === false ? '#define USE_MORPHNORMALS' : '',
+			p.morphColors ? '#define USE_MORPHCOLORS' : '',
+			p.morphTargetsCount > 0 ? '#define MORPHTARGETS_TEXTURE_STRIDE ' + p.morphTextureStride : '',
+			p.morphTargetsCount > 0 ? '#define MORPHTARGETS_COUNT ' + p.morphTargetsCount : '',
 			p.doubleSided ? '#define DOUBLE_SIDED' : '',
 			p.sizeAttenuation ? '#define USE_SIZEATTENUATION' : '',
 			'uniform mat4 modelMatrix;',
