@@ -11,8 +11,8 @@
 import { attributeEpoch } from '../../core/attributeEpoch.js';
 import { LiveSet } from './LiveSet.js';
 
-const LOC_POSITION = 0, LOC_NORMAL = 1, LOC_UV = 2, LOC_COLOR = 3, LOC_UV1 = 4, LOC_INSTANCE_COLOR = 5, LOC_SKIN_INDEX = 6, LOC_SKIN_WEIGHT = 7, LOC_INSTANCE_MATRIX = 8;
-const ATTRIBUTE_LOCATIONS = { position: LOC_POSITION, normal: LOC_NORMAL, uv: LOC_UV, color: LOC_COLOR, uv1: LOC_UV1, skinIndex: LOC_SKIN_INDEX, skinWeight: LOC_SKIN_WEIGHT };
+const LOC_POSITION = 0, LOC_NORMAL = 1, LOC_UV = 2, LOC_COLOR = 3, LOC_UV1 = 4, LOC_INSTANCE_COLOR = 5, LOC_SKIN_INDEX = 6, LOC_SKIN_WEIGHT = 7, LOC_INSTANCE_MATRIX = 8, LOC_LINE_DISTANCE = 6;
+const ATTRIBUTE_LOCATIONS = { position: LOC_POSITION, normal: LOC_NORMAL, uv: LOC_UV, color: LOC_COLOR, uv1: LOC_UV1, skinIndex: LOC_SKIN_INDEX, skinWeight: LOC_SKIN_WEIGHT, lineDistance: LOC_LINE_DISTANCE };
 
 class WebGLBindingStates {
 	constructor(gl, state, attributes, info = null) {

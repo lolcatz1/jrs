@@ -8,3 +8,6 @@ bench/results/fuzz/
 # raw CDP profiles from bench/profile-cpu.mjs (large; summaries are committed as JSON)
 bench/results/swarm/profiles/*.cpuprofile
 bench/results/swarm/chain.log
+
+# per-case images written by bench/lps.mjs --save
+bench/results/lps/
