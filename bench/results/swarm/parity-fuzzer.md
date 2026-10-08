@@ -89,6 +89,8 @@ same order for both libraries. Per seed, with the default feature set:
   50% `setColorAt`, under a rotated group 30% of the time.
 * **Frame:** 6 frames by default (`--frames=N`); some frames use `scene.overrideMaterial`
   (MeshNormal / MeshBasic / MeshDepth / MeshLambert) when the feature triggers (25% of seeds).
+* **Point-light shadows** (`pointShadows`, with `shadows`): 40% of point lights cast, with random map
+  size, near/far, bias, normal bias and radius.
 * **Mutations (per frame, on by default):** on random frames after the first, 1-3 of: hide/show or
   remove a mesh, add a mesh (pool geometry + order-insensitive material, optionally under a group),
   change a material's colour / opacity / `transparent` (with `needsUpdate`) / `flatShading` (with
@@ -153,6 +155,7 @@ Merge log (the branch keeps absorbing the integration tip; each row is one merge
 |---|---|---|---|---|---|
 | 2c03d79 | 87e7aaf | 117/117, 27/27, ok, ok | all scenes 0 / 0 (shared-animated 0 / 1) | 88 pass, 12 known residuals | none |
 | 646caba | ad397c3 | 130/130, 33/33, ok, ok | all 12 scenes 0 mean (max 0; shared-animated 1 px, skinned-crowd 3 px ≤ 2) | 89 pass with the new mutation feature on; the 11 residuals are a subset of the known set (seed 78 now passes) | two real regressions/bugs, fixed in 8716722 (fixes 18, 19): material-array batches left their record window bound for the next plain batch of the same material (frame 0 of about 1 in 15 scenes with shared materials), and multi-draw ignored a drawRange set after the record was built (only reachable with the new per-frame mutations) |
+| 6858f51 | fc9e2b7 | 139/139, 34/34, ok, ok | BENCH4_PLACEHOLDER | 87 pass (point shadows + mutations on, so seeds no longer map to the earlier set); 11 residuals of the known kinds plus seed 2 (0.467) and seed 14 (0.05), both logged under Open | one compile failure (fix 20, d8f1052); point-light shadows added to the generator and pixel-identical |
 
 ## Mismatches found and what was done
 
@@ -240,6 +243,12 @@ each with the reasoning.
 19. **Multi-draw ignored a drawRange set after the mega-buffer record was built** (`_isMultiDrawable`):
     the range is only checked when the record is created; a later `setDrawRange` was drawn in full. Found
     by the new mutation feature; the eligibility test now reads the live drawRange.
+20. **Lit programs with a 2D shadow and a point shadow failed to compile** (`ShaderLib`, after merging
+    point-light shadows): the merged point-shadow code carried a second copy of the PCF helpers
+    (`interleavedGradientNoise`, `vogelDiskSample`), so any directional/spot + point shadow combination
+    linked no program and those objects vanished (7 of 30 shadow seeds, means up to 180). The helpers now
+    live in one block shared by both samplers. Point-light shadows themselves match three.js on every seed
+    tried (new `pointShadows` feature, on by default).
 
 ### Open (found, not fixed tonight)
 
@@ -254,6 +263,13 @@ each with the reasoning.
   scenes (fog, tone mapping, camera view offset are common to several of them); mean ≤ 0.10.
 * **Seed 145** (see the table): ShaderMaterials ~12% darker after a frame rendered with an
   `overrideMaterial`; not located.
+* **Seed 2 (post point-shadow generator, mean 0.467, 498 px)**: a lit floor under several transparent
+  BackSide `MeshPhongMaterial` spheres with CustomBlending, `depthWrite: false`, two groups per sphere;
+  every object alone matches, no single removal fixes it (3+ objects composite differently); not located.
+* **Seed 14 (0.05)**: `MeshPhongMaterial` wireframe lines textured with a render target sample about
+  25% darker in jrs; wireframe batches with Phong/maps otherwise show only the line-endpoint edge class.
+* Line primitives (wireframe) flip single endpoint pixels more often than triangle edges do; the 8-pixel
+  allowance is tight for them (3 of 60 wireframe seeds trip it with ≤ 28 pixels, mean ≤ 0.02).
 
 ### Known, excluded from the default feature set (flag to re-enable)
 
