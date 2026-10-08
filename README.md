@@ -52,7 +52,7 @@ Details, with the reasoning behind each choice, are in [ARCHITECTURE.md](./ARCHI
 `npm run bench` renders identical scenes with three.js r186 and jrs in headless Chromium
 (SwiftShader software WebGL2, so the numbers are CPU-bound frame costs; a real GPU widens the
 gap for draw-call-bound scenes and narrows it for fill-bound ones). Average JS time per frame
-over 60 frames after 10 warm-up frames, 320x240:
+over 60 frames after 10 warm-up frames, 320x240 (median frame time, so single garbage-collection or driver stalls do not define the number; the raw data has means and worst frames):
 
 | Scenario | Objects | three.js r186 | jrs | Speed-up | Draw calls (three → jrs) | Pixel diff (mean / max, 0–255) |
 |---|---:|---:|---:|---:|---|---|

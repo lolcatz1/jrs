@@ -37,10 +37,10 @@ for (const name of names) {
 		await page.close();
 		row[lib] = r;
 	}
-	row.speedup = +(row.three.avgMs / row.jrs.avgMs).toFixed(2);
+	row.speedup = +(row.three.medianMs / row.jrs.medianMs).toFixed(2); // medians: single stalls (GC, driver) should not define the number
 	row.wallSpeedup = +(row.three.wallAvgMs / row.jrs.wallAvgMs).toFixed(2);
 	results.push(row);
-	console.log(`${name.padEnd(20)} n=${String(row.n).padEnd(7)} three ${String(row.three.avgMs).padStart(8)} ms  jrs ${String(row.jrs.avgMs).padStart(8)} ms  => ${row.speedup}x   (draw calls ${row.three.drawCalls} -> ${row.jrs.drawCalls}; wall ${row.three.wallAvgMs} -> ${row.jrs.wallAvgMs} ms, ${row.wallSpeedup}x)`);
+	console.log(`${name.padEnd(20)} n=${String(row.n).padEnd(7)} three ${String(row.three.medianMs).padStart(8)} ms  jrs ${String(row.jrs.medianMs).padStart(8)} ms  => ${row.speedup}x  (medians; means ${row.three.avgMs} -> ${row.jrs.avgMs}, worst ${row.three.worstMs} -> ${row.jrs.worstMs}; draw calls ${row.three.drawCalls} -> ${row.jrs.drawCalls})`);
 	const fmtCalls = (c) => c ? `total ${c.total} | uniform* ${c.uniform} | bindTexture ${c.bindTexture} | useProgram ${c.useProgram} | bindVertexArray ${c.bindVertexArray} | draw ${c.draw} | bindBuffer ${c.bindBuffer} | bufferData ${c.bufferData} | state ${c.state}` : 'n/a';
 	console.log(`${''.padEnd(20)} GL calls/frame three: ${fmtCalls(row.three.glCalls)}${row.three.glError ? ` GL ERROR 0x${row.three.glError.toString(16)}` : ''}`);
 	console.log(`${''.padEnd(20)} GL calls/frame jrs:   ${fmtCalls(row.jrs.glCalls)}${row.jrs.glError ? ` GL ERROR 0x${row.jrs.glError.toString(16)}` : ''}`);

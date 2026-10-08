@@ -40,21 +40,23 @@ window.runScenario = async function (libName, scenarioName, opts = {}) {
 	const glCalls = opts.countGL === false ? null : countGLCalls(gl, () => { if (update) update(warmup); renderer.render(scene, camera); });
 	const glErrors = gl.getError();
 	let jsMs = 0, best = Infinity, worst = 0;
+	const samples = [];
 	const wall0 = performance.now();
 	for (let f = 0; f < frames; f++) {
 		const s = performance.now();
 		if (update) update(warmup + f);
 		renderer.render(scene, camera);
 		const d = performance.now() - s;
-		jsMs += d; if (d < best) best = d; if (d > worst) worst = d;
+		jsMs += d; if (d < best) best = d; if (d > worst) worst = d; samples.push(d);
 	}
 	gl.finish();
 	const wallMs = performance.now() - wall0;
+	samples.sort((a, b) => a - b);
 	const info = renderer.info.render;
 	const result = {
 		lib: libName, scenario: scenarioName, n, frames,
 		buildMs: +buildMs.toFixed(2),
-		avgMs: +(jsMs / frames).toFixed(3), bestMs: +best.toFixed(3), worstMs: +worst.toFixed(3),
+		avgMs: +(jsMs / frames).toFixed(3), medianMs: +samples[samples.length >> 1].toFixed(3), bestMs: +best.toFixed(3), worstMs: +worst.toFixed(3),
 		wallAvgMs: +(wallMs / frames).toFixed(3),
 		drawCalls: info.calls, triangles: Math.round(info.triangles),
 		programs: renderer.info.programs ? renderer.info.programs.length : undefined,
@@ -94,15 +96,17 @@ async function runScenarioStencil(T, libName, scenarioName, sc, n, frames, warmu
 	renderer.render = origRender;
 	const glErrors = gl.getError();
 	let jsMs = 0, best = Infinity, worst = 0;
+	const samples = [];
 	const wall0 = performance.now();
-	for (let f = 0; f < frames; f++) { const s = performance.now(); doFrame(warmup + 1 + f); const d = performance.now() - s; jsMs += d; if (d < best) best = d; if (d > worst) worst = d; }
+	for (let f = 0; f < frames; f++) { const s = performance.now(); doFrame(warmup + 1 + f); const d = performance.now() - s; jsMs += d; if (d < best) best = d; if (d > worst) worst = d; samples.push(d); }
 	gl.finish();
 	const wallMs = performance.now() - wall0;
+	samples.sort((a, b) => a - b);
 	const info = renderer.info.render;
 	const uniformTrace = hasTrace ? renderer.debug.uniformTrace.map((t) => ({ target: t.target, useProgram: t.useProgram, draws: t.draws, uniforms: t.uniforms })) : undefined;
 	const result = {
 		lib: libName, scenario: scenarioName, n, frames, buildMs: +buildMs.toFixed(2),
-		avgMs: +(jsMs / frames).toFixed(3), bestMs: +best.toFixed(3), worstMs: +worst.toFixed(3), wallAvgMs: +(wallMs / frames).toFixed(3),
+		avgMs: +(jsMs / frames).toFixed(3), medianMs: +samples[samples.length >> 1].toFixed(3), bestMs: +best.toFixed(3), worstMs: +worst.toFixed(3), wallAvgMs: +(wallMs / frames).toFixed(3),
 		drawCalls: info.calls, triangles: Math.round(info.triangles), programs: renderer.info.programs ? renderer.info.programs.length : undefined,
 		glCalls, glError: glErrors, passes: passes.map((p, i) => ({ name: built.passes ? built.passes[i] : 'pass ' + i, ...p })), uniformTrace,
 	};

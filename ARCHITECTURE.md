@@ -77,20 +77,25 @@ three.js takes. With that, the client-shaped benchmark scenes render pixel-ident
 
 After sorting, consecutive items with the same geometry, material and program (and no
 per-object hooks, groups or morph targets) are drawn with **one** `drawElementsInstanced`
-call. The vertex shader's `USE_INSTANCING` path multiplies `modelMatrix * instanceMatrix`
-and computes the normal matrix with `transpose(inverse(mat3(m)))` so non-uniform scale is
-correct per instance.
+call. The objects' world matrices and CPU-cached normal matrices are written into a
+per-frame **matrix texture** (RGBA32F, eight texels per object, filled straight from the
+transform slab) and the vertex shader fetches its matrix by `gl_InstanceID` plus a
+per-batch `drawBase` uniform. A batch therefore costs one `uniform1i` and one draw; no
+vertex attributes are re-pointed per batch (re-pointing instance attributes turned out to
+stall for tens of milliseconds in Chrome when the canvas is composited).
 
-The batcher copies world matrices from the slab into one per-frame instance buffer and
-mixes `(object.id, object._worldVersion)` into a hash while doing so. If the hash matches
-the previous frame's, the `bufferSubData` upload is skipped entirely: a static scene of
-10 000 meshes costs one draw call and zero buffer traffic per frame.
+While filling the texture the batcher mixes `(object.id, object._worldVersion)` into a hash;
+if the hash matches the previous frame's, the `texSubImage2D` upload is skipped entirely:
+a static scene of 10 000 meshes costs one draw call and zero buffer traffic per frame.
 
 Transparent items are batched too. Within one instanced draw the GPU rasterises instances
 in order, so the back-to-front order from the sort is preserved.
 
 `InstancedMesh` keeps working as in three.js (its own `instanceMatrix` attribute).
-Disable automatic batching with `renderer.autoBatch = false`.
+Disable automatic batching with `renderer.autoBatch = false`; `renderer.autoBatchMinimum`
+(default 4) is the shortest run that is batched. The vertex texture fetch costs slightly
+more per vertex than an attribute would on software GL; on GPUs it is the same technique
+`BatchedMesh` uses.
 
 ### 4b. Multi-draw over mega-buffers (`src/renderers/webgl/WebGLMegaBuffers.js`)
 
@@ -100,16 +105,19 @@ attribute layout (names, item sizes, types, indexed or not) are sub-allocated in
 vertex and index buffers ("pages", 262k vertices each, one VAO per page). Indices are rebased to
 the page's vertex base at upload time, so no base-vertex extension is needed. A run becomes one
 `multiDrawElementsWEBGL` (or `multiDrawArraysWEBGL`) call whose sub-draws read their object
-matrix from a per-frame **matrix texture** (RGBA32F, four texels per matrix) indexed by
-`gl_DrawID`. This is the transform-texture technique that three's `BatchedMesh` asks the
+matrix and normal matrix from the same per-frame matrix texture, indexed by `gl_DrawID`. This is the transform-texture technique that three's `BatchedMesh` asks the
 application to set up by hand, applied automatically and kept in sync with the scene graph:
 the matrix texture is filled from the transform slab in the same pass that builds the instance
 data, and its upload is skipped when the batch hash is unchanged. Sub-draws execute in order,
 so transparent runs keep their back-to-front order. The classic instanced path remains the
 fallback when the extension is missing (`renderer.autoMultiDraw = false` disables it).
 
-Effect: the 2,000 distinct-geometry benchmark goes from 2,000 draw calls to 1; the
-many-materials scene from 600 (instanced) to 200 (one per material and layout).
+A cost model picks the form per material run: runs whose geometries repeat (sorted
+contiguously) are drawn instanced, geometry group by geometry group, since an instanced draw
+has no per-sub-draw cost; runs of mostly distinct geometries use multi-draw. The opaque sort
+key carries an "indexed" bit so geometries of one mega-buffer layout stay adjacent.
+
+Effect: the 2,000 distinct-geometry benchmark goes from 2,000 draw calls to 1.
 
 ## 5. Uniform blocks instead of uniform uploads (`src/renderers/shaders/ShaderLib.js`)
 
