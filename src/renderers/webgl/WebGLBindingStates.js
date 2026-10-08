@@ -79,7 +79,7 @@ class WebGLBindingStates {
 	_entry(geometry) {
 		let entry = this.cache.get(geometry);
 		if (entry === undefined) {
-			entry = { vaos: [null, null, null], layoutVersion: -1, instancedFor: null, hadInstanceColor: false, custom: null, attrList: null, versionSum: -1, epoch: -1, epochMode: -1 };
+			entry = { vaos: [null, null, null], layoutVersion: -1, instancedFor: null, hadInstanceColor: false, custom: null, attrList: null, versionSums: [-1, -1, -1], epoch: -1, epochMode: -1 };
 			this.cache.set(geometry, entry);
 			this.live.add(entry);
 			geometry.addEventListener('dispose', this._onGeometryDispose);
@@ -114,7 +114,7 @@ class WebGLBindingStates {
 				for (let i = 0, l = list.length; i < l; i++) sum += list[i].version;
 				if (geometry.index !== null) sum += geometry.index.version;
 				if (mode === 1) { sum += instancedObject.instanceMatrix.version; if (instancedObject.instanceColor !== null) sum += instancedObject.instanceColor.version + 1000003; }
-				valid = sum === entry.versionSum;
+				valid = sum === entry.versionSums[mode]; // per mode: mode 1 adds the instance attributes, so one sum cannot serve both
 				if (valid) { entry.epoch = attributeEpoch.value; entry.epochMode = mode; }
 			}
 			if (valid) {
@@ -188,7 +188,7 @@ class WebGLBindingStates {
 		for (let i = 0; i < list.length; i++) sum += list[i].version;
 		if (geometry.index !== null) sum += geometry.index.version;
 		if (mode === 1) { sum += instancedObject.instanceMatrix.version; if (instancedObject.instanceColor !== null) sum += instancedObject.instanceColor.version + 1000003; }
-		entry.attrList = list; entry.versionSum = sum; entry.epoch = attributeEpoch.value; entry.epochMode = mode;
+		entry.attrList = list; entry.versionSums[mode] = sum; entry.epoch = attributeEpoch.value; entry.epochMode = mode;
 		return record;
 	}
 
