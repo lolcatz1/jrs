@@ -39,7 +39,7 @@ export function moreCases(env, C, has, h) {
 		const { scene, camera } = plain(T);
 		const sampler = opts.compare !== undefined ? 'sampler2DShadow' : 'sampler2D';
 		const fs = opts.compare !== undefined
-			? 'precision highp sampler2DShadow; uniform sampler2DShadow depthMap; varying vec2 vUv; void main(){ float d = texture(depthMap, vec3(vUv, 0.93)); gl_FragColor = vec4(vec3(d), 1.0); }'
+			? 'precision highp sampler2DShadow; uniform sampler2DShadow depthMap; varying vec2 vUv; void main(){ float d = texture(depthMap, vec3(vUv, 0.9 + 0.1 * vUv.x)); gl_FragColor = vec4(vec3(d), 1.0); }'
 			: 'uniform sampler2D depthMap; varying vec2 vUv; void main(){ float d = texture2D(depthMap, vUv).r; gl_FragColor = vec4(vec3(pow(d, 24.0)), 1.0); }';
 		scene.add(new T.Mesh(new T.PlaneGeometry(2, 2), shaderQuad(T, { depthMap: { value: dt } }, fs)));
 		const r = shot(side, scene, camera);
@@ -52,6 +52,12 @@ export function moreCases(env, C, has, h) {
 	for (const cmp of ['LessEqualCompare', 'GreaterCompare', 'AlwaysCompare']) {
 		add('depth', `DepthTexture compareFunction=${cmp} sampled through sampler2DShadow`, (T, side) => depthDemo(T, side, 'UnsignedInt', 'DepthFormat', { compare: cmp }));
 	}
+	add('depth', 'DepthTexture / CubeDepthTexture / texture class defaults match (type, format, filters, flags, image)', (T, side) => {
+		const pick = (t) => ({ type: t.type, format: t.format, mag: t.magFilter, min: t.minFilter, gen: t.generateMipmaps, flipY: t.flipY, cmp: t.compareFunction, image: !t.image ? null : (Array.isArray(t.image) ? t.image.length : { w: t.image.width, h: t.image.height, d: t.image.depth }), align: t.unpackAlignment, norm: t.normalized });
+		const list = [new T.DepthTexture(8, 8), new T.DepthTexture(8, 8, undefined, undefined, undefined, undefined, undefined, undefined, undefined, T.DepthStencilFormat), new T.DepthTexture(8, 8, T.FloatType), new T.CubeDepthTexture(8),
+			new T.DataTexture(null, 2, 2), new T.Data3DTexture(null, 2, 2, 2), new T.DataArrayTexture(null, 2, 2, 2), new T.CanvasTexture(canvasPattern(2, 2)), new T.CubeTexture(), new T.FramebufferTexture(4, 4), new T.Texture()];
+		return { pixels: new Uint8Array(SIZE * SIZE * 4), centre: [0, 0, 0, 0], data: list.map(pick) };
+	});
 	for (const packing of ['BasicDepthPacking', 'RGBADepthPacking']) {
 		add('depth', `MeshDepthMaterial depthPacking=${packing} rendered to screen and into an RGBA8 target`, (T, side) => {
 			const world = new T.Scene(); world.background = new T.Color(0x000000);
@@ -86,11 +92,16 @@ export function moreCases(env, C, has, h) {
 		['RED_GREEN_RGTC2_Format', 'EXT_texture_compression_rgtc', 4, 4, 16], ['SIGNED_RED_GREEN_RGTC2_Format', 'EXT_texture_compression_rgtc', 4, 4, 16],
 		['RGB_PVRTC_4BPPV1_Format', 'WEBGL_compressed_texture_pvrtc', 4, 4, 8], ['RGBA_PVRTC_2BPPV1_Format', 'WEBGL_compressed_texture_pvrtc', 8, 4, 8],
 	];
-	const blockData = (bytes, seed) => { const d = new Uint8Array(bytes); for (let i = 0; i < bytes; i++) d[i] = (hash(seed * 7919 + i * 31) * 256) | 0; return d; };
+	const blockData = (bytes, seed, astc = false) => {
+		const d = new Uint8Array(bytes);
+		for (let i = 0; i < bytes; i++) d[i] = (hash(seed * 7919 + i * 31) * 256) | 0;
+		if (astc) for (let o = 0; o + 16 <= bytes; o += 16) { d[o] = 0xfc; d[o + 1] = 0xfd; for (let k = 2; k < 8; k++) d[o + k] = 0xff; } // void-extent blocks: a valid solid colour (random 16 bit RGBA) per block
+		return d;
+	};
 	/** A mip chain 16x16 .. 1x1 of pseudo random (but reproducible) blocks. `depth` multiplies each level's size (array textures). */
 	const mips = (fmt, size = 16, depth = 1, seed = 1) => {
 		const [, , bw, bh, by] = fmt, list = [];
-		for (let w = size, i = 0; w >= 1; w >>= 1, i++) list.push({ data: blockData(sz(bw, bh, by)(w, w) * depth, seed * 100 + i), width: w, height: w });
+		for (let w = size, i = 0; w >= 1; w >>= 1, i++) list.push({ data: blockData(sz(bw, bh, by)(w, w) * depth, seed * 100 + i, fmt[0].includes('ASTC')), width: w, height: w });
 		return list;
 	};
 	for (const fmt of formats) {
@@ -402,6 +413,21 @@ export function moreCases(env, C, has, h) {
 		const { scene, camera } = copyScene(T, dst);
 		return shot(side, scene, camera);
 	}, { skip: has('WEBGL_compressed_texture_s3tc') ? undefined : 'WEBGL_compressed_texture_s3tc not exposed', callsMatch: ['texStorage2D', 'compressedTexSubImage2D'] });
+	add('copy', 'copyTextureToTexture between the depth textures of two render targets (blitFramebuffer on the depth buffer)', (T, side) => {
+		const mk = () => new T.WebGLRenderTarget(32, 32, { depthTexture: new T.DepthTexture(32, 32) });
+		const a = mk(), b = mk();
+		const world = new T.Scene(); world.background = new T.Color(0x000000);
+		const cam = new T.PerspectiveCamera(50, 1, 0.5, 10); cam.position.set(0, 0, 4);
+		const box = new T.Mesh(new T.BoxGeometry(1.5, 1.5, 1.5), new T.MeshBasicMaterial({ color: 0xff0000 })); box.rotation.set(0.5, 0.7, 0); world.add(box);
+		side.renderer.setRenderTarget(a); side.renderer.render(world, cam); side.renderer.setRenderTarget(null);
+		side.renderer.initRenderTarget(b);
+		side.renderer.copyTextureToTexture(a.depthTexture, b.depthTexture);
+		const { scene, camera } = plain(T);
+		scene.add(new T.Mesh(new T.PlaneGeometry(2, 2), shaderQuad(T, { depthMap: { value: b.depthTexture } }, 'uniform sampler2D depthMap; varying vec2 vUv; void main(){ float d = texture2D(depthMap, vUv).r; gl_FragColor = vec4(vec3(pow(d, 24.0)), 1.0); }')));
+		const r = shot(side, scene, camera);
+		a.dispose(); b.dispose();
+		return r;
+	}, { callsMatch: ['blitFramebuffer'] });
 	add('copy', 'renderer.initRenderTarget then copyTextureToTexture into its texture', (T, side) => {
 		const rt = new T.WebGLRenderTarget(8, 8, { depthBuffer: false });
 		side.renderer.initRenderTarget(rt);

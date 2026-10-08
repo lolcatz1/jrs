@@ -25,6 +25,7 @@
     "bench": "node bench/run.mjs",
     "bench:serve": "node bench/serve.mjs",
     "fuzz": "node bench/fuzz.mjs",
+    "textures": "node bench/textures.mjs",
     "build": "node build.mjs"
   },
   "keywords": [

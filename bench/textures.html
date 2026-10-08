@@ -103,6 +103,8 @@ async function runCase(c, jrs, three) {
 		if (va && va.pixels && vb && vb.pixels) {
 			if (params.get('dump') && c.name.includes(params.get('dump'))) entry.images = { jrs: toPNG(va.pixels), three: toPNG(vb.pixels) };
 			const d = diffImages(va.pixels, vb.pixels);
+			const colours = new Set(); for (let i = 0; i < vb.pixels.length; i += 4) { colours.add(vb.pixels[i] | (vb.pixels[i + 1] << 8) | (vb.pixels[i + 2] << 16)); if (colours.size > 3) break; }
+			if (colours.size <= 1) entry.blank = true;
 			const tol = c.tolerance === undefined ? 0 : c.tolerance;
 			details.push(`max diff ${d.maxDiff}, mean ${d.meanAbsDiff.toFixed(3)}${va.info ? ' | jrs: ' + va.info : ''}${vb.info && vb.info !== va.info ? ' | three: ' + vb.info : ''}`);
 			if (c.expectDiffer) { if (d.maxDiff === 0) problems.push('expected a visible difference but images are identical (test is blind)'); }
@@ -133,6 +135,7 @@ async function runCase(c, jrs, three) {
 	if (problems.length && c.gap) { entry.status = 'skip'; details.unshift('KNOWN GAP (' + c.gap + ') - measured: ' + problems.join(' | ')); }
 	else if (problems.length) { entry.status = 'fail'; details.unshift(...problems); }
 	else if (c.gap) details.unshift('known gap now closed (identical to three.js)');
+	if (entry.blank) details.push('(three.js image is a single colour)');
 	entry.detail = details.join('; ');
 	return entry;
 }

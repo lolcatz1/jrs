@@ -18009,8 +18009,7 @@ var WebGLCubeRenderTarget = class extends WebGLRenderTarget {
 var DepthTexture = class extends Texture {
   constructor(width, height, type, mapping, wrapS, wrapT, magFilter = NearestFilter, minFilter = NearestFilter, anisotropy, format = DepthFormat, depth = 1) {
     if (format !== DepthFormat && format !== DepthStencilFormat) throw new Error("DepthTexture format must be either DepthFormat or DepthStencilFormat");
-    if (type === void 0 && format === DepthFormat) type = UnsignedIntType;
-    if (type === void 0 && format === DepthStencilFormat) type = UnsignedInt248Type;
+    if (type === void 0) type = UnsignedIntType;
     super(null, mapping, wrapS, wrapT, magFilter, minFilter, format, type, anisotropy);
     this.isDepthTexture = true;
     this.image = { width, height, depth };
@@ -27576,6 +27575,110 @@ var DataTextureLoader = class extends Loader {
   }
 };
 
+// src/loaders/ImageBitmapLoader.js
+var _errorMap = /* @__PURE__ */ new WeakMap();
+var ImageBitmapLoader = class extends Loader {
+  /**
+   * Constructs a new image bitmap loader.
+   *
+   * @param {LoadingManager} [manager] - The loading manager.
+   */
+  constructor(manager) {
+    super(manager);
+    this.isImageBitmapLoader = true;
+    if (typeof createImageBitmap === "undefined") {
+      console.warn("ImageBitmapLoader: createImageBitmap() not supported.");
+    }
+    if (typeof fetch === "undefined") {
+      console.warn("ImageBitmapLoader: fetch() not supported.");
+    }
+    this.options = { premultiplyAlpha: "none" };
+    this._abortController = new AbortController();
+  }
+  /**
+   * Sets the given loader options. The structure of the object must match the `options` parameter of
+   * [createImageBitmap](https://developer.mozilla.org/en-US/docs/Web/API/Window/createImageBitmap).
+   *
+   * Note: When caching is enabled, the cache key is based on the URL only. Loading the same URL with
+   * different options will return the cached result of the first request.
+   *
+   * @param {Object} options - The loader options to set.
+   * @return {ImageBitmapLoader} A reference to this image bitmap loader.
+   */
+  setOptions(options) {
+    this.options = options;
+    return this;
+  }
+  /**
+   * Starts loading from the given URL and pass the loaded image bitmap to the `onLoad()` callback.
+   *
+   * @param {string} url - The path/URL of the file to be loaded. This can also be a data URI.
+   * @param {function(ImageBitmap)} onLoad - Executed when the loading process has been finished.
+   * @param {onProgressCallback} onProgress - Unsupported in this loader.
+   * @param {onErrorCallback} onError - Executed when errors occur.
+   */
+  load(url, onLoad, onProgress, onError) {
+    if (url === void 0) url = "";
+    if (this.path !== void 0) url = this.path + url;
+    url = this.manager.resolveURL(url);
+    const scope = this;
+    const cached = Cache.get(`image-bitmap:${url}`);
+    if (cached !== void 0) {
+      scope.manager.itemStart(url);
+      if (cached.then) {
+        cached.then((imageBitmap) => {
+          if (_errorMap.has(cached) === true) {
+            if (onError) onError(_errorMap.get(cached));
+            scope.manager.itemError(url);
+            scope.manager.itemEnd(url);
+          } else {
+            if (onLoad) onLoad(imageBitmap);
+            scope.manager.itemEnd(url);
+          }
+        });
+        return;
+      }
+      setTimeout(function() {
+        if (onLoad) onLoad(cached);
+        scope.manager.itemEnd(url);
+      }, 0);
+      return;
+    }
+    const fetchOptions = {};
+    fetchOptions.credentials = this.crossOrigin === "anonymous" ? "same-origin" : "include";
+    fetchOptions.headers = this.requestHeader;
+    fetchOptions.signal = typeof AbortSignal.any === "function" ? AbortSignal.any([this._abortController.signal, this.manager.abortController.signal]) : this._abortController.signal;
+    const promise = fetch(url, fetchOptions).then(function(res) {
+      return res.blob();
+    }).then(function(blob) {
+      return createImageBitmap(blob, Object.assign({}, scope.options, { colorSpaceConversion: "none" }));
+    }).then(function(imageBitmap) {
+      Cache.add(`image-bitmap:${url}`, imageBitmap);
+      if (onLoad) onLoad(imageBitmap);
+      scope.manager.itemEnd(url);
+      return imageBitmap;
+    }).catch(function(e) {
+      if (onError) onError(e);
+      _errorMap.set(promise, e);
+      Cache.remove(`image-bitmap:${url}`);
+      scope.manager.itemError(url);
+      scope.manager.itemEnd(url);
+    });
+    Cache.add(`image-bitmap:${url}`, promise);
+    scope.manager.itemStart(url);
+  }
+  /**
+   * Aborts ongoing fetch requests.
+   *
+   * @return {ImageBitmapLoader} A reference to this instance.
+   */
+  abort() {
+    this._abortController.abort();
+    this._abortController = new AbortController();
+    return this;
+  }
+};
+
 // src/lights/Light.js
 var Light = class extends Object3D {
   constructor(color, intensity = 1) {
@@ -31493,6 +31596,7 @@ export {
   HalfFloatType,
   HemisphereLight,
   IcosahedronGeometry,
+  ImageBitmapLoader,
   ImageLoader,
   IncrementStencilOp,
   IncrementWrapStencilOp,

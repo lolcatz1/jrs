@@ -43,6 +43,7 @@ export { TextureLoader } from './loaders/TextureLoader.js';
 export { CubeTextureLoader } from './loaders/CubeTextureLoader.js';
 export { CompressedTextureLoader } from './loaders/CompressedTextureLoader.js';
 export { DataTextureLoader } from './loaders/DataTextureLoader.js';
+export { ImageBitmapLoader } from './loaders/ImageBitmapLoader.js';
 export { ImageLoader } from './loaders/ImageLoader.js';
 export { FileLoader } from './loaders/FileLoader.js';
 export { Loader } from './loaders/Loader.js';
