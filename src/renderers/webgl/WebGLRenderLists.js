@@ -158,6 +158,7 @@ class WebGLRenderList {
 		this.opaqueVersion = 0; this.transparentVersion = 0; // bumped whenever the sorted keys are rebuilt (draw-command caches compare them)
 		this.camera = null;        // set by WebGLRenderLists.get: one list per (scene, call depth, camera)
 		this.cache = new RenderListCache();
+		this.texSlotOpaque = null; this.texSlotTransparent = null; // this list's own matrix textures (WebGLBatcher slots), created on first batch
 		// view-space depth of the item about to be pushed. Passed through a typed array instead of an
 		// argument: a double crossing a non-inlined call boundary is boxed into a HeapNumber per call.
 		this.zScratch = new Float64Array(1);

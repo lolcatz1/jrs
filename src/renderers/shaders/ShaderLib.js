@@ -35,6 +35,8 @@ export const MATERIAL_SHADOW_DEPTH = 11; // internal: shadow map pass
 
 // Texture unit assignment is fixed per sampler so sampler uniforms are set
 // once per program and never again.
+import { analyzeVertexSource, fragmentReferencesObjectUniforms, objectFetchBlock, rewriteVertexSource, OBJ_ELIGIBLE } from './ShaderMaterialBatching.js';
+
 export const TEXTURE_UNITS = {
 	map: 0, alphaMap: 1, normalMap: 2, emissiveMap: 3, roughnessMap: 4, metalnessMap: 5, aoMap: 6, specularMap: 7,
 	bumpMap: 7, // shares with specularMap (never used together by one material type)
@@ -1241,6 +1243,20 @@ function generateDefines(defines) {
 const filterEmptyLine = (string) => string !== '';
 
 /**
+ * Usage mask of the object uniforms in a ShaderMaterial's vertex shader with OBJ_ELIGIBLE set when a batched
+ * variant can be built (ShaderMaterialBatching.js), 0 otherwise. Computed on the include-resolved sources
+ * once per material version (`needsUpdate` recompiles anyway), so the renderer can pick the variant before
+ * any program is compiled.
+ */
+export function customShaderObjTexMode(material) {
+	if (material._objTexVersion === material.version && material._objTexMode !== undefined) return material._objTexMode;
+	let mode = analyzeVertexSource(resolveIncludes(material.vertexShader), material.isRawShaderMaterial === true);
+	if ((mode & OBJ_ELIGIBLE) === 0 || fragmentReferencesObjectUniforms(resolveIncludes(material.fragmentShader))) mode = 0;
+	material._objTexMode = mode; material._objTexVersion = material.version;
+	return mode;
+}
+
+/**
  * Builds a ShaderMaterial / RawShaderMaterial program the way three.js's WebGLProgram does:
  * same prefix (precision, SHADER_TYPE/NAME, custom defines, feature defines, built-in uniforms
  * and attributes), #include <chunk> resolution from the ported ShaderChunk library,
@@ -1351,6 +1367,17 @@ export function buildCustomShader(material, p) {
 	fragmentShader = resolveIncludes(fragmentShader); fragmentShader = replaceLightNums(fragmentShader, material.defines);
 	vertexShader = unrollLoops(vertexShader); fragmentShader = unrollLoops(fragmentShader);
 
+	// Automatic instancing (ShaderMaterialBatching.js): can this program's object uniforms be fed from the matrix texture?
+	const objTexMode = customShaderObjTexMode(material);
+	let extensions = '';
+	if (p.objectTexture === true && objTexMode !== 0) {
+		const block = objectFetchBlock(objTexMode, p.multiDraw === true, MATRIX_TEXTURE_WIDTH, TEXELS_PER_OBJECT);
+		if (isRaw) prefixVertex = block + prefixVertex;
+		else prefixVertex = prefixVertex.replace('uniform mat4 modelMatrix;\nuniform mat4 modelViewMatrix;\n', block).replace('uniform mat3 normalMatrix;\n', '');
+		vertexShader = rewriteVertexSource(vertexShader, isRaw);
+		if (p.multiDraw === true) extensions = '#extension GL_ANGLE_multi_draw : require\n';
+	}
+
 	// Always GLSL ES 3.00 output. Sources written for GLSL 1.00 get the same shims three.js applies.
 	const versionString = '#version 300 es\n';
 	if (!glsl3 || !isRaw) {
@@ -1372,7 +1399,7 @@ export function buildCustomShader(material, p) {
 			'#define textureCubeGradEXT textureGrad'
 		].filter(filterEmptyLine).join('\n') + '\n' + prefixFragment;
 	}
-	return { vertexShader: versionString + prefixVertex + vertexShader, fragmentShader: versionString + prefixFragment + fragmentShader };
+	return { vertexShader: versionString + extensions + prefixVertex + vertexShader, fragmentShader: versionString + prefixFragment + fragmentShader, objTexMode };
 }
 
 

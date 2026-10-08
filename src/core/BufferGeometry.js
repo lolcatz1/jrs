@@ -49,7 +49,7 @@ class BufferGeometry extends EventDispatcher {
 		this._frameStamp = -1; this._frameRid = 0;
 		this._mdFrame = -1; this._mdRec = null; this._mdTouch = -1; // mega-buffer record resolved this frame (WebGLRenderer._mdRecordOf)
 		this._shadowSigStamp = -1; this._shadowSig = 0;
-		this._attrBits = 0; this._attrBitsVersion = -1;
+		this._attrBits = 0; this._attrBitsVersion = -1; this._attrInstanced = false; // per-instance attribute present (never auto-batched)
 	}
 	getIndex() { return this.index; }
 	setIndex(index) {

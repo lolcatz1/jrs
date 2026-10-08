@@ -25,6 +25,8 @@ import { WebGLRenderLists, WebGLRenderList } from './webgl/WebGLRenderLists.js';
 import { WebGLLights } from './webgl/WebGLLights.js';
 import { WebGLBindingStates } from './webgl/WebGLBindingStates.js';
 import { WebGLBatcher } from './webgl/WebGLBatcher.js';
+import { layoutOf, LAYOUT_WORLD, LAYOUT_BOTH } from './shaders/ShaderMaterialBatching.js';
+import { customShaderObjTexMode } from './shaders/ShaderLib.js';
 import { WebGLMegaBuffers } from './webgl/WebGLMegaBuffers.js';
 import { WebGLMorphtargets } from './webgl/WebGLMorphtargets.js';
 import { computeNormalMatrix } from '../core/TransformSlab.js';
@@ -110,6 +112,13 @@ class WebGLRenderer {
 		 * uniform-block arrays (probed at start-up); otherwise batches break at every material change.
 		 */
 		this.autoBatchMaterials = true;
+		/**
+		 * Draw runs of meshes sharing a ShaderMaterial as one instanced / multi-draw call: a variant of the custom
+		 * program fetches modelMatrix / modelViewMatrix / normalMatrix from the matrix texture. Applies to programs
+		 * whose vertex shader only reads those uniforms the standard way (see ShaderMaterialBatching.js); meshes
+		 * with onBeforeRender / onAfterRender hooks, groups, instancing, skinning or morph targets keep their own draws.
+		 */
+		this.autoBatchShaderMaterials = true;
 		this.clippingPlanes = [];
 		this.localClippingEnabled = false;
 		this.toneMapping = NoToneMapping;
@@ -175,6 +184,8 @@ class WebGLRenderer {
 		this.batcher = new WebGLBatcher(gl);
 		this.multiDrawExt = gl.getExtension('WEBGL_multi_draw');
 		this.megaBuffers = this.multiDrawExt !== null ? new WebGLMegaBuffers(gl, this.state, this.info) : null;
+		// the one batched variant of a custom program serves instanced and multi-draw runs alike (gl_DrawID is 0 outside multi-draw calls)
+		this._shaderBatchBits = V_OBJTEX | (this.multiDrawExt !== null ? V_MULTIDRAW : 0);
 		this._mdCounts = new Int32Array(1024); this._mdOffsets = new Int32Array(1024); this._mdN = 0;
 		this._mdUsedThisFrame = false;
 		this.morphtargets = new WebGLMorphtargets(this.textures.maxTextureSize);
@@ -595,7 +606,7 @@ class WebGLRenderer {
 	_reuseLevel(list, cache, scene, camera, view, pv) {
 		if (cache.structure !== epochs.structure || cache.world !== epochs.world) return -1;
 		const override = scene.overrideMaterial === undefined ? null : scene.overrideMaterial;
-		if (cache.sortObjects !== this.sortObjects || cache.override !== override) return -1;
+		if (cache.sortObjects !== this.sortObjects || cache.override !== override || cache.shaderBatch !== (this.autoBatch === true && this.autoBatchShaderMaterials === true)) return -1;
 		const same = cache.sameCamera(camera, view, pv);
 		if (!same && !cache.sameCameraLayers(camera)) return -1;
 		if (!cache.depsValid()) return -1;
@@ -689,12 +700,12 @@ class WebGLRenderer {
 			this._resolvePrograms(list, scene);
 			return;
 		}
-		const structure = epochs.structure, world = epochs.world;
+		const structure = epochs.structure, world = epochs.world, shaderBatch = this.autoBatch === true && this.autoBatchShaderMaterials === true;
 		const record = this.reuseRenderLists === true && cache.hasSig && cache.structure === structure && cache.world === world &&
-			cache.sortObjects === this.sortObjects && cache.override === override;
+			cache.sortObjects === this.sortObjects && cache.override === override && cache.shaderBatch === shaderBatch;
 		cache.ready = false; cache.resort = false;
 		cache.cmdOpaque.invalidate(); cache.cmdTransparent.invalidate();
-		cache.hasSig = true; cache.structure = structure; cache.world = world; cache.sortObjects = this.sortObjects; cache.override = override;
+		cache.hasSig = true; cache.structure = structure; cache.world = world; cache.sortObjects = this.sortObjects; cache.override = override; cache.shaderBatch = shaderBatch;
 		cache.setCamera(camera, view, pv);
 		this._cameraLayerMask = camera.layers.mask;
 		for (;;) {
@@ -1184,7 +1195,7 @@ class WebGLRenderer {
 			const override = this._currentScene !== null ? this._currentScene.overrideMaterial : null;
 			if (override !== null && override !== undefined && material.allowOverride === true) material = override;
 		}
-		const variant = this._variantFor(object, geometry, material, shadowPass);
+		let variant = this._variantFor(object, geometry, material, shadowPass);
 		if (object.isSkinnedMesh === true) {
 			// bone matrices once per render call (the skeleton itself skips the work when no bone moved); during a merged flat
 			// pass the bones may not have been updated yet, so the update runs once the pass is over
@@ -1211,13 +1222,20 @@ class WebGLRenderer {
 		let flags = 0;
 		// a two-pass (back faces, then front faces) transparent material must stay per object: batching all
 		// back faces before all front faces composites overlapping objects differently from three.js
-		if (group === null && material.isShaderMaterial !== true && object.isMesh === true && object.isInstancedMesh !== true && object.isSkinnedMesh !== true &&
-			object.morphTargetInfluences === undefined && object.onBeforeRender === defaultOnBeforeRender && object.onAfterRender === defaultOnAfterRender &&
-			isTwoPass(material, shadowPass) === false) {
-			flags = ITEM_BATCHABLE;
-			// a sub-draw of a multi-draw covers the whole geometry: a drawRange takes the per-draw path
-			const dr = geometry.drawRange;
-			if (material.wireframe !== true && object.isSprite !== true && dr.start === 0 && dr.count === Infinity) flags |= ITEM_MULTIDRAWABLE;
+		if (group === null && this._objectBatchable(object, geometry) && isTwoPass(material, shadowPass) === false) {
+			let ok = true;
+			if (material.isShaderMaterial === true) {
+				// a custom program batches through its batched variant (ShaderMaterialBatching.js), which the mesh resolves
+				// to right here so the material compiles one program; in a shadow pass the built-in depth program is used
+				ok = this.autoBatchShaderMaterials === true;
+				if (ok && shadowPass === false) { ok = this.autoBatch === true && customShaderObjTexMode(material) !== 0; if (ok) variant |= this._shaderBatchBits; }
+			}
+			if (ok) {
+				flags = ITEM_BATCHABLE;
+				// a sub-draw of a multi-draw covers the whole geometry: a drawRange takes the per-draw path
+				const dr = geometry.drawRange;
+				if (material.wireframe !== true && object.isSprite !== true && dr.start === 0 && dr.count === Infinity) flags |= ITEM_MULTIDRAWABLE;
+			}
 		}
 		list.push(object, geometry, material, group, material._frameRid, geometry._frameRid, variant, material._batchGroup, flags);
 		const rec = this._rec;
@@ -1287,6 +1305,9 @@ class WebGLRenderer {
 			if (attributes.uv !== undefined) a |= V_HAS_UV;
 			if (attributes.uv1 !== undefined) a |= V_HAS_UV1;
 			if (attributes.color !== undefined) { a |= V_HAS_COLOR; if (attributes.color.itemSize === 4) a |= V_COLOR_ALPHA; }
+			let instanced = geometry.isInstancedBufferGeometry === true;
+			if (!instanced) for (const name in attributes) { if (attributes[name].isInstancedBufferAttribute === true) { instanced = true; break; } }
+			geometry._attrInstanced = instanced; // a per-instance attribute would be consumed by the batch's instancing: never batched
 			geometry._attrBits = a; geometry._attrBitsVersion = geometry._layoutVersion;
 		}
 		let a = geometry._attrBits;
@@ -1505,6 +1526,18 @@ class WebGLRenderer {
 	// ------------------------------------------------------------------ drawing
 
 	/**
+	 * A plain mesh without per-object hooks, instancing, skinning, morph targets or per-instance attributes, and
+	 * not mirrored (a negative-determinant world matrix flips the front face, which a batch cannot do per object).
+	 */
+	_objectBatchable(object, geometry) {
+		if (object.isMesh !== true || object.isInstancedMesh === true || object.isSkinnedMesh === true ||
+			object.morphTargetInfluences !== undefined || geometry._attrInstanced === true ||
+			object.onBeforeRender !== defaultOnBeforeRender || object.onAfterRender !== defaultOnAfterRender) return false;
+		if (object._flipVersion !== object._worldVersion) { object._frontFaceCW = object.matrixWorld.determinant() < 0; object._flipVersion = object._worldVersion; }
+		return object._frontFaceCW !== true;
+	}
+
+	/**
 	 * Mega-buffer record of a geometry (null: draw it the regular way), resolved once per geometry per frame
 	 * (`ensure` compares attribute layout and sizes). Geometries are also noted once per command build in the
 	 * touch map, which a draw-command cache uses to validate a replay.
@@ -1532,7 +1565,12 @@ class WebGLRenderer {
 		const batcher = this.batcher;
 		const autoBatch = this.autoBatch, minimum = this.autoBatchMinimum;
 		const multi = autoBatch && this.autoMultiDraw && this.megaBuffers !== null;
-		if (commandCache !== null && this._replayCommands(commandCache, keysVersion, multi)) {
+		// each sorted list keeps its own matrix texture, so an unchanged list replays its commands against the matrices it uploaded before
+		const transparentList = keys === list.transparentSorted;
+		let slot = transparentList ? list.texSlotTransparent : list.texSlotOpaque;
+		if (slot === null) { slot = batcher.newSlot(); if (transparentList) list.texSlotTransparent = slot; else list.texSlotOpaque = slot; }
+		batcher.use(slot);
+		if (commandCache !== null && this._replayCommands(commandCache, keysVersion, multi, camera)) {
 			// same sorted list, same matrices already in the matrix texture: skip command building and the texture fill
 			this.debug.listReuse.commandsReplayed++;
 			this._executeCommands(commandCache.cmdN, scene, camera, shadowPass);
@@ -1550,11 +1588,14 @@ class WebGLRenderer {
 			const item = items[itemIndex];
 			const fl = flags[itemIndex];
 			const material = item.material, bg = item.batchGroup;
+			// a ShaderMaterial run of any length goes through the batched program variant (one program per material
+			// instead of switching between the per-object and the batched variant, which would re-send every uniform)
+			const minRun = material.isShaderMaterial === true ? 1 : minimum;
 			let j = i + 1;
 			let kind = 0; // 0 single, 1 instanced run, 2 multi-draw run; +2 when the run spans several materials
 			let firstOtherMaterial = -1; // first item of the run whose material differs from `material` (same batch group)
 			let rec0;
-			if (multi && (fl & ITEM_MULTIDRAWABLE) !== 0 && (rec0 = this._mdRecordOf(item.geometry)) !== null) {
+			if (multi && (fl & ITEM_MULTIDRAWABLE) !== 0 && (rec0 = this._mdRecordOf(item.geometry)) !== null && megaBuffers.supports(rec0, item.program)) {
 				item.mdRecord = rec0;
 				const page = rec0.page, indexed = rec0.indexed, program = item.program, renderOrder = item.renderOrder;
 				let distinct = 1, lastGeometry = item.geometry, firstGroupEnd = -1;
@@ -1566,7 +1607,7 @@ class WebGLRenderer {
 					const geometry = next.geometry;
 					if (geometry !== lastGeometry || geometry._mdFrame !== this._frameId) {
 						const rec = this._mdRecordOf(geometry);
-						if (rec === null || rec.page !== page || rec.indexed !== indexed) break;
+						if (rec === null || rec.page !== page || rec.indexed !== indexed || !megaBuffers.supports(rec, program)) break;
 						if (geometry !== lastGeometry) { distinct++; lastGeometry = geometry; if (firstGroupEnd < 0) firstGroupEnd = j; }
 					}
 					if (firstOtherMaterial < 0 && next.material !== material) firstOtherMaterial = j;
@@ -1576,8 +1617,8 @@ class WebGLRenderer {
 				// Cost model: a multi-draw costs one call plus a small per-sub-draw cost; an instanced draw
 				// costs one call per distinct geometry. Repeated geometries (sorted contiguously) are
 				// therefore drawn instanced, geometry-group by geometry-group; mostly-distinct runs use multi-draw.
-				if (distinct * 2 >= j - i) { if (j - i >= minimum) kind = 2; }
-				else { j = firstGroupEnd; if (j - i >= minimum) kind = 1; }
+				if (distinct * 2 >= j - i) { if (j - i >= minRun) kind = 2; }
+				else { j = firstGroupEnd; if (j - i >= minRun) kind = 1; }
 			} else if (autoBatch && (fl & ITEM_BATCHABLE) !== 0) {
 				const geometry = item.geometry, program = item.program, renderOrder = item.renderOrder;
 				while (j < n) {
@@ -1589,14 +1630,17 @@ class WebGLRenderer {
 						j++;
 					} else break;
 				}
-				if (j - i >= minimum) kind = 1;
+				if (j - i >= minRun) kind = 1;
 			}
 			const multiMaterial = kind !== 0 && firstOtherMaterial >= 0 && firstOtherMaterial < j;
 			const windowBase = multiMaterial ? bg.page * this._materialWindow : 0;
+			// texture entry layout of the run (ShaderMaterialBatching.js): world matrices, or the view-space pair for custom programs reading modelViewMatrix / normalMatrix
+			const layout = kind !== 0 ? layoutOf(item.program.objTexMode) : LAYOUT_WORLD, both = layout === LAYOUT_BOTH;
+			if (layout !== LAYOUT_WORLD) batcher.mixView(camera, both);
 			if (cmdN === this._cmdCapacity) this._growCommands();
 			this._cmdItem[cmdN] = item;
 			if (kind === 2) {
-				batcher.ensureTex(j - i);
+				batcher.ensureTex(both ? 2 * (j - i) : j - i);
 				if (mdN + (j - i) > this._mdCounts.length) this._growMultiDraw(mdN + (j - i));
 				this._cmdOffset[cmdN] = batcher.texCount;
 				this._cmdCount[cmdN] = j - i;
@@ -1604,7 +1648,8 @@ class WebGLRenderer {
 				this._cmdMdStart[cmdN] = mdN;
 				for (let k = i; k < j; k++) {
 					const it = items[keys[k]];
-					batcher.addTex(it.object, multiMaterial ? this._materialRecordIndex(it.material, windowBase) : 0);
+					if (layout === LAYOUT_WORLD) batcher.addTex(it.object, multiMaterial ? this._materialRecordIndex(it.material, windowBase) : 0);
+					else batcher.addTexView(it.object, camera, both);
 					const geometry = it.geometry, rec = geometry._mdRec;
 					megaBuffers.queue(rec, geometry);
 					if (rec.indexed) { this._mdCounts[mdN] = rec.indexCount; this._mdOffsets[mdN] = rec.byteOffset; }
@@ -1612,12 +1657,13 @@ class WebGLRenderer {
 					mdN++;
 				}
 			} else if (kind === 1) {
-				batcher.ensureTex(j - i);
+				batcher.ensureTex(both ? 2 * (j - i) : j - i);
 				this._cmdOffset[cmdN] = batcher.texCount;
 				this._cmdCount[cmdN] = j - i;
 				this._cmdKind[cmdN] = multiMaterial ? 3 : 1;
 				if (multiMaterial) { for (let k = i; k < j; k++) { const it = items[keys[k]]; batcher.addTex(it.object, this._materialRecordIndex(it.material, windowBase)); } }
-				else { for (let k = i; k < j; k++) batcher.addTex(items[keys[k]].object, 0); }
+				else if (layout === LAYOUT_WORLD) { for (let k = i; k < j; k++) batcher.addTex(items[keys[k]].object, 0); }
+				else { for (let k = i; k < j; k++) batcher.addTexView(items[keys[k]].object, camera, both); }
 			} else {
 				j = i + 1;
 				this._cmdOffset[cmdN] = -1;
@@ -1630,7 +1676,7 @@ class WebGLRenderer {
 		if (batcher.texCount > 0) batcher.uploadTexture(this.state, TEXTURE_UNITS.objectMatrices);
 		if (commandCache !== null) {
 			this._megaTouch = null;
-			this._saveCommands(commandCache, keysVersion, cmdN, mdN, multi, touch, list.cache.pMat);
+			this._saveCommands(commandCache, keysVersion, cmdN, mdN, multi, touch, list.cache.pMat, camera);
 		}
 		this._executeCommands(cmdN, scene, camera, shadowPass);
 	}
@@ -1654,9 +1700,11 @@ class WebGLRenderer {
 	}
 
 	/** Remember the commands just built so an identical list can skip building them (see _replayCommands). */
-	_saveCommands(cache, keysVersion, cmdN, mdN, multi, touch, pairMats) {
+	_saveCommands(cache, keysVersion, cmdN, mdN, multi, touch, pairMats, camera) {
 		cache.version = -1;
 		const batcher = this.batcher;
+		cache.viewDependent = batcher.viewDependent;
+		if (batcher.viewDependent) cache.view.set(camera.matrixWorldInverse.elements);
 		// a geometry whose mega-buffer record changed while building (reallocation) is not safe to replay
 		for (const [geometry, rec] of touch) if (rec !== null && rec.layoutVersion !== geometry._layoutVersion) return;
 		cache.items = this._cmdItem.slice(0, cmdN);
@@ -1671,6 +1719,7 @@ class WebGLRenderer {
 		for (let c = 0; c < cmdN; c++) if (this._cmdKind[c] >= 3) { spans = true; break; }
 		cache.syncMats = spans ? pairMats : null; // building a run that spans materials refreshes each material's record; replay must too
 		cache.autoBatch = this.autoBatch; cache.autoMultiDraw = this.autoMultiDraw; cache.minimum = this.autoBatchMinimum; cache.multi = multi;
+		cache.shaderBatch = this.autoBatchShaderMaterials;
 		cache.version = keysVersion;
 	}
 
@@ -1679,9 +1728,10 @@ class WebGLRenderer {
 	 * produce: same sorted keys, same batching settings, same mega-buffer records, and the matrix texture still
 	 * holds this list's matrices (nobody drew another list through the batcher since).
 	 */
-	_replayCommands(cache, keysVersion, multi) {
+	_replayCommands(cache, keysVersion, multi, camera) {
 		if (cache.version !== keysVersion || cache.cmdN === 0) return false;
-		if (cache.autoBatch !== this.autoBatch || cache.autoMultiDraw !== this.autoMultiDraw || cache.minimum !== this.autoBatchMinimum || cache.multi !== multi) return false;
+		if (cache.autoBatch !== this.autoBatch || cache.autoMultiDraw !== this.autoMultiDraw || cache.minimum !== this.autoBatchMinimum || cache.multi !== multi || cache.shaderBatch !== this.autoBatchShaderMaterials) return false;
+		if (cache.viewDependent === true && !sameFloats(cache.view, camera.matrixWorldInverse.elements)) return false; // view-space matrices were computed for another camera
 		const batcher = this.batcher;
 		if (cache.texCount > 0 && (batcher.texture === null || batcher.textureHash !== cache.texHash || batcher.textureCount !== cache.texCount)) return false;
 		const geoms = cache.megaGeoms;
@@ -1719,7 +1769,8 @@ class WebGLRenderer {
 	/** One multiDrawElements/Arrays call for `count` sub-draws whose matrices start at `drawBase` in the matrix texture. */
 	_renderMultiDraw(item, drawBase, count, mdStart, scene, camera, shadowPass, materialArray) {
 		const object = item.object, material = item.material, gl = this._gl;
-		const variant = this._variantFor(object, item.geometry, material, shadowPass) | V_MULTIDRAW | (materialArray ? V_MATARRAY : 0) | this._sideVariant();
+		let variant = this._variantFor(object, item.geometry, material, shadowPass) | V_MULTIDRAW | (materialArray ? V_MATARRAY : 0) | this._sideVariant();
+		if (material.isShaderMaterial === true && shadowPass === false) variant |= this._shaderBatchBits;
 		const program = this._getProgram(material, object, scene, variant);
 		this._setupMaterial(item, program, material, camera, false, this._sideOverride >= 0 ? this._sideOverride : (shadowPass ? shadowSideOf(material) : material.side));
 		const mu = program.modelMatrixUniform;
@@ -1826,10 +1877,11 @@ class WebGLRenderer {
 				this._bindMaterialTextures(material, this._materialProps(material));
 			}
 			if (material.isLineBasicMaterial) state.setLineWidth(material.linewidth * this._pixelRatio);
-		} else if (material.isShaderMaterial && material.uniformsNeedUpdate === true) {
-			this._uploadShaderMaterialUniforms(program, material, camera, true);
-			material.uniformsNeedUpdate = false;
 		} else {
+			if (material.isShaderMaterial && material.uniformsNeedUpdate === true) {
+				this._uploadShaderMaterialUniforms(program, material, camera, true);
+				material.uniformsNeedUpdate = false;
+			}
 			// frontFaceCW may differ between objects with the same material
 			state.setFlipSided(frontFaceCW ? side !== BackSide : side === BackSide);
 		}
@@ -1923,7 +1975,8 @@ class WebGLRenderer {
 		const object = item.object, material = item.material;
 		let geometry = item.geometry;
 		const gl = this._gl;
-		const variant = this._variantFor(object, geometry, material, shadowPass) | V_OBJTEX | (materialArray ? V_MATARRAY : 0) | this._sideVariant();
+		let variant = this._variantFor(object, geometry, material, shadowPass) | V_OBJTEX | (materialArray ? V_MATARRAY : 0) | this._sideVariant();
+		if (material.isShaderMaterial === true && shadowPass === false) variant |= this._shaderBatchBits;
 		const program = this._getProgram(material, object, scene, variant);
 		this._setupMaterial(item, program, material, camera, false, this._sideOverride >= 0 ? this._sideOverride : (shadowPass ? shadowSideOf(material) : material.side));
 		if (material.wireframe === true) geometry = this._wireframeGeometry(geometry);

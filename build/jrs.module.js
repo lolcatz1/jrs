@@ -4176,6 +4176,7 @@ var BufferGeometry = class _BufferGeometry extends EventDispatcher {
     this._shadowSig = 0;
     this._attrBits = 0;
     this._attrBitsVersion = -1;
+    this._attrInstanced = false;
   }
   getIndex() {
     return this.index;
@@ -5886,6 +5887,8 @@ var Material = class extends EventDispatcher {
     this._resolveStamp = -1;
     this._resolveVariant = -1;
     this._resolveProgram = null;
+    this._objTexMode = void 0;
+    this._objTexVersion = -1;
     this._shadowSigStamp = -1;
     this._shadowSig = 0;
   }
@@ -17141,6 +17144,116 @@ function getByteLength(width, height, format, type) {
   return width * height * components * typeBytes;
 }
 
+// src/renderers/shaders/ShaderMaterialBatching.js
+var OBJ_USES_MODEL = 1;
+var OBJ_USES_MODELVIEW = 2;
+var OBJ_USES_NORMAL = 4;
+var OBJ_ELIGIBLE = 8;
+var LAYOUT_WORLD = 0;
+var LAYOUT_VIEW = 1;
+var LAYOUT_BOTH = 2;
+function layoutOf(mode) {
+  if ((mode & (OBJ_USES_MODELVIEW | OBJ_USES_NORMAL)) === 0) return LAYOUT_WORLD;
+  return (mode & OBJ_USES_MODEL) !== 0 ? LAYOUT_BOTH : LAYOUT_VIEW;
+}
+function entriesOf(mode) {
+  return layoutOf(mode) === LAYOUT_BOTH ? 2 : 1;
+}
+var NAMES = { modelMatrix: OBJ_USES_MODEL, modelViewMatrix: OBJ_USES_MODELVIEW, normalMatrix: OBJ_USES_NORMAL };
+var MAIN_PATTERN = /\bvoid\s+main\s*\(\s*(?:void)?\s*\)\s*\{/g;
+var COMMENT_PATTERN = /\/\*[\s\S]*?\*\/|\/\/[^\n]*/g;
+var RAW_DECL = (name) => new RegExp("uniform\\s+(?:(?:highp|mediump|lowp)\\s+)?mat[34]\\s+" + name + "\\s*;", "g");
+function isIdentStart(c) {
+  return c >= 65 && c <= 90 || c >= 97 && c <= 122 || c === 95;
+}
+function isIdentChar(c) {
+  return isIdentStart(c) || c >= 48 && c <= 57;
+}
+function analyzeVertexSource(source, isRaw) {
+  let src = source.replace(COMMENT_PATTERN, " ");
+  if (isRaw) {
+    for (const name in NAMES) {
+      const matches = src.match(RAW_DECL(name));
+      if (matches !== null && matches.length > 1) return 0;
+      if (matches !== null) src = src.replace(RAW_DECL(name), " ");
+    }
+  }
+  let mode = 0, depth = 0, directive = false, lineStart = true;
+  for (let i = 0, n = src.length; i < n; i++) {
+    const c = src.charCodeAt(i);
+    if (c === 10) {
+      directive = false;
+      lineStart = true;
+      continue;
+    }
+    if (lineStart) {
+      if (c === 32 || c === 9 || c === 13) continue;
+      lineStart = false;
+      if (c === 35) {
+        directive = true;
+        continue;
+      }
+    }
+    if (c === 123) {
+      depth++;
+      continue;
+    }
+    if (c === 125) {
+      depth--;
+      continue;
+    }
+    if (!isIdentStart(c)) continue;
+    let j = i + 1;
+    while (j < n && isIdentChar(src.charCodeAt(j))) j++;
+    const word = src.slice(i, j);
+    i = j - 1;
+    if (word === "gl_InstanceID" || word === "gl_DrawID") return 0;
+    const bit = NAMES[word];
+    if (bit === void 0) continue;
+    if (directive || depth === 0) return 0;
+    mode |= bit;
+  }
+  if (mode === 0) return 0;
+  MAIN_PATTERN.lastIndex = 0;
+  const first = MAIN_PATTERN.exec(src);
+  if (first === null || MAIN_PATTERN.exec(src) !== null) return 0;
+  return mode | OBJ_ELIGIBLE;
+}
+function fragmentReferencesObjectUniforms(source) {
+  const src = source.replace(COMMENT_PATTERN, " ");
+  return /\b(?:modelMatrix|modelViewMatrix|normalMatrix)\b/.test(src);
+}
+function objectFetchBlock(mode, multiDraw, width, texels) {
+  const layout = layoutOf(mode), entries = entriesOf(mode);
+  let s = "uniform highp sampler2D objectMatrices;\nuniform int drawBase;\n";
+  s += "mat4 modelMatrix;\nmat4 modelViewMatrix;\nmat3 normalMatrix;\n";
+  s += "ivec2 jrs_objectTexel( int entry ) {\n";
+  s += `	int id = ( drawBase + ( gl_InstanceID${multiDraw ? " + gl_DrawID" : ""} ) * ${entries} + entry ) * ${texels};
+`;
+  s += `	int y = id / ${width};
+	return ivec2( id - y * ${width}, y );
+}
+`;
+  s += "mat4 jrs_fetchMat4( ivec2 t ) { return mat4( texelFetch( objectMatrices, t, 0 ), texelFetch( objectMatrices, t + ivec2( 1, 0 ), 0 ), texelFetch( objectMatrices, t + ivec2( 2, 0 ), 0 ), texelFetch( objectMatrices, t + ivec2( 3, 0 ), 0 ) ); }\n";
+  s += "mat3 jrs_fetchMat3( ivec2 t ) { return mat3( texelFetch( objectMatrices, t + ivec2( 4, 0 ), 0 ).xyz, texelFetch( objectMatrices, t + ivec2( 5, 0 ), 0 ).xyz, texelFetch( objectMatrices, t + ivec2( 6, 0 ), 0 ).xyz ); }\n";
+  s += "void jrs_fetchObject() {\n	ivec2 t = jrs_objectTexel( 0 );\n";
+  if (layout === LAYOUT_WORLD) {
+    s += "	modelMatrix = jrs_fetchMat4( t );\n";
+  } else {
+    if (mode & OBJ_USES_MODELVIEW) s += "	modelViewMatrix = jrs_fetchMat4( t );\n";
+    if (mode & OBJ_USES_NORMAL) s += "	normalMatrix = jrs_fetchMat3( t );\n";
+    if (layout === LAYOUT_BOTH) s += "	modelMatrix = jrs_fetchMat4( jrs_objectTexel( 1 ) );\n";
+  }
+  s += "}\n";
+  return s;
+}
+function rewriteVertexSource(source, isRaw) {
+  let src = source;
+  if (isRaw) for (const name in NAMES) src = src.replace(RAW_DECL(name), "");
+  MAIN_PATTERN.lastIndex = 0;
+  return src.replace(MAIN_PATTERN, (m) => m + "\n	jrs_fetchObject();\n");
+}
+
 // src/renderers/shaders/ShaderLib.js
 var MAX_DIR_LIGHTS = 4;
 var MAX_POINT_LIGHTS = 8;
@@ -18421,6 +18534,14 @@ function generateDefines(defines) {
   return chunks.join("\n");
 }
 var filterEmptyLine = (string) => string !== "";
+function customShaderObjTexMode(material) {
+  if (material._objTexVersion === material.version && material._objTexMode !== void 0) return material._objTexMode;
+  let mode = analyzeVertexSource(resolveIncludes(material.vertexShader), material.isRawShaderMaterial === true);
+  if ((mode & OBJ_ELIGIBLE) === 0 || fragmentReferencesObjectUniforms(resolveIncludes(material.fragmentShader))) mode = 0;
+  material._objTexMode = mode;
+  material._objTexVersion = material.version;
+  return mode;
+}
 function buildCustomShader(material, p) {
   const isRaw = material.isRawShaderMaterial === true;
   const glsl3 = material.glslVersion === "300 es";
@@ -18529,6 +18650,15 @@ function buildCustomShader(material, p) {
   fragmentShader2 = replaceLightNums(fragmentShader2, material.defines);
   vertexShader2 = unrollLoops(vertexShader2);
   fragmentShader2 = unrollLoops(fragmentShader2);
+  const objTexMode = customShaderObjTexMode(material);
+  let extensions = "";
+  if (p.objectTexture === true && objTexMode !== 0) {
+    const block = objectFetchBlock(objTexMode, p.multiDraw === true, MATRIX_TEXTURE_WIDTH, TEXELS_PER_OBJECT);
+    if (isRaw) prefixVertex = block + prefixVertex;
+    else prefixVertex = prefixVertex.replace("uniform mat4 modelMatrix;\nuniform mat4 modelViewMatrix;\n", block).replace("uniform mat3 normalMatrix;\n", "");
+    vertexShader2 = rewriteVertexSource(vertexShader2, isRaw);
+    if (p.multiDraw === true) extensions = "#extension GL_ANGLE_multi_draw : require\n";
+  }
   const versionString = "#version 300 es\n";
   if (!glsl3 || !isRaw) {
     prefixVertex = ["precision mediump sampler2DArray;", "#define attribute in", "#define varying out", "#define texture2D texture"].join("\n") + "\n" + prefixVertex;
@@ -18549,7 +18679,7 @@ function buildCustomShader(material, p) {
       "#define textureCubeGradEXT textureGrad"
     ].filter(filterEmptyLine).join("\n") + "\n" + prefixFragment;
   }
-  return { vertexShader: versionString + prefixVertex + vertexShader2, fragmentShader: versionString + prefixFragment + fragmentShader2 };
+  return { vertexShader: versionString + extensions + prefixVertex + vertexShader2, fragmentShader: versionString + prefixFragment + fragmentShader2, objTexMode };
 }
 
 // src/renderers/webgl/WebGLPrograms.js
@@ -18680,6 +18810,7 @@ var WebGLProgram = class {
       }
     }
     const isCustom = parameters.materialType === MATERIAL_SHADER;
+    const reserveMatrixUnit = isCustom && this.uniforms.objectMatrices !== void 0;
     this.samplerUniforms = [];
     let nextUnit = 0;
     gl.useProgram(program);
@@ -18703,7 +18834,13 @@ var WebGLProgram = class {
       }
       if (!isCustom && (TEXTURE_UNITS[name] !== void 0 || TEXTURE_UNITS[name + "0"] !== void 0)) {
         unit = TEXTURE_UNITS[name] !== void 0 ? TEXTURE_UNITS[name] : TEXTURE_UNITS[name + "0"];
+      } else if (isCustom && name === "objectMatrices") {
+        unit = TEXTURE_UNITS.objectMatrices;
+        u.unit = unit;
+        gl.uniform1i(u.location, unit);
+        continue;
       } else {
+        if (reserveMatrixUnit && nextUnit <= TEXTURE_UNITS.objectMatrices && nextUnit + u.size > TEXTURE_UNITS.objectMatrices) nextUnit = TEXTURE_UNITS.objectMatrices + 1;
         unit = nextUnit;
         nextUnit += u.size;
       }
@@ -18717,6 +18854,7 @@ var WebGLProgram = class {
       }
       this.samplerUniforms.push(u);
     }
+    this.objTexMode = OBJ_ELIGIBLE | OBJ_USES_MODEL;
     this.materialVersion = -1;
     this.materialId = -1;
   }
@@ -18948,6 +19086,7 @@ var WebGLPrograms = class {
     if (program === void 0) {
       const src = parameters.materialType === MATERIAL_SHADER ? buildCustomShader(material, parameters) : buildBuiltinShader(parameters);
       program = new WebGLProgram(this.gl, parameters, src.vertexShader, src.fragmentShader);
+      if (src.objTexMode !== void 0) program.objTexMode = src.objTexMode;
       this.renderer.state.currentProgram = program.program;
       this.cache.set(key, program);
       this.programs.push(program);
@@ -18981,6 +19120,7 @@ var RenderListCache = class {
     this.world = -1;
     this.sortObjects = true;
     this.override = null;
+    this.shaderBatch = false;
     this.layers = 0;
     this.coordinateSystem = 0;
     this.reversedDepth = false;
@@ -19182,6 +19322,9 @@ var CommandCache = class {
     this.autoMultiDraw = false;
     this.minimum = 0;
     this.multi = false;
+    this.shaderBatch = false;
+    this.viewDependent = false;
+    this.view = new Float32Array(16);
   }
   invalidate() {
     this.version = -1;
@@ -19348,6 +19491,8 @@ var WebGLRenderList = class {
     this.transparentVersion = 0;
     this.camera = null;
     this.cache = new RenderListCache();
+    this.texSlotOpaque = null;
+    this.texSlotTransparent = null;
     this.zScratch = new Float64Array(1);
   }
   init() {
@@ -19977,23 +20122,51 @@ var WebGLBindingStates = class {
 // src/renderers/webgl/WebGLBatcher.js
 var TEX_STRIDE_FLOATS = TEXELS_PER_OBJECT * 4;
 var MATRICES_PER_ROW = MATRIX_TEXTURE_WIDTH / TEXELS_PER_OBJECT;
-var WebGLBatcher = class {
-  constructor(gl) {
-    this.gl = gl;
+var _mv = new Matrix4();
+var _nm = new Matrix3();
+var MatrixTextureSlot = class {
+  constructor() {
     this.texture = null;
     this.textureRows = 0;
     this.textureHash = 0;
     this.textureCount = 0;
+  }
+};
+var WebGLBatcher = class {
+  constructor(gl) {
+    this.gl = gl;
+    this.defaultSlot = new MatrixTextureSlot();
+    this.slot = this.defaultSlot;
     this.texCapacity = MATRICES_PER_ROW * 8;
     this.texData = new Float32Array(this.texCapacity * TEX_STRIDE_FLOATS);
     this.texCount = 0;
     this.texHash = 0;
     this.texIds = new Int32Array(this.texCapacity).fill(-1);
     this.texVersions = new Float64Array(this.texCapacity);
+    this.viewDependent = false;
+    this._viewBits = new Float32Array(16);
+    this._viewBitsU = new Uint32Array(this._viewBits.buffer);
+  }
+  get texture() {
+    return this.slot.texture;
+  }
+  get textureHash() {
+    return this.slot.textureHash;
+  }
+  get textureCount() {
+    return this.slot.textureCount;
+  }
+  /** Selects the GPU texture the next fill is uploaded to (`null` = the shared default slot). */
+  use(slot) {
+    this.slot = slot === null ? this.defaultSlot : slot;
+  }
+  newSlot() {
+    return new MatrixTextureSlot();
   }
   begin() {
     this.texCount = 0;
     this.texHash = 2166136261 | 0;
+    this.viewDependent = false;
   }
   ensureTex(extra) {
     if (this.texCount + extra > this.texCapacity) {
@@ -20056,6 +20229,53 @@ var WebGLBatcher = class {
     return p;
   }
   /**
+   * Append an object's entry for a ShaderMaterial batch that reads `modelViewMatrix` / `normalMatrix`: the
+   * model-view matrix and its normal matrix, computed exactly as the per-object uniform path computes them
+   * (ShaderMaterialBatching.js LAYOUT_VIEW). With `both`, the world entry (`addTex`) follows (LAYOUT_BOTH).
+   * Call `mixView(camera)` once per run before: the hash must change with the camera. The entry is always
+   * rewritten (it depends on the camera), and the position is marked so a later world entry there is too.
+   */
+  addTexView(object, camera, both) {
+    const p = this.texCount, d = this.texData, o = p * TEX_STRIDE_FLOATS;
+    _mv.multiplyMatrices(camera.matrixWorldInverse, object.matrixWorld);
+    _nm.getNormalMatrix(_mv);
+    const me = _mv.elements, ne = _nm.elements;
+    for (let i = 0; i < 16; i++) d[o + i] = me[i];
+    d[o + 16] = ne[0];
+    d[o + 17] = ne[1];
+    d[o + 18] = ne[2];
+    d[o + 19] = 0;
+    d[o + 20] = ne[3];
+    d[o + 21] = ne[4];
+    d[o + 22] = ne[5];
+    d[o + 23] = 0;
+    d[o + 24] = ne[6];
+    d[o + 25] = ne[7];
+    d[o + 26] = ne[8];
+    d[o + 27] = 0;
+    d[o + 28] = 0;
+    d[o + 29] = 0;
+    d[o + 30] = 0;
+    d[o + 31] = 0;
+    this.texIds[p] = -1;
+    let h = this.texHash;
+    h = Math.imul(h ^ object.id, 16777619);
+    h = Math.imul(h ^ object._worldVersion, 16777619);
+    this.texHash = h;
+    this.texCount = p + 1;
+    if (both) this.addTex(object, 0);
+    return p;
+  }
+  /** Mixes the camera's view matrix (and the entry layout) into the hash of a run of view-space entries. */
+  mixView(camera, both) {
+    this.viewDependent = true;
+    const f = this._viewBits, u = this._viewBitsU, e = camera.matrixWorldInverse.elements;
+    for (let i = 0; i < 16; i++) f[i] = e[i];
+    let h = Math.imul(this.texHash ^ (both ? 23130 : 42405), 16777619);
+    for (let i = 0; i < 16; i++) h = Math.imul(h ^ u[i], 16777619);
+    this.texHash = h;
+  }
+  /**
    * Upload the frame's matrices into the matrix texture (unit `unit`) if they changed. The texture stays bound to `unit`.
    *
    * The upload is a full `texImage2D` (re)definition rather than a `texSubImage2D` into immutable storage, on purpose.
@@ -20069,32 +20289,40 @@ var WebGLBatcher = class {
    * sub-image update it replaces (same median); the driver only reallocates when the row count changes.
    */
   uploadTexture(state, unit) {
-    const gl = this.gl;
+    const gl = this.gl, slot = this.slot;
     const rows = Math.max(1, Math.ceil(this.texCount / MATRICES_PER_ROW));
-    if (this.texture === null) {
-      this.texture = gl.createTexture();
-      state.bindTexture(gl.TEXTURE_2D, this.texture, unit);
+    if (slot.texture === null) {
+      slot.texture = gl.createTexture();
+      state.bindTexture(gl.TEXTURE_2D, slot.texture, unit);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      this.textureRows = 0;
-      this.textureHash = 0;
+      slot.textureRows = 0;
+      slot.textureHash = 0;
     } else {
-      state.bindTexture(gl.TEXTURE_2D, this.texture, unit);
+      state.bindTexture(gl.TEXTURE_2D, slot.texture, unit);
     }
     state.activeTexture(unit);
     if (this.texCount === 0) return;
-    if (this.textureHash === this.texHash && this.textureCount === this.texCount) return;
+    if (slot.textureHash === this.texHash && slot.textureCount === this.texCount) return;
     state.activeTexture(unit);
     state.setUnpack(false, false, 4);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, MATRIX_TEXTURE_WIDTH, rows, 0, gl.RGBA, gl.FLOAT, this.texData, 0);
-    this.textureRows = rows;
-    this.textureHash = this.texHash;
-    this.textureCount = this.texCount;
+    slot.textureRows = rows;
+    slot.textureHash = this.texHash;
+    slot.textureCount = this.texCount;
+  }
+  disposeSlot(slot) {
+    if (slot.texture !== null) {
+      this.gl.deleteTexture(slot.texture);
+      slot.texture = null;
+      slot.textureHash = 0;
+      slot.textureCount = 0;
+    }
   }
   dispose() {
-    if (this.texture !== null) this.gl.deleteTexture(this.texture);
+    this.disposeSlot(this.defaultSlot);
   }
 };
 
@@ -21771,6 +21999,7 @@ var WebGLRenderer = class {
     this.autoMultiDraw = true;
     this.pagedDraws = true;
     this.autoBatchMaterials = true;
+    this.autoBatchShaderMaterials = true;
     this.clippingPlanes = [];
     this.localClippingEnabled = false;
     this.toneMapping = NoToneMapping;
@@ -21834,6 +22063,7 @@ var WebGLRenderer = class {
     this.batcher = new WebGLBatcher(gl);
     this.multiDrawExt = gl.getExtension("WEBGL_multi_draw");
     this.megaBuffers = this.multiDrawExt !== null ? new WebGLMegaBuffers(gl, this.state, this.info) : null;
+    this._shaderBatchBits = V_OBJTEX | (this.multiDrawExt !== null ? V_MULTIDRAW : 0);
     this._mdCounts = new Int32Array(1024);
     this._mdOffsets = new Int32Array(1024);
     this._mdN = 0;
@@ -22378,7 +22608,7 @@ var WebGLRenderer = class {
   _reuseLevel(list, cache, scene, camera, view, pv) {
     if (cache.structure !== epochs.structure || cache.world !== epochs.world) return -1;
     const override = scene.overrideMaterial === void 0 ? null : scene.overrideMaterial;
-    if (cache.sortObjects !== this.sortObjects || cache.override !== override) return -1;
+    if (cache.sortObjects !== this.sortObjects || cache.override !== override || cache.shaderBatch !== (this.autoBatch === true && this.autoBatchShaderMaterials === true)) return -1;
     const same = cache.sameCamera(camera, view, pv);
     if (!same && !cache.sameCameraLayers(camera)) return -1;
     if (!cache.depsValid()) return -1;
@@ -22494,8 +22724,8 @@ var WebGLRenderer = class {
       this._resolvePrograms(list, scene);
       return;
     }
-    const structure = epochs.structure, world = epochs.world;
-    const record = this.reuseRenderLists === true && cache.hasSig && cache.structure === structure && cache.world === world && cache.sortObjects === this.sortObjects && cache.override === override;
+    const structure = epochs.structure, world = epochs.world, shaderBatch = this.autoBatch === true && this.autoBatchShaderMaterials === true;
+    const record = this.reuseRenderLists === true && cache.hasSig && cache.structure === structure && cache.world === world && cache.sortObjects === this.sortObjects && cache.override === override && cache.shaderBatch === shaderBatch;
     cache.ready = false;
     cache.resort = false;
     cache.cmdOpaque.invalidate();
@@ -22505,6 +22735,7 @@ var WebGLRenderer = class {
     cache.world = world;
     cache.sortObjects = this.sortObjects;
     cache.override = override;
+    cache.shaderBatch = shaderBatch;
     cache.setCamera(camera, view, pv);
     this._cameraLayerMask = camera.layers.mask;
     for (; ; ) {
@@ -23134,7 +23365,7 @@ var WebGLRenderer = class {
       const override = this._currentScene !== null ? this._currentScene.overrideMaterial : null;
       if (override !== null && override !== void 0 && material.allowOverride === true) material = override;
     }
-    const variant = this._variantFor(object, geometry, material, shadowPass);
+    let variant = this._variantFor(object, geometry, material, shadowPass);
     if (object.isSkinnedMesh === true) {
       const skeleton = object.skeleton;
       if (skeleton !== void 0 && skeleton.frame !== this._frameId) {
@@ -23165,10 +23396,20 @@ var WebGLRenderer = class {
       geometry._frameRid = this._geometryCounter++;
     }
     let flags = 0;
-    if (group === null && material.isShaderMaterial !== true && object.isMesh === true && object.isInstancedMesh !== true && object.isSkinnedMesh !== true && object.morphTargetInfluences === void 0 && object.onBeforeRender === defaultOnBeforeRender && object.onAfterRender === defaultOnAfterRender && isTwoPass(material, shadowPass) === false) {
-      flags = ITEM_BATCHABLE;
-      const dr = geometry.drawRange;
-      if (material.wireframe !== true && object.isSprite !== true && dr.start === 0 && dr.count === Infinity) flags |= ITEM_MULTIDRAWABLE;
+    if (group === null && this._objectBatchable(object, geometry) && isTwoPass(material, shadowPass) === false) {
+      let ok = true;
+      if (material.isShaderMaterial === true) {
+        ok = this.autoBatchShaderMaterials === true;
+        if (ok && shadowPass === false) {
+          ok = this.autoBatch === true && customShaderObjTexMode(material) !== 0;
+          if (ok) variant |= this._shaderBatchBits;
+        }
+      }
+      if (ok) {
+        flags = ITEM_BATCHABLE;
+        const dr = geometry.drawRange;
+        if (material.wireframe !== true && object.isSprite !== true && dr.start === 0 && dr.count === Infinity) flags |= ITEM_MULTIDRAWABLE;
+      }
     }
     list.push(object, geometry, material, group, material._frameRid, geometry._frameRid, variant, material._batchGroup, flags);
     const rec = this._rec;
@@ -23283,6 +23524,14 @@ var WebGLRenderer = class {
         a2 |= V_HAS_COLOR;
         if (attributes.color.itemSize === 4) a2 |= V_COLOR_ALPHA;
       }
+      let instanced = geometry.isInstancedBufferGeometry === true;
+      if (!instanced) for (const name in attributes) {
+        if (attributes[name].isInstancedBufferAttribute === true) {
+          instanced = true;
+          break;
+        }
+      }
+      geometry._attrInstanced = instanced;
       geometry._attrBits = a2;
       geometry._attrBitsVersion = geometry._layoutVersion;
     }
@@ -23613,6 +23862,18 @@ var WebGLRenderer = class {
   }
   // ------------------------------------------------------------------ drawing
   /**
+   * A plain mesh without per-object hooks, instancing, skinning, morph targets or per-instance attributes, and
+   * not mirrored (a negative-determinant world matrix flips the front face, which a batch cannot do per object).
+   */
+  _objectBatchable(object, geometry) {
+    if (object.isMesh !== true || object.isInstancedMesh === true || object.isSkinnedMesh === true || object.morphTargetInfluences !== void 0 || geometry._attrInstanced === true || object.onBeforeRender !== defaultOnBeforeRender || object.onAfterRender !== defaultOnAfterRender) return false;
+    if (object._flipVersion !== object._worldVersion) {
+      object._frontFaceCW = object.matrixWorld.determinant() < 0;
+      object._flipVersion = object._worldVersion;
+    }
+    return object._frontFaceCW !== true;
+  }
+  /**
    * Mega-buffer record of a geometry (null: draw it the regular way), resolved once per geometry per frame
    * (`ensure` compares attribute layout and sizes). Geometries are also noted once per command build in the
    * touch map, which a draw-command cache uses to validate a replay.
@@ -23643,7 +23904,15 @@ var WebGLRenderer = class {
     const batcher = this.batcher;
     const autoBatch = this.autoBatch, minimum = this.autoBatchMinimum;
     const multi = autoBatch && this.autoMultiDraw && this.megaBuffers !== null;
-    if (commandCache !== null && this._replayCommands(commandCache, keysVersion, multi)) {
+    const transparentList = keys === list.transparentSorted;
+    let slot = transparentList ? list.texSlotTransparent : list.texSlotOpaque;
+    if (slot === null) {
+      slot = batcher.newSlot();
+      if (transparentList) list.texSlotTransparent = slot;
+      else list.texSlotOpaque = slot;
+    }
+    batcher.use(slot);
+    if (commandCache !== null && this._replayCommands(commandCache, keysVersion, multi, camera)) {
       this.debug.listReuse.commandsReplayed++;
       this._executeCommands(commandCache.cmdN, scene, camera, shadowPass);
       return;
@@ -23660,11 +23929,12 @@ var WebGLRenderer = class {
       const item = items[itemIndex];
       const fl = flags[itemIndex];
       const material = item.material, bg = item.batchGroup;
+      const minRun = material.isShaderMaterial === true ? 1 : minimum;
       let j = i + 1;
       let kind = 0;
       let firstOtherMaterial = -1;
       let rec0;
-      if (multi && (fl & ITEM_MULTIDRAWABLE) !== 0 && (rec0 = this._mdRecordOf(item.geometry)) !== null) {
+      if (multi && (fl & ITEM_MULTIDRAWABLE) !== 0 && (rec0 = this._mdRecordOf(item.geometry)) !== null && megaBuffers.supports(rec0, item.program)) {
         item.mdRecord = rec0;
         const page = rec0.page, indexed = rec0.indexed, program = item.program, renderOrder = item.renderOrder;
         let distinct = 1, lastGeometry = item.geometry, firstGroupEnd = -1;
@@ -23676,7 +23946,7 @@ var WebGLRenderer = class {
           const geometry = next.geometry;
           if (geometry !== lastGeometry || geometry._mdFrame !== this._frameId) {
             const rec = this._mdRecordOf(geometry);
-            if (rec === null || rec.page !== page || rec.indexed !== indexed) break;
+            if (rec === null || rec.page !== page || rec.indexed !== indexed || !megaBuffers.supports(rec, program)) break;
             if (geometry !== lastGeometry) {
               distinct++;
               lastGeometry = geometry;
@@ -23688,10 +23958,10 @@ var WebGLRenderer = class {
         }
         if (firstGroupEnd < 0) firstGroupEnd = j;
         if (distinct * 2 >= j - i) {
-          if (j - i >= minimum) kind = 2;
+          if (j - i >= minRun) kind = 2;
         } else {
           j = firstGroupEnd;
-          if (j - i >= minimum) kind = 1;
+          if (j - i >= minRun) kind = 1;
         }
       } else if (autoBatch && (fl & ITEM_BATCHABLE) !== 0) {
         const geometry = item.geometry, program = item.program, renderOrder = item.renderOrder;
@@ -23703,14 +23973,16 @@ var WebGLRenderer = class {
             j++;
           } else break;
         }
-        if (j - i >= minimum) kind = 1;
+        if (j - i >= minRun) kind = 1;
       }
       const multiMaterial = kind !== 0 && firstOtherMaterial >= 0 && firstOtherMaterial < j;
       const windowBase = multiMaterial ? bg.page * this._materialWindow : 0;
+      const layout = kind !== 0 ? layoutOf(item.program.objTexMode) : LAYOUT_WORLD, both = layout === LAYOUT_BOTH;
+      if (layout !== LAYOUT_WORLD) batcher.mixView(camera, both);
       if (cmdN === this._cmdCapacity) this._growCommands();
       this._cmdItem[cmdN] = item;
       if (kind === 2) {
-        batcher.ensureTex(j - i);
+        batcher.ensureTex(both ? 2 * (j - i) : j - i);
         if (mdN + (j - i) > this._mdCounts.length) this._growMultiDraw(mdN + (j - i));
         this._cmdOffset[cmdN] = batcher.texCount;
         this._cmdCount[cmdN] = j - i;
@@ -23718,7 +23990,8 @@ var WebGLRenderer = class {
         this._cmdMdStart[cmdN] = mdN;
         for (let k = i; k < j; k++) {
           const it = items[keys[k]];
-          batcher.addTex(it.object, multiMaterial ? this._materialRecordIndex(it.material, windowBase) : 0);
+          if (layout === LAYOUT_WORLD) batcher.addTex(it.object, multiMaterial ? this._materialRecordIndex(it.material, windowBase) : 0);
+          else batcher.addTexView(it.object, camera, both);
           const geometry = it.geometry, rec = geometry._mdRec;
           megaBuffers.queue(rec, geometry);
           if (rec.indexed) {
@@ -23731,7 +24004,7 @@ var WebGLRenderer = class {
           mdN++;
         }
       } else if (kind === 1) {
-        batcher.ensureTex(j - i);
+        batcher.ensureTex(both ? 2 * (j - i) : j - i);
         this._cmdOffset[cmdN] = batcher.texCount;
         this._cmdCount[cmdN] = j - i;
         this._cmdKind[cmdN] = multiMaterial ? 3 : 1;
@@ -23740,8 +24013,10 @@ var WebGLRenderer = class {
             const it = items[keys[k]];
             batcher.addTex(it.object, this._materialRecordIndex(it.material, windowBase));
           }
-        } else {
+        } else if (layout === LAYOUT_WORLD) {
           for (let k = i; k < j; k++) batcher.addTex(items[keys[k]].object, 0);
+        } else {
+          for (let k = i; k < j; k++) batcher.addTexView(items[keys[k]].object, camera, both);
         }
       } else {
         j = i + 1;
@@ -23755,7 +24030,7 @@ var WebGLRenderer = class {
     if (batcher.texCount > 0) batcher.uploadTexture(this.state, TEXTURE_UNITS.objectMatrices);
     if (commandCache !== null) {
       this._megaTouch = null;
-      this._saveCommands(commandCache, keysVersion, cmdN, mdN, multi, touch, list.cache.pMat);
+      this._saveCommands(commandCache, keysVersion, cmdN, mdN, multi, touch, list.cache.pMat, camera);
     }
     this._executeCommands(cmdN, scene, camera, shadowPass);
   }
@@ -23777,9 +24052,11 @@ var WebGLRenderer = class {
     }
   }
   /** Remember the commands just built so an identical list can skip building them (see _replayCommands). */
-  _saveCommands(cache, keysVersion, cmdN, mdN, multi, touch, pairMats) {
+  _saveCommands(cache, keysVersion, cmdN, mdN, multi, touch, pairMats, camera) {
     cache.version = -1;
     const batcher = this.batcher;
+    cache.viewDependent = batcher.viewDependent;
+    if (batcher.viewDependent) cache.view.set(camera.matrixWorldInverse.elements);
     for (const [geometry, rec] of touch) if (rec !== null && rec.layoutVersion !== geometry._layoutVersion) return;
     cache.items = this._cmdItem.slice(0, cmdN);
     cache.offset = this._cmdOffset.slice(0, cmdN);
@@ -23810,6 +24087,7 @@ var WebGLRenderer = class {
     cache.autoMultiDraw = this.autoMultiDraw;
     cache.minimum = this.autoBatchMinimum;
     cache.multi = multi;
+    cache.shaderBatch = this.autoBatchShaderMaterials;
     cache.version = keysVersion;
   }
   /**
@@ -23817,9 +24095,10 @@ var WebGLRenderer = class {
    * produce: same sorted keys, same batching settings, same mega-buffer records, and the matrix texture still
    * holds this list's matrices (nobody drew another list through the batcher since).
    */
-  _replayCommands(cache, keysVersion, multi) {
+  _replayCommands(cache, keysVersion, multi, camera) {
     if (cache.version !== keysVersion || cache.cmdN === 0) return false;
-    if (cache.autoBatch !== this.autoBatch || cache.autoMultiDraw !== this.autoMultiDraw || cache.minimum !== this.autoBatchMinimum || cache.multi !== multi) return false;
+    if (cache.autoBatch !== this.autoBatch || cache.autoMultiDraw !== this.autoMultiDraw || cache.minimum !== this.autoBatchMinimum || cache.multi !== multi || cache.shaderBatch !== this.autoBatchShaderMaterials) return false;
+    if (cache.viewDependent === true && !sameFloats(cache.view, camera.matrixWorldInverse.elements)) return false;
     const batcher = this.batcher;
     if (cache.texCount > 0 && (batcher.texture === null || batcher.textureHash !== cache.texHash || batcher.textureCount !== cache.texCount)) return false;
     const geoms = cache.megaGeoms;
@@ -23865,7 +24144,8 @@ var WebGLRenderer = class {
   /** One multiDrawElements/Arrays call for `count` sub-draws whose matrices start at `drawBase` in the matrix texture. */
   _renderMultiDraw(item, drawBase, count, mdStart, scene, camera, shadowPass, materialArray) {
     const object = item.object, material = item.material, gl = this._gl;
-    const variant = this._variantFor(object, item.geometry, material, shadowPass) | V_MULTIDRAW | (materialArray ? V_MATARRAY : 0) | this._sideVariant();
+    let variant = this._variantFor(object, item.geometry, material, shadowPass) | V_MULTIDRAW | (materialArray ? V_MATARRAY : 0) | this._sideVariant();
+    if (material.isShaderMaterial === true && shadowPass === false) variant |= this._shaderBatchBits;
     const program = this._getProgram(material, object, scene, variant);
     this._setupMaterial(item, program, material, camera, false, this._sideOverride >= 0 ? this._sideOverride : shadowPass ? shadowSideOf(material) : material.side);
     const mu = program.modelMatrixUniform;
@@ -23988,10 +24268,11 @@ var WebGLRenderer = class {
         this._bindMaterialTextures(material, this._materialProps(material));
       }
       if (material.isLineBasicMaterial) state.setLineWidth(material.linewidth * this._pixelRatio);
-    } else if (material.isShaderMaterial && material.uniformsNeedUpdate === true) {
-      this._uploadShaderMaterialUniforms(program, material, camera, true);
-      material.uniformsNeedUpdate = false;
     } else {
+      if (material.isShaderMaterial && material.uniformsNeedUpdate === true) {
+        this._uploadShaderMaterialUniforms(program, material, camera, true);
+        material.uniformsNeedUpdate = false;
+      }
       state.setFlipSided(frontFaceCW ? side !== BackSide : side === BackSide);
     }
     return programChanged;
@@ -24112,7 +24393,8 @@ var WebGLRenderer = class {
     const object = item.object, material = item.material;
     let geometry = item.geometry;
     const gl = this._gl;
-    const variant = this._variantFor(object, geometry, material, shadowPass) | V_OBJTEX | (materialArray ? V_MATARRAY : 0) | this._sideVariant();
+    let variant = this._variantFor(object, geometry, material, shadowPass) | V_OBJTEX | (materialArray ? V_MATARRAY : 0) | this._sideVariant();
+    if (material.isShaderMaterial === true && shadowPass === false) variant |= this._shaderBatchBits;
     const program = this._getProgram(material, object, scene, variant);
     this._setupMaterial(item, program, material, camera, false, this._sideOverride >= 0 ? this._sideOverride : shadowPass ? shadowSideOf(material) : material.side);
     if (material.wireframe === true) geometry = this._wireframeGeometry(geometry);
