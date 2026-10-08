@@ -5,6 +5,7 @@ let _sourceId = 0;
 class Source {
 	constructor(data = null) {
 		this.isSource = true;
+		this.isTextureSource = true;
 		Object.defineProperty(this, 'id', { value: _sourceId++ });
 		this.uuid = MathUtils.generateUUID();
 		this.data = data;
@@ -14,7 +15,7 @@ class Source {
 	getSize(target) {
 		const data = this.data;
 		if (typeof HTMLVideoElement !== 'undefined' && data instanceof HTMLVideoElement) target.set(data.videoWidth, data.videoHeight, 0);
-		else if (typeof VideoFrame !== 'undefined' && data instanceof VideoFrame) target.set(data.displayHeight, data.displayWidth, 0);
+		else if (typeof VideoFrame !== 'undefined' && data instanceof VideoFrame) target.set(data.displayWidth, data.displayHeight, 0);
 		else if (data !== null) target.set(data.width, data.height, data.depth || 0);
 		else target.set(0, 0, 0);
 		return target;
@@ -23,4 +24,4 @@ class Source {
 	toJSON() { return { uuid: this.uuid }; }
 }
 
-export { Source };
+export { Source, Source as TextureSource };

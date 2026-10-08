@@ -48,6 +48,7 @@ class Quaternion {
 	clone() { return new this.constructor(this._x, this._y, this._z, this._w); }
 	copy(q) { this._x = q.x; this._y = q.y; this._z = q.z; this._w = q.w; this._onChangeCallback(); return this; }
 	setFromEuler(euler, update = true) {
+		if (euler._stale) euler._flush();
 		const x = euler._x, y = euler._y, z = euler._z, order = euler._order;
 		const cos = Math.cos, sin = Math.sin;
 		const c1 = cos(x / 2), c2 = cos(y / 2), c3 = cos(z / 2);

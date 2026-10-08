@@ -1,6 +1,27 @@
 // Ported from three.js r186 (MIT, Copyright 2010-2026 three.js authors).
 import { Quaternion } from '../math/Quaternion.js';
 
+// Mixer buffers are carved out of shared chunks: the buffers of many bindings sit next to each other in memory
+// (and share one allocation) instead of each owning a separate malloc'd ArrayBuffer.
+const CHUNK_DOUBLES = 8192;
+let _chunk = null, _chunkUsed = 0;
+function allocateDoubles( length ) {
+
+	if ( length > 256 ) return new Float64Array( length );
+
+	if ( _chunk === null || _chunkUsed + length > CHUNK_DOUBLES ) {
+
+		_chunk = new ArrayBuffer( CHUNK_DOUBLES * 8 );
+		_chunkUsed = 0;
+
+	}
+
+	const array = new Float64Array( _chunk, _chunkUsed * 8, length );
+	_chunkUsed += length;
+	return array;
+
+}
+
 class PropertyMixer {
 
 	constructor( binding, typeName, valueSize ) {
@@ -36,7 +57,7 @@ class PropertyMixer {
 				mixFunctionAdditive = this._slerpAdditive;
 				setIdentity = this._setAdditiveIdentityQuaternion;
 
-				this.buffer = new Float64Array( valueSize * 6 );
+				this.buffer = allocateDoubles( valueSize * 6 );
 				this._workIndex = 5;
 				break;
 
@@ -58,7 +79,7 @@ class PropertyMixer {
 				mixFunctionAdditive = this._lerpAdditive;
 				setIdentity = this._setAdditiveIdentityNumeric;
 
-				this.buffer = new Float64Array( valueSize * 5 );
+				this.buffer = allocateDoubles( valueSize * 5 );
 
 		}
 

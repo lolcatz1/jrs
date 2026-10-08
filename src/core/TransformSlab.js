@@ -24,8 +24,8 @@ export const LOCAL_OFFSET = 0;
 export const WORLD_OFFSET = 16;
 export const NORMAL_OFFSET = 32;
 export const SPHERE_OFFSET = 41;
-/** Doubles per record in the page's snapshot: change detection (px py pz qx qy qz qw sx sy sz) + cull cache (radius, cx, cy, cz). */
-export const SNAPSHOT_SIZE = 14;
+/** Doubles per record in the page's snapshot: change detection (px py pz qx qy qz qw sx sy sz) + cull cache (radius, cx, cy, cz); a Bone keeps its live TRS and scene-graph state here (core/SlabTransform.js). */
+export const SNAPSHOT_SIZE = 16;
 export const CULL_SNAPSHOT_OFFSET = 10;
 
 const PAGE_RECORDS = 1024;

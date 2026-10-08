@@ -1,5 +1,5 @@
 // Heap allocation per rendered frame, jrs vs three.js, via the CDP sampling heap profiler.
-//   node bench/alloc.mjs [scenario ...] [--frames=100] [--top=8] [--lib=jrs|three] [--json=path]
+//   node bench/alloc.mjs [scenario ...] [--frames=100] [--warmup=20] [--top=8] [--lib=jrs|three] [--json=path]
 // Bytes/frame = sum of sampled allocation sizes (including objects already collected by minor/major GC)
 // over the measured frames. GC count = V8 scavenge + mark-compact events recorded by the tracing
 // category `v8.gc` during the same frames, reported per 100 frames. Each run uses a fresh page and
@@ -12,6 +12,7 @@ import { scenarios } from './scenarios.js';
 const arg = (k, d) => { const a = process.argv.find((x) => x.startsWith(`--${k}=`)); return a ? a.split('=')[1] : d; };
 const only = process.argv.slice(2).filter((a) => !a.startsWith('--'));
 const frames = Number(arg('frames', 100));
+const warmup = Number(arg('warmup', 20));
 const top = Number(arg('top', 8));
 const libs = arg('lib', 'three,jrs').split(',');
 const jsonOut = arg('json', '');
@@ -26,7 +27,7 @@ async function measure(lib, name) {
 	await page.goto(`http://127.0.0.1:${port}/bench/index.html`);
 	await page.waitForFunction(() => window.ready === true, null, { timeout: 60000 });
 	// set the scene up and warm it, leaving a `window.__frame(f)` to run measured frames
-	await page.evaluate(async ([lib, name]) => {
+	await page.evaluate(async ([lib, name, warmup]) => {
 		const { scenarios } = await import('/bench/scenarios.js');
 		const T = lib === 'jrs' ? await import('/src/index.js') : await import('/node_modules/three/build/three.module.js');
 		const sc = scenarios[name];
@@ -38,9 +39,9 @@ async function measure(lib, name) {
 		if (warm) warm(renderer);
 		let f = 0;
 		window.__frame = () => { if (update) update(f); f++; if (frame) frame(renderer); else renderer.render(scene, camera); };
-		for (let i = 0; i < 20; i++) window.__frame();
+		for (let i = 0; i < warmup; i++) window.__frame();
 		renderer.getContext().finish();
-	}, [lib, name]);
+	}, [lib, name, warmup]);
 	const cdp = await page.context().newCDPSession(page);
 	await cdp.send('HeapProfiler.enable');
 	await cdp.send('HeapProfiler.collectGarbage');

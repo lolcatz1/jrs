@@ -1,7 +1,7 @@
 import { ShaderChunk } from './ShaderChunk.js';
 import {
 	NoToneMapping as _NoToneMapping, LinearToneMapping, ReinhardToneMapping, CineonToneMapping, ACESFilmicToneMapping, AgXToneMapping, NeutralToneMapping,
-	SRGBColorSpace as _SRGBColorSpace
+	SRGBColorSpace as _SRGBColorSpace, NormalBlending
 } from '../../constants.js';
 /**
  * Shader library.
@@ -13,6 +13,15 @@ import {
  * and changing the number of lights never forces a recompile: light arrays
  * have a fixed capacity and the active counts are read from the block.
  */
+
+// Built-in programs read bones from the renderer's shared bone atlas: three's chunk plus a per-draw `boneBase`
+// (first bone slot of the skeleton). ShaderMaterial programs keep the unmodified chunk and one texture per skeleton.
+const SKINNING_PARS_ATLAS = (() => {
+	const a = 'uniform highp sampler2D boneTexture;', b = 'int j = int( i ) * 4;';
+	const src = ShaderChunk.skinning_pars_vertex;
+	if (!src.includes(a) || !src.includes(b)) throw new Error('ShaderLib: skinning_pars_vertex chunk changed');
+	return src.replace(a, a + '\n\tuniform int boneBase;').replace(b, 'int j = ( int( i ) + boneBase ) * 4;');
+})();
 
 export const MAX_DIR_LIGHTS = 4;
 export const MAX_POINT_LIGHTS = 8;
@@ -35,6 +44,8 @@ export const MATERIAL_SHADOW_DEPTH = 11; // internal: shadow map pass
 
 // Texture unit assignment is fixed per sampler so sampler uniforms are set
 // once per program and never again.
+import { analyzeVertexSource, fragmentReferencesObjectUniforms, objectFetchBlock, rewriteVertexSource, OBJ_ELIGIBLE } from './ShaderMaterialBatching.js';
+
 export const TEXTURE_UNITS = {
 	map: 0, alphaMap: 1, normalMap: 2, emissiveMap: 3, roughnessMap: 4, metalnessMap: 5, aoMap: 6, specularMap: 7,
 	bumpMap: 7, // shares with specularMap (never used together by one material type)
@@ -197,6 +208,15 @@ in vec2 uv1;
 	in vec3 color;
 	#endif
 #endif
+#ifdef IS_DASHED
+in float lineDistance;
+out float vLineDistance;
+#endif
+#ifdef INSTANCE_MATERIAL
+// batched sprites / points / lines: colour + opacity and a per-kind parameter block travel with the object's matrix
+flat out vec4 vInstA;
+flat out vec4 vInstB;
+#endif
 #ifdef USE_INSTANCING
 in mat4 instanceMatrix;
 	#ifdef USE_INSTANCING_COLOR
@@ -207,7 +227,7 @@ in mat4 instanceMatrix;
 in vec4 skinIndex;
 in vec4 skinWeight;
 #endif
-${ShaderChunk.skinning_pars_vertex}
+${SKINNING_PARS_ATLAS}
 ${ShaderChunk.morphtarget_pars_vertex}
 #ifdef USE_OBJECT_TEXTURE
 // Batched draws: each object's world matrix and normal matrix come from a per-frame matrix
@@ -241,6 +261,9 @@ out vec3 vWorldPosition;
 #ifdef USE_NORMAL
 out vec3 vNormal;
 #endif
+#ifdef USE_POINTS_UV
+out vec2 vPointUv;
+#endif
 #ifdef USE_MAP_UV
 out vec2 vMapUv;
 #endif
@@ -264,6 +287,9 @@ out vec2 vMetalnessMapUv;
 #endif
 #ifdef USE_SPECULARMAP_UV
 out vec2 vSpecularMapUv;
+#endif
+#ifdef IS_DEPTH
+out vec2 vHighPrecisionZW;
 #endif
 #if defined( USE_COLOR ) || defined( USE_INSTANCING_COLOR )
 out vec4 vColor;
@@ -296,6 +322,20 @@ void main() {
 		vMaterialIndex = matIdx;
 		#endif
 	#endif
+	#ifdef INSTANCE_MATERIAL
+	// A: rgb + opacity. B: sprite (rotation, size attenuation 0/1, -, alphaTest), points (size, height / 2 if attenuated else 0, -, alphaTest), dashed lines (scale, dashSize, totalSize, alphaTest)
+	vec4 instA = texelFetch( objectMatrices, objectTexel + ivec2( 4, 0 ), 0 );
+	vec4 instB = texelFetch( objectMatrices, objectTexel + ivec2( 5, 0 ), 0 );
+	vInstA = instA;
+	vInstB = instB;
+	#endif
+	#ifdef IS_DASHED
+		#ifdef INSTANCE_MATERIAL
+		vLineDistance = instB.x * lineDistance;
+		#else
+		vLineDistance = matParams.x * lineDistance;
+		#endif
+	#endif
 	vec3 transformed = vec3( position );
 	#ifdef USE_NORMAL
 	vec3 objectNormal = vec3( normal );
@@ -313,11 +353,21 @@ void main() {
 		// billboard: sprite plane in view space
 		vec4 mvPosition = viewMatrix * model * vec4( 0.0, 0.0, 0.0, 1.0 );
 		vec2 scale = vec2( length( model[ 0 ].xyz ), length( model[ 1 ].xyz ) );
-		#ifndef SIZE_ATTENUATION
-		if ( cameraPosition.w < 0.5 ) scale *= - mvPosition.z;
+		#ifdef INSTANCE_MATERIAL
+		if ( instB.y < 0.5 && projectionMatrix[ 2 ][ 3 ] == - 1.0 ) scale *= - mvPosition.z;
+		float spriteRotation = instB.x;
+		#else
+			#ifndef SIZE_ATTENUATION
+			if ( projectionMatrix[ 2 ][ 3 ] == - 1.0 ) scale *= - mvPosition.z;
+			#endif
+		float spriteRotation = matParams2.w;
 		#endif
-		vec2 aligned = ( position.xy - ( uSpriteCenter - vec2( 0.5 ) ) ) * scale;
-		float c = cos( matParams2.w ), s = sin( matParams2.w );
+		vec2 spriteCenter = uSpriteCenter;
+		#ifdef USE_OBJECT_TEXTURE
+		spriteCenter = texelFetch( objectMatrices, objectTexel + ivec2( 6, 0 ), 0 ).xy;
+		#endif
+		vec2 aligned = ( position.xy - ( spriteCenter - vec2( 0.5 ) ) ) * scale;
+		float c = cos( spriteRotation ), s = sin( spriteRotation );
 		vec2 rotated = vec2( c * aligned.x - s * aligned.y, s * aligned.x + c * aligned.y );
 		mvPosition.xy += rotated;
 		// camera right/up axes in world space are rows 0 and 1 of the view matrix
@@ -326,7 +376,12 @@ void main() {
 		vec4 worldPosition = vec4( model[ 3 ].xyz + camRight * rotated.x + camUp * rotated.y, 1.0 );
 	#else
 		vec4 worldPosition = model * vec4( transformed, 1.0 );
+		#if defined( IS_LINE ) || defined( IS_POINTS )
+		// like three.js: one modelView matrix applied to the vertex (fewer roundings than view * (model * position))
+		vec4 mvPosition = ( viewMatrix * model ) * vec4( transformed, 1.0 );
+		#else
 		vec4 mvPosition = viewMatrix * worldPosition;
+		#endif
 	#endif
 	#ifndef SHADOW_LEAN
 	vWorldPosition = worldPosition.xyz;
@@ -361,6 +416,14 @@ void main() {
 	}
 	#endif
 	// one transform and one uv channel per map, as three.js's uv_vertex (MAP_UV is uv, uv1 or vec2( 0.0 ) for a missing attribute)
+	#ifdef USE_POINTS_UV
+	// points: the uv attribute through the map's transform (identity without a map), three.js's points vertex shader
+		#ifdef USE_MAP
+		vPointUv = ( UV_TRANSFORM( 0 ) * vec3( uv, 1.0 ) ).xy;
+		#else
+		vPointUv = uv;
+		#endif
+	#endif
 	#ifdef USE_MAP_UV
 	vMapUv = ( UV_TRANSFORM( 0 ) * vec3( MAP_UV, 1.0 ) ).xy;
 	#endif
@@ -413,13 +476,21 @@ void main() {
 		#endif
 	#endif
 	gl_Position = projectionMatrix * mvPosition;
+	#ifdef IS_DEPTH
+	vHighPrecisionZW = gl_Position.zw;
+	#endif
 	#ifdef USE_FOG
 	vFogDepth = - mvPosition.z;
 	#endif
 	#ifdef IS_POINTS
-	gl_PointSize = matParams2.z;
-		#ifdef SIZE_ATTENUATION
-		if ( cameraPosition.w < 0.5 ) gl_PointSize *= ( viewport.w * 0.5 ) / ( - mvPosition.z );
+		#ifdef INSTANCE_MATERIAL
+		gl_PointSize = instB.x;
+		if ( instB.y > 0.0 && projectionMatrix[ 2 ][ 3 ] == - 1.0 ) gl_PointSize *= ( instB.y / - mvPosition.z );
+		#else
+		gl_PointSize = matParams2.z;
+			#ifdef SIZE_ATTENUATION
+			if ( projectionMatrix[ 2 ][ 3 ] == - 1.0 ) gl_PointSize *= ( matParams2.w / - mvPosition.z );
+			#endif
 		#endif
 	#endif
 	#if NUM_DIR_SHADOWS > 0
@@ -473,6 +544,9 @@ in vec3 vWorldPosition;
 #ifdef USE_NORMAL
 in vec3 vNormal;
 #endif
+#ifdef USE_POINTS_UV
+in vec2 vPointUv;
+#endif
 #ifdef USE_MAP_UV
 in vec2 vMapUv;
 #endif
@@ -497,11 +571,21 @@ in vec2 vMetalnessMapUv;
 #ifdef USE_SPECULARMAP_UV
 in vec2 vSpecularMapUv;
 #endif
+#ifdef IS_DEPTH
+in vec2 vHighPrecisionZW;
+#endif
 #if defined( USE_COLOR ) || defined( USE_INSTANCING_COLOR )
 in vec4 vColor;
 #endif
 #ifdef USE_FOG
 in float vFogDepth;
+#endif
+#ifdef IS_DASHED
+in float vLineDistance;
+#endif
+#ifdef INSTANCE_MATERIAL
+flat in vec4 vInstA;
+flat in vec4 vInstB;
 #endif
 #ifdef USE_MAP
 uniform sampler2D map;
@@ -832,15 +916,27 @@ vec4 sRGBTransferOETF( in vec4 value ) {
 }
 
 void main() {
-	#ifdef IS_POINTS
-	vec2 pointUv = gl_PointCoord;
-		#ifdef USE_MAP
-		// three.js: one uvTransform (the map's) for the point sprite's map and alphaMap
-		pointUv = ( UV_TRANSFORM( 0 ) * vec3( pointUv, 1.0 ) ).xy;
+	#ifdef IS_DASHED
+		#ifdef INSTANCE_MATERIAL
+		if ( mod( vLineDistance, vInstB.z ) > vInstB.y ) discard;
+		#else
+		if ( mod( vLineDistance, matParams.z ) > matParams.y ) discard;
 		#endif
 	#endif
+	#ifdef IS_POINTS
+		#ifdef USE_POINTS_UV
+		vec2 pointUv = vPointUv;
+		#elif defined( USE_MAP )
+		// three.js: the map's uvTransform, shared by the point sprite's map and alphaMap
+		vec2 pointUv = ( UV_TRANSFORM( 0 ) * vec3( gl_PointCoord.x, 1.0 - gl_PointCoord.y, 1.0 ) ).xy;
+		#else
+		vec2 pointUv = vec2( gl_PointCoord.x, 1.0 - gl_PointCoord.y );
+		#endif
+	#endif
+	#ifdef INSTANCE_MATERIAL
+	vec4 diffuseColor = vInstA;
+	#else
 	vec4 diffuseColor = vec4( diffuse.rgb, diffuse.a );
-	#ifdef IS_SPRITE
 	#endif
 	#if defined( USE_COLOR ) || defined( USE_INSTANCING_COLOR )
 	diffuseColor *= vColor;
@@ -861,11 +957,25 @@ void main() {
 		#endif
 	#endif
 	#ifdef USE_ALPHATEST
-	if ( diffuseColor.a < emissive.a ) discard;
+		#ifdef INSTANCE_MATERIAL
+		if ( diffuseColor.a < vInstB.w ) discard;
+		#else
+		if ( diffuseColor.a < emissive.a ) discard;
+		#endif
 	#endif
 
 	#ifdef IS_DEPTH
-	fragColor = vec4( vec3( 1.0 - gl_FragCoord.z ), diffuseColor.a );
+	// three.js depth_frag: the depth comes from the interpolated clip-space z / w, the alpha is the material opacity
+	float fragCoordZ = 0.5 * vHighPrecisionZW[ 0 ] / vHighPrecisionZW[ 1 ] + 0.5;
+	#if DEPTH_PACKING == 3201
+	fragColor = packDepthToRGBA( fragCoordZ );
+	#elif DEPTH_PACKING == 3202
+	fragColor = vec4( packDepthToRGB( fragCoordZ ), 1.0 );
+	#elif DEPTH_PACKING == 3203
+	fragColor = vec4( packDepthToRG( fragCoordZ ), 0.0, 1.0 );
+	#else
+	fragColor = vec4( vec3( 1.0 - fragCoordZ ), diffuse.a );
+	#endif
 	return;
 	#endif
 
@@ -897,6 +1007,9 @@ void main() {
 
 	#ifdef IS_NORMAL_MATERIAL
 	fragColor = vec4( normalize( ( viewMatrix * vec4( normal, 0.0 ) ).xyz ) * 0.5 + 0.5, diffuseColor.a );
+	#ifdef OPAQUE
+	fragColor.a = 1.0;
+	#endif
 	return;
 	#endif
 
@@ -1099,6 +1212,9 @@ void main() {
 	}
 	#endif
 
+	#ifdef OPAQUE
+	diffuseColor.a = 1.0;
+	#endif
 	fragColor = vec4( outgoingLight, diffuseColor.a );
 	#if TONE_MAPPING > 0 && defined( TONE_MAPPED )
 	fragColor.rgb = toneMapping( fragColor.rgb );
@@ -1183,9 +1299,11 @@ export function buildBuiltinShader(p) {
 		case MATERIAL_NORMAL: d('IS_NORMAL_MATERIAL'); d('USE_NORMAL'); break;
 		case MATERIAL_DEPTH: case MATERIAL_SHADOW_DEPTH: d('IS_DEPTH'); break;
 		case MATERIAL_POINTS: d('IS_POINTS'); break;
+		case MATERIAL_LINE: d('IS_LINE'); break;
 		case MATERIAL_SPRITE: d('IS_SPRITE'); break;
 	}
 	if (p.leanShadow) d('SHADOW_LEAN');
+	if (p.materialType === MATERIAL_DEPTH || p.materialType === MATERIAL_SHADOW_DEPTH) d('DEPTH_PACKING', p.depthPacking | 0);
 	if (p.map) d('USE_MAP');
 	if (p.alphaMap) d('USE_ALPHAMAP');
 	if (p.emissiveMap) d('USE_EMISSIVEMAP');
@@ -1196,6 +1314,7 @@ export function buildBuiltinShader(p) {
 	if (p.specularMap) d('USE_SPECULARMAP');
 	if (p.useUv) d('USE_UV');
 	if (p.useUv1) d('USE_UV1');
+	if (p.pointsUv) d('USE_POINTS_UV');
 	// per-map uv varying + source (uv, uv1 or a constant for a missing attribute), three.js's MAP_UV defines
 	for (let i = 0; i < UV_MAP_NAMES.length; i++) {
 		const src = p[UV_MAP_NAMES[i][0] + 'Uv'];
@@ -1225,7 +1344,11 @@ export function buildBuiltinShader(p) {
 	if (p.fog) d('USE_FOG');
 	if (p.alphaTest) d('USE_ALPHATEST');
 	if (p.sizeAttenuation) d('SIZE_ATTENUATION');
+	if (p.dashed) d('IS_DASHED');
+	if (p.instanceMaterial) d('INSTANCE_MATERIAL');
+	if (p.opaque) d('OPAQUE');
 	if (p.premultipliedAlpha) d('PREMULTIPLIED_ALPHA');
+	if (p.opaque) d('OPAQUE');
 	if (p.dithering) d('DITHERING');
 	if (p.toneMapped) d('TONE_MAPPED');
 	if (p.sRGBOutput) d('SRGB_OUTPUT');
@@ -1244,6 +1367,8 @@ export function buildBuiltinShader(p) {
 	// insert shadow helper functions after sampleShadow definition
 	if (_resolvedFragment === null) _resolvedFragment = resolveIncludes(fragmentShader);
 	let fs = _resolvedFragment;
+	// the depth packing helpers of three.js (packDepthToRGBA ...) for MeshDepthMaterial.depthPacking
+	if (p.materialType === MATERIAL_DEPTH && p.depthPacking !== 3200) fs = fs.replace('out vec4 fragColor;\n', 'out vec4 fragColor;\n' + ShaderChunk.packing);
 	const helpers = shadowFactorFunctions(p.numDirShadows | 0, p.numSpotShadows | 0, p.numPointShadows | 0);
 	if (helpers !== '') fs = fs.replace('#ifdef USE_NORMALMAP\nvec3 perturbNormal2Arb', helpers + '#ifdef USE_NORMALMAP\nvec3 perturbNormal2Arb');
 	return { vertexShader: vs, fragmentShader: prefix + fs };
@@ -1302,6 +1427,20 @@ function generateDefines(defines) {
 	return chunks.join('\n');
 }
 const filterEmptyLine = (string) => string !== '';
+
+/**
+ * Usage mask of the object uniforms in a ShaderMaterial's vertex shader with OBJ_ELIGIBLE set when a batched
+ * variant can be built (ShaderMaterialBatching.js), 0 otherwise. Computed on the include-resolved sources
+ * once per material version (`needsUpdate` recompiles anyway), so the renderer can pick the variant before
+ * any program is compiled.
+ */
+export function customShaderObjTexMode(material) {
+	if (material._objTexVersion === material.version && material._objTexMode !== undefined) return material._objTexMode;
+	let mode = analyzeVertexSource(resolveIncludes(material.vertexShader), material.isRawShaderMaterial === true);
+	if ((mode & OBJ_ELIGIBLE) === 0 || fragmentReferencesObjectUniforms(resolveIncludes(material.fragmentShader))) mode = 0;
+	material._objTexMode = mode; material._objTexVersion = material.version;
+	return mode;
+}
 
 /**
  * Builds a ShaderMaterial / RawShaderMaterial program the way three.js's WebGLProgram does:
@@ -1402,7 +1541,7 @@ export function buildCustomShader(material, p) {
 			(toneMapping !== _NoToneMapping) ? ShaderChunk['tonemapping_pars_fragment'] : '',
 			(toneMapping !== _NoToneMapping) ? `vec3 toneMapping( vec3 color ) { return ${toneMappingFunctions[toneMapping] || 'Linear'}ToneMapping( color ); }` : '',
 			p.dithering ? '#define DITHERING' : '',
-			material.transparent === false ? '#define OPAQUE' : '',
+			(material.transparent === false && material.blending === NormalBlending && material.alphaToCoverage === false) ? '#define OPAQUE' : '',
 			ShaderChunk['colorspace_pars_fragment'],
 			`vec4 linearToOutputTexel( vec4 value ) {\n	return ${colorSpaceFn}( vec4( value.rgb * ${encodingMatrix}, value.a ) );\n}`,
 			'\n'
@@ -1413,6 +1552,17 @@ export function buildCustomShader(material, p) {
 	vertexShader = resolveIncludes(vertexShader); vertexShader = replaceLightNums(vertexShader, material.defines);
 	fragmentShader = resolveIncludes(fragmentShader); fragmentShader = replaceLightNums(fragmentShader, material.defines);
 	vertexShader = unrollLoops(vertexShader); fragmentShader = unrollLoops(fragmentShader);
+
+	// Automatic instancing (ShaderMaterialBatching.js): can this program's object uniforms be fed from the matrix texture?
+	const objTexMode = customShaderObjTexMode(material);
+	let extensions = '';
+	if (p.objectTexture === true && objTexMode !== 0) {
+		const block = objectFetchBlock(objTexMode, p.multiDraw === true, MATRIX_TEXTURE_WIDTH, TEXELS_PER_OBJECT);
+		if (isRaw) prefixVertex = block + prefixVertex;
+		else prefixVertex = prefixVertex.replace('uniform mat4 modelMatrix;\nuniform mat4 modelViewMatrix;\n', block).replace('uniform mat3 normalMatrix;\n', '');
+		vertexShader = rewriteVertexSource(vertexShader, isRaw);
+		if (p.multiDraw === true) extensions = '#extension GL_ANGLE_multi_draw : require\n';
+	}
 
 	// Always GLSL ES 3.00 output. Sources written for GLSL 1.00 get the same shims three.js applies.
 	const versionString = '#version 300 es\n';
@@ -1435,7 +1585,7 @@ export function buildCustomShader(material, p) {
 			'#define textureCubeGradEXT textureGrad'
 		].filter(filterEmptyLine).join('\n') + '\n' + prefixFragment;
 	}
-	return { vertexShader: versionString + prefixVertex + vertexShader, fragmentShader: versionString + prefixFragment + fragmentShader };
+	return { vertexShader: versionString + extensions + prefixVertex + vertexShader, fragmentShader: versionString + prefixFragment + fragmentShader, objTexMode };
 }
 
 
