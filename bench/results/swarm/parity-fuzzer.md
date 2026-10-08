@@ -122,6 +122,28 @@ alone renders identically in each of them, so they are interactions of several o
 | 23, 27, 28, 142, 160, 192 | ≤ 0.10 | ≤ 230 | scenes with a render target used as a map: small clusters on surfaces textured with it (e.g. (0,0,0) in three.js vs (0,0,15) in jrs); a direct test of linear and sRGB render-target round trips is now pixel-identical, so what remains is specific to these scenes; open |
 | 8, 35, 61, 63, 65, 78, 85, 99, 112, 170 | ≤ 0.04 | ≤ 60 | a few dozen pixels at object edges in scenes with many stencil / custom-blend / shader objects; likely the float32 edge effect on thin overlapping geometry, not proven |
 
+### After merging the integration tip (69aa8f7 / 2c03d79)
+
+`swarm/parity-fuzzer` now contains the integration branch (zero-alloc frame, stall hunter, uniform dirty
+tracking, texture-unit tracking, shadow pass, scene-graph traversal, 32-bit radix-sort render lists,
+ShaderMaterial uniform plan, raycast picking). Every parity fix survived the merge (four conflict hunks,
+see the merge commit). Post-merge validation on this branch: `npm test` 117/117, conformance 27/27
+(one new dirty-tracking test needed a fog colour distinct from the background, see the merge commit),
+smoke and addons pass, and `node bench/run.mjs --compare --frames=60` is now **pixel-identical on every
+benchmark scene** (shared-static was 0.347 mean / 8 max and shadows 0.134 / 33 before the Standard and
+shadow fixes; all rows are 0 / 0 now, shared-animated 0 / 1). The post-merge fuzz run is in the table
+below.
+
+| Run | Seeds | Result |
+|---|---|---|
+| Merged branch (integration tip 2c03d79 + all parity fixes) | 1-100 | 88 pass; the 12 residuals are exactly the same seeds with the same means as before the merge (93, 23, 28, 61, 27, 99, 63, 85, 78, 35, 65, 8; worst mean 0.098) → the merged hot paths introduced no new mismatch |
+
+Merge log (the branch keeps absorbing the integration tip; each row is one merge + validation):
+
+| Integration tip | Merged at | npm test / conformance / smoke / addons | bench --compare | fuzz 1-100 | New findings |
+|---|---|---|---|---|---|
+| 2c03d79 | 87e7aaf | 117/117, 27/27, ok, ok | all scenes 0 / 0 (shared-animated 0 / 1) | 88 pass, 12 known residuals | none |
+
 ## Mismatches found and what was done
 
 Everything below was found by the fuzzer tonight (mostly with `--only=` feature subsets to isolate a
