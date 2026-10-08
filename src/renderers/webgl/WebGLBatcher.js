@@ -35,8 +35,12 @@ class WebGLBatcher {
 			this.texData = nd; this.texCapacity = cap;
 		}
 	}
-	/** Append an object's world matrix and (CPU-cached) normal matrix. Returns its index in the texture. */
-	addTex(object) {
+	/**
+	 * Append an object's world matrix and (CPU-cached) normal matrix; `materialIndex` (index of the
+	 * object's material record inside the Materials window bound for its batch, 0 when the batch
+	 * is single-material) goes into the spare eighth texel. Returns the object's index in the texture.
+	 */
+	addTex(object, materialIndex) {
 		const d = this.texData, o = this.texCount * TEX_STRIDE_FLOATS;
 		const s = object._slabData, so = object._slabOffset + 16;
 		for (let i = 0; i < 16; i++) d[o + i] = s[so + i];
@@ -45,10 +49,12 @@ class WebGLBatcher {
 		d[o + 16] = s[no]; d[o + 17] = s[no + 1]; d[o + 18] = s[no + 2]; d[o + 19] = 0;
 		d[o + 20] = s[no + 3]; d[o + 21] = s[no + 4]; d[o + 22] = s[no + 5]; d[o + 23] = 0;
 		d[o + 24] = s[no + 6]; d[o + 25] = s[no + 7]; d[o + 26] = s[no + 8]; d[o + 27] = 0;
-		// FNV-1a style mix of id and world version: unchanged hash -> the upload is skipped
+		d[o + 28] = materialIndex; d[o + 29] = 0; d[o + 30] = 0; d[o + 31] = 0;
+		// FNV-1a style mix of id, world version and material index: unchanged hash -> the upload is skipped
 		let h = this.texHash;
 		h = Math.imul(h ^ object.id, 16777619);
 		h = Math.imul(h ^ object._worldVersion, 16777619);
+		h = Math.imul(h ^ materialIndex, 16777619);
 		this.texHash = h;
 		return this.texCount++;
 	}
@@ -81,6 +87,9 @@ class WebGLBatcher {
 		}
 		if (this.texCount === 0) return;
 		if (this.textureHash === this.texHash && this.textureCount === this.texCount) return;
+		// texImage2D targets the *active* unit: when the cached bind above was a no-op (the texture was
+		// already on `unit`) the active unit may still be the one a material texture was uploaded to
+		state.activeTexture(unit);
 		gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
 		gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
 		gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, MATRIX_TEXTURE_WIDTH, rows, 0, gl.RGBA, gl.FLOAT, this.texData, 0);
