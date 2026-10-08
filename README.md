@@ -57,7 +57,7 @@ over 60 frames after 10 warm-up frames, 320x240 (median frame time, so single ga
 | Scenario | Objects | three.js r186 (median) | jrs (median) | Speed-up | Worst frame (three → jrs) | Draw calls (three → jrs) | Pixel diff (mean / max, 0–255) |
 |---|---:|---:|---:|---:|---|---|---|
 | shared-static: one geometry + one material, static | 10,000 | 16.1 ms | 3.1 ms | **5.2x** | 114 → 4 ms | 10000 → 1 | 0 / 0 |
-| shared-animated: same, every object rotating | 10,000 | 11.8 ms | 5.4 ms | **2.2x** | 103 → 3288 ms | 10000 → 1 | 0.346 / 9 |
+| shared-animated: same, every object rotating | 10,000 | 11.8 ms | 5.4 ms | **2.2x** | 103 → 3288 ms | 10000 → 1 | 0 / 1 |
 | many-materials: 3 geometries x 200 Phong materials, point + hemisphere light (batches span materials) | 5,000 | 8.1 ms | 2.8 ms | **2.9x** | 98 → 7 ms | 5000 → 3 | 0 / 0 |
 | unique-geometries: a distinct geometry per mesh (multi-draw over the mega-buffer) | 2,000 | 3.1 ms | 1.2 ms | **2.6x** | 7 → 2 ms | 2000 → 1 | 0 / 0 |
 | hierarchy-animated: 200 chains of 40 nested objects, roots rotating | 8,000 | 12.4 ms | 4.2 ms | **3.0x** | 35 → 2632 ms | 8000 → 1 | 0 / 0 |
@@ -67,6 +67,7 @@ over 60 frames after 10 warm-up frames, 320x240 (median frame time, so single ga
 | shadows: 2 000 casters/receivers, 1024² directional shadow map | 2,000 | 81.8 ms | 1.4 ms | **58.4x** | 240 → 5 ms | 4001 → 3 | 0.134 / 33 |
 | shadows-animated: same scene, every third caster moving each frame | 2,000 | 55.2 ms | 2.0 ms | **27.6x** | 192 → 11 ms | 4001 → 3 | 0.121 / 31 |
 | skinned-crowd: 200 skinned meshes, 20 bones each, every bone animated by an `AnimationMixer` | 200 | 5.0 ms | 3.0 ms | **1.7x** | 7 → 4 ms | 200 → 200 | 0 / 2 |
+| pbr-envmap: 2 000 MeshStandardMaterial spheres (8 materials) lit by `scene.environment` through PMREM, plus a directional light | 2,000 | 3.7 ms | 0.8 ms | **4.6x** | 18 → 2 ms | 2000 → 1 | 0 / 0 |
 
 The instanced scenario is a single draw call in both libraries; it measures only the fixed per-frame cost. Full data: `bench/results/latest.json`.
 
