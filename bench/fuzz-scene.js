@@ -766,7 +766,8 @@ export function buildFuzzScene(T, seed, features = defaultFeatures(), opts = {})
 					}
 					else if (kind === 'color' && mat && mat.color) op = () => { mat.color.setHSL(r1, 0.6 + 0.3 * r2, 0.3 + 0.4 * r3); };
 					else if (kind === 'opacity' && mat && mat.transparent) op = () => { mat.opacity = 0.2 + 0.7 * r1; if (mat.uniforms && mat.uniforms.uOpacity) mat.uniforms.uOpacity.value = mat.opacity; };
-					else if (kind === 'transparent' && mat && !mat.isShaderMaterial && mat.blending === T.NormalBlending && !mat.premultipliedAlpha && mat.side !== T.DoubleSide && !mat.stencilWrite) op = () => { mat.transparent = !mat.transparent; mat.opacity = mat.transparent ? 0.3 + 0.6 * r1 : 1; mat.needsUpdate = true; };
+					else if (kind === 'transparent' && mat && !mat.isShaderMaterial && mat.blending === T.NormalBlending && !mat.premultipliedAlpha && mat.side !== T.DoubleSide && !mat.stencilWrite && mat.depthTest) op = () => { mat.transparent = !mat.transparent; mat.depthWrite = true; // an opaque material without depth writes is order-sensitive (three sorts opaque front-to-back, jrs groups by material: by design)
+						 mat.opacity = mat.transparent ? 0.3 + 0.6 * r1 : 1; mat.needsUpdate = true; };
 					else if (kind === 'flat' && mat && (mat.isMeshLambertMaterial || mat.isMeshPhongMaterial || mat.isMeshStandardMaterial) && !mat.wireframe) op = () => { mat.flatShading = !mat.flatShading; mat.needsUpdate = true; };
 					else if (kind === 'light' && li) op = () => { if (li.isAmbientLight || li.isHemisphereLight) li.intensity = 0.2 + 1.3 * r1; else { li.intensity *= 0.3 + 1.4 * r1; li.color.setHSL(r2, 0.5, 0.7); li.position.x += (r3 - 0.5) * 4; } };
 					else if (kind === 'addLight') {
