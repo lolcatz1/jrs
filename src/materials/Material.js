@@ -65,6 +65,7 @@ class Material extends EventDispatcher {
 		this._frameStamp = -1; this._frameRid = 0;
 		// per-frame program resolution cache (renderer-owned; frame ids are unique across renderers)
 		this._resolveStamp = -1; this._resolveVariant = -1; this._resolveProgram = null;
+		this._shadowSigStamp = -1; this._shadowSig = 0;
 	}
 	get alphaTest() { return this._alphaTest; }
 	set alphaTest(value) {
