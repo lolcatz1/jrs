@@ -19,10 +19,12 @@ class RenderListCache {
 		this.ready = false;          // dependencies recorded and the list can be reused
 		this.structure = -1; this.world = -1;
 		this.sortObjects = true; this.override = null;
+		this.shaderBatch = false;    // autoBatch && autoBatchShaderMaterials at build time: decides which program variant ShaderMaterial items resolve to
 		this.layers = 0; this.coordinateSystem = 0; this.reversedDepth = false;
 		this.view = new Float32Array(16); this.pv = new Float32Array(16);
 		this.itemZ = null;           // Float64Array: depth of each item index as of the last build / re-cull
 		this.resort = false;         // set by a camera-only reuse when a transparent depth changed
+		this.flatChanged = false;    // the last flat pass of this list's scene recomputed a world matrix (the scene is animating)
 
 		this.resetDeps();
 		this.cmdOpaque = new CommandCache();
@@ -129,6 +131,9 @@ class CommandCache {
 		this.megaGeoms = []; this.megaRecs = []; this.megaPages = [];
 		this.syncMats = null;        // materials whose records must be refreshed on replay (runs that span several materials)
 		this.autoBatch = false; this.autoMultiDraw = false; this.minimum = 0; this.multi = false;
+		this.shaderBatch = false;    // autoBatchShaderMaterials the commands were built with
+		this.viewDependent = false;  // some batch holds view-space matrices (ShaderMaterial reading modelViewMatrix / normalMatrix)
+		this.view = new Float32Array(16); // ... computed for this camera view matrix
 	}
 	invalidate() { this.version = -1; }
 }

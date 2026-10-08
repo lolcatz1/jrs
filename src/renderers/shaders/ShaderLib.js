@@ -35,15 +35,19 @@ export const MATERIAL_SHADOW_DEPTH = 11; // internal: shadow map pass
 
 // Texture unit assignment is fixed per sampler so sampler uniforms are set
 // once per program and never again.
+import { analyzeVertexSource, fragmentReferencesObjectUniforms, objectFetchBlock, rewriteVertexSource, OBJ_ELIGIBLE } from './ShaderMaterialBatching.js';
+
 export const TEXTURE_UNITS = {
 	map: 0, alphaMap: 1, normalMap: 2, emissiveMap: 3, roughnessMap: 4, metalnessMap: 5, aoMap: 6, specularMap: 7,
 	bumpMap: 7, // shares with specularMap (never used together by one material type)
+	dfgLUT: 7, // MeshStandardMaterial's DFG lookup table (Standard has no specularMap; bumpMap is not implemented)
 	dirShadowMap0: 8, dirShadowMap1: 9, dirShadowMap2: 10, dirShadowMap3: 11,
-	spotShadowMap0: 12, spotShadowMap1: 13, spotShadowMap2: 14, spotShadowMap3: 15,
+	spotShadowMap0: 12, spotShadowMap1: 13, spotShadowMap2: 14, // shadow-casting spot lights are capped at 3
 	// pointShadowMap[i] takes the free units of 8-14 after directional and spot shadow maps, see pointShadowUnit()
-	objectMatrices: 15, // multi-draw matrix texture (spot shadow maps are capped at 3 when it is used)
+	envMap: 15, // environment map: samplerCube, or the sampler2D CubeUV (PMREM) layout
 	// vertex-shader data textures live above the 16 fragment units (WebGL2 guarantees 32 combined units)
 	boneTexture: 16, morphTargetsTexture: 17,
+	objectMatrices: 18, // batched draws' matrix texture
 };
 /**
  * Texture unit of the i-th point shadow cube map: the i-th unit of 8..14 not used by the directional (8..8+numDir-1)
@@ -84,7 +88,7 @@ layout(std140) uniform Lights {
 	SpotLight spotLights[${MAX_SPOT_LIGHTS}];
 	HemiLight hemiLights[${MAX_HEMI_LIGHTS}];
 	mat4 dirShadowMatrix[${MAX_DIR_LIGHTS}];
-	vec4 dirShadowParams[${MAX_DIR_LIGHTS}];   // bias, normalBias, radius, 1/mapSize
+	vec4 dirShadowParams[${MAX_DIR_LIGHTS}];   // bias, normalBias, radius / mapSize.x, intensity
 	mat4 spotShadowMatrix[${MAX_SPOT_LIGHTS}];
 	vec4 spotShadowParams[${MAX_SPOT_LIGHTS}];
 	vec4 pointShadowParams[${MAX_POINT_SHADOWS}]; // bias, normalBias, radius, intensity
@@ -112,6 +116,8 @@ struct MaterialRecord {
 	vec4 mUvTransform0;
 	vec4 mUvTransform1;
 	vec4 mUvTransform2;
+	vec4 mEnvParams;
+	mat3 mEnvMapRotation;
 	#if MATERIAL_PAD > 0
 	vec4 mPad[ MATERIAL_PAD ];
 	#endif
@@ -127,6 +133,8 @@ layout(std140) uniform Materials {
 #define uvTransform0 materials[ matIdx ].mUvTransform0
 #define uvTransform1 materials[ matIdx ].mUvTransform1
 #define uvTransform2 materials[ matIdx ].mUvTransform2
+#define envParams materials[ matIdx ].mEnvParams
+#define envMapRotation materials[ matIdx ].mEnvMapRotation
 #else
 layout(std140) uniform Material {
 	vec4 diffuse;        // rgb, a = opacity
@@ -137,13 +145,19 @@ layout(std140) uniform Material {
 	vec4 uvTransform0;   // mat3 columns, padded
 	vec4 uvTransform1;
 	vec4 uvTransform2;
+	vec4 envParams;      // envMapIntensity, reflectivity, refractionRatio, ior
+	mat3 envMapRotation; // three vec4 columns
 };
 #endif
+#define envMapIntensity envParams.x
+#define reflectivity envParams.y
+#define refractionRatio envParams.z
 `;
-export const MATERIAL_BLOCK_SIZE = 16 * 8;
+export const MATERIAL_BLOCK_SIZE = 16 * 12;
 
 const common = /* glsl */`
 #define PI 3.141592653589793
+#define PI2 6.283185307179586
 #define RECIPROCAL_PI 0.3183098861837907
 #define EPSILON 1e-6
 float pow2( const in float x ) { return x*x; }
@@ -153,6 +167,10 @@ vec3 F_Schlick( const in vec3 f0, const in float f90, const in float dotVH ) {
 	return f0 * ( 1.0 - fresnel ) + ( f90 * fresnel );
 }
 vec3 BRDF_Lambert( const in vec3 diffuseColor ) { return RECIPROCAL_PI * diffuseColor; }
+// GLSL 1.00 sampler names of three's chunks (cube_uv_reflection_fragment) mapped onto ES 3.00
+#define texture2D texture
+#define textureCube texture
+#define texture2DGradEXT textureGrad
 `;
 
 const vertexShader = /* glsl */`
@@ -248,6 +266,9 @@ out vec4 vColor;
 #ifdef USE_FOG
 out float vFogDepth;
 #endif
+#if defined( USE_ENVMAP ) && ! defined( ENV_WORLDPOS )
+out vec3 vReflect;
+#endif
 #if NUM_DIR_SHADOWS > 0
 out vec4 vDirShadowCoord[ NUM_DIR_SHADOWS ];
 #endif
@@ -342,6 +363,26 @@ void main() {
 		#else
 		vNormal = normalize( normalMatrix * objectNormal );
 		#endif
+		#ifdef FLIP_SIDED
+		vNormal = - vNormal;
+		#endif
+	#endif
+	#if defined( USE_ENVMAP ) && ! defined( ENV_WORLDPOS )
+	{
+		// MeshBasicMaterial: the reflection vector is computed per vertex and interpolated, as in three.js
+		vec3 cameraToVertex;
+		if ( cameraPosition.w > 0.5 ) {
+			cameraToVertex = normalize( vec3( - viewMatrix[ 0 ][ 2 ], - viewMatrix[ 1 ][ 2 ], - viewMatrix[ 2 ][ 2 ] ) );
+		} else {
+			cameraToVertex = normalize( worldPosition.xyz - cameraPosition.xyz );
+		}
+		vec3 worldNormal = vNormal;
+		#ifdef ENVMAP_MODE_REFLECTION
+		vReflect = reflect( cameraToVertex, worldNormal );
+		#else
+		vReflect = refract( cameraToVertex, worldNormal, refractionRatio );
+		#endif
+	}
 	#endif
 	#ifdef USE_UV
 	vUv = ( mat3( uvTransform0.xyz, uvTransform1.xyz, uvTransform2.xyz ) * vec3( uv, 1.0 ) ).xy;
@@ -485,6 +526,34 @@ uniform sampler2D aoMap;
 #ifdef USE_SPECULARMAP
 uniform sampler2D specularMap;
 #endif
+#if defined( LIGHTING_STANDARD )
+uniform sampler2D dfgLUT;
+#endif
+#ifdef USE_ENVMAP
+	#ifdef ENVMAP_TYPE_CUBE
+	uniform samplerCube envMap;
+	#else
+	uniform sampler2D envMap;
+	#endif
+	#ifndef ENV_WORLDPOS
+	in vec3 vReflect;
+	#endif
+#endif
+#include <cube_uv_reflection_fragment>
+#if defined( USE_ENVMAP ) && defined( ENVMAP_TYPE_CUBE_UV )
+// three.js <envmap_physical_pars_fragment> with world-space inputs (jrs lights in world space)
+vec3 getIBLIrradiance( const in vec3 worldNormal ) {
+	vec4 envMapColor = textureCubeUV( envMap, envMapRotation * worldNormal, 1.0 );
+	return PI * envMapColor.rgb * envMapIntensity;
+}
+vec3 getIBLRadiance( const in vec3 viewDir, const in vec3 normal, const in float roughness ) {
+	vec3 reflectVec = reflect( - viewDir, normal );
+	// Mixing the reflection with the normal is more accurate and keeps rough objects from gathering light from behind their tangent plane.
+	reflectVec = normalize( mix( reflectVec, normal, pow4( roughness ) ) );
+	vec4 envMapColor = textureCubeUV( envMap, envMapRotation * reflectVec, roughness );
+	return envMapColor.rgb * envMapIntensity;
+}
+#endif
 #if NUM_DIR_SHADOWS > 0
 in vec4 vDirShadowCoord[ NUM_DIR_SHADOWS ];
 uniform sampler2DShadow dirShadowMap[ NUM_DIR_SHADOWS ];
@@ -503,33 +572,8 @@ uniform samplerCubeShadow pointShadowMap[ NUM_POINT_SHADOWS ];
 #endif
 out vec4 fragColor;
 
-#if NUM_DIR_SHADOWS > 0 || NUM_SPOT_SHADOWS > 0
-float sampleShadow( sampler2DShadow shadowMap, vec4 coord, vec4 params ) {
-	vec3 c = coord.xyz / coord.w;
-	c.z -= params.x;
-	bvec4 inFrustumVec = bvec4( c.x >= 0.0, c.x <= 1.0, c.y >= 0.0, c.y <= 1.0 );
-	bool inFrustum = all( inFrustumVec );
-	bvec2 frustumTestVec = bvec2( inFrustum, c.z <= 1.0 );
-	if ( ! all( frustumTestVec ) ) return 1.0;
-	float texel = params.w * params.z;
-	float shadow = 0.0;
-	shadow += texture( shadowMap, c + vec3( - texel, - texel, 0.0 ) );
-	shadow += texture( shadowMap, c + vec3( 0.0, - texel, 0.0 ) );
-	shadow += texture( shadowMap, c + vec3( texel, - texel, 0.0 ) );
-	shadow += texture( shadowMap, c + vec3( - texel, 0.0, 0.0 ) );
-	shadow += texture( shadowMap, c );
-	shadow += texture( shadowMap, c + vec3( texel, 0.0, 0.0 ) );
-	shadow += texture( shadowMap, c + vec3( - texel, texel, 0.0 ) );
-	shadow += texture( shadowMap, c + vec3( 0.0, texel, 0.0 ) );
-	shadow += texture( shadowMap, c + vec3( texel, texel, 0.0 ) );
-	return shadow / 9.0;
-}
-#endif
-
-#if NUM_POINT_SHADOWS > 0
-#define PI2 6.283185307179586
-// three.js r186 shadowmap_pars_fragment: Vogel disk + interleaved gradient noise taps around the light-to-fragment direction
-#ifndef POINT_SHADOW_BASIC
+#if NUM_DIR_SHADOWS > 0 || NUM_SPOT_SHADOWS > 0 || NUM_POINT_SHADOWS > 0
+// three.js r186 shadowmap_pars_fragment helpers, shared by the 2D and the point (cube) shadow samplers
 float interleavedGradientNoise( vec2 position ) {
 	return fract( 52.9829189 * fract( dot( position, vec2( 0.06711056, 0.00583715 ) ) ) );
 }
@@ -539,6 +583,35 @@ vec2 vogelDiskSample( int sampleIndex, int samplesCount, float phi ) {
 	float theta = float( sampleIndex ) * goldenAngle + phi;
 	return vec2( cos( theta ), sin( theta ) ) * r;
 }
+#endif
+#if NUM_DIR_SHADOWS > 0 || NUM_SPOT_SHADOWS > 0
+// three.js r186 PCF shadows (shadowmap_pars_fragment): hardware-compared taps on a Vogel disk rotated per
+// pixel by interleaved gradient noise. params = ( bias, normalBias, radius / mapSize.x, intensity ).
+float sampleShadow( sampler2DShadow shadowMap, vec4 shadowCoord, vec4 params ) {
+	float shadow = 1.0;
+	shadowCoord.xyz /= shadowCoord.w;
+	shadowCoord.z += params.x;
+	bool inFrustum = shadowCoord.x >= 0.0 && shadowCoord.x <= 1.0 && shadowCoord.y >= 0.0 && shadowCoord.y <= 1.0;
+	bool frustumTest = inFrustum && shadowCoord.z <= 1.0;
+	if ( frustumTest ) {
+		float radius = params.z;
+		float phi = interleavedGradientNoise( gl_FragCoord.xy ) * PI2;
+		shadow = (
+			texture( shadowMap, vec3( shadowCoord.xy + vogelDiskSample( 0, 5, phi ) * radius, shadowCoord.z ) ) +
+			texture( shadowMap, vec3( shadowCoord.xy + vogelDiskSample( 1, 5, phi ) * radius, shadowCoord.z ) ) +
+			texture( shadowMap, vec3( shadowCoord.xy + vogelDiskSample( 2, 5, phi ) * radius, shadowCoord.z ) ) +
+			texture( shadowMap, vec3( shadowCoord.xy + vogelDiskSample( 3, 5, phi ) * radius, shadowCoord.z ) ) +
+			texture( shadowMap, vec3( shadowCoord.xy + vogelDiskSample( 4, 5, phi ) * radius, shadowCoord.z ) )
+		) * 0.2;
+	}
+	return mix( 1.0, shadow, params.w );
+}
+#endif
+
+#if NUM_POINT_SHADOWS > 0
+#define PI2 6.283185307179586
+// three.js r186 shadowmap_pars_fragment: Vogel disk + interleaved gradient noise taps around the light-to-fragment direction
+#ifndef POINT_SHADOW_BASIC
 float getPointShadow( samplerCubeShadow shadowMap, vec4 params, vec4 info, vec3 lightToPosition ) {
 	float shadow = 1.0;
 	float shadowBias = params.x, shadowRadius = params.z, shadowIntensity = params.w;
@@ -640,6 +713,50 @@ vec3 BRDF_GGX( const in vec3 lightDir, const in vec3 viewDir, const in vec3 norm
 	float V = V_GGX_SmithCorrelated( alpha, dotNL, dotNV );
 	float D = D_GGX( alpha, dotNH );
 	return F * ( V * D );
+}
+// three.js r186 lights_physical_pars_fragment: multiple-scattering split of the DFG term
+void computeMultiscattering( const in vec2 fab, const in vec3 specularColor, const in float specularF90, inout vec3 singleScatter, inout vec3 multiScatter ) {
+	vec3 Fr = specularColor;
+	vec3 FssEss = Fr * fab.x + specularF90 * fab.y;
+	float Ess = fab.x + fab.y;
+	float Ems = 1.0 - Ess;
+	vec3 Favg = Fr + ( 1.0 - Fr ) * 0.047619; // 1/21
+	vec3 Fms = FssEss * Favg / ( 1.0 - Ems * Favg );
+	singleScatter += FssEss;
+	multiScatter += Fms * Ems;
+}
+// three.js r186 RE_IndirectSpecular_Physical: the environment's radiance and irradiance through the
+// single / multi-scattering split, dielectric and metallic paths mixed by metalness
+void RE_IndirectSpecular_Standard( const in vec3 radiance, const in vec3 irradiance, const in vec2 fab, const in vec3 diffuseColor, const in vec3 diffuseContribution, const in float metalness, inout vec3 indirectDiffuse, inout vec3 indirectSpecular ) {
+	vec3 singleScatteringDielectric = vec3( 0.0 );
+	vec3 multiScatteringDielectric = vec3( 0.0 );
+	vec3 singleScatteringMetallic = vec3( 0.0 );
+	vec3 multiScatteringMetallic = vec3( 0.0 );
+	computeMultiscattering( fab, vec3( 0.04 ), 1.0, singleScatteringDielectric, multiScatteringDielectric );
+	computeMultiscattering( fab, diffuseColor, 1.0, singleScatteringMetallic, multiScatteringMetallic );
+	vec3 singleScattering = mix( singleScatteringDielectric, singleScatteringMetallic, metalness );
+	vec3 multiScattering = mix( multiScatteringDielectric, multiScatteringMetallic, metalness );
+	vec3 totalScatteringDielectric = singleScatteringDielectric + multiScatteringDielectric;
+	vec3 diffuseTerm = diffuseContribution * ( 1.0 - totalScatteringDielectric );
+	vec3 cosineWeightedIrradiance = irradiance * RECIPROCAL_PI;
+	vec3 indirectSpecularAdd = radiance * singleScattering;
+	indirectSpecularAdd += multiScattering * cosineWeightedIrradiance;
+	vec3 indirectDiffuseAdd = diffuseTerm * cosineWeightedIrradiance;
+	indirectSpecular += indirectSpecularAdd;
+	indirectDiffuse += indirectDiffuseAdd;
+}
+// ref: https://seblagarde.files.wordpress.com/2015/07/course_notes_moving_frostbite_to_pbr_v32.pdf
+float computeSpecularOcclusion( const in float dotNV, const in float ambientOcclusion, const in float roughness ) {
+	return clamp( pow( dotNV + ambientOcclusion, exp2( - 16.0 * roughness - 1.0 ) ) - 1.0 + ambientOcclusion, 0.0, 1.0 );
+}
+// three.js r186 RE_Direct_Physical (no clearcoat/sheen/iridescence/retroreflection): GGX specular with
+// multi-scattering energy compensation, and a diffuse term reduced by the Fresnel-reflected energy
+void RE_Direct_Standard( const in vec3 irradiance, const in vec3 L, const in vec3 V, const in vec3 N, const in vec3 f0Blended, const in float roughness, const in vec3 msComp, const in vec3 diffuseContribution, inout vec3 directDiffuse, inout vec3 directSpecular ) {
+	directSpecular += irradiance * BRDF_GGX( L, V, N, f0Blended, 1.0, roughness ) * msComp;
+	vec3 halfDir = normalize( L + V );
+	float dotVH = clamp( dot( V, halfDir ), 0.0, 1.0 );
+	vec3 F = F_Schlick( vec3( 0.04 ), 1.0, dotVH );
+	directDiffuse += irradiance * BRDF_Lambert( diffuseContribution ) * ( 1.0 - F );
 }
 #endif
 #if defined( LIGHTING_PHONG )
@@ -776,6 +893,7 @@ void main() {
 			normal *= faceDirection;
 			#endif
 		#endif
+		vec3 nonPerturbedNormal = normal;
 		#ifdef USE_NORMALMAP
 		vec3 mapN = texture( normalMap, vUv ).xyz * 2.0 - 1.0;
 		mapN.xy *= matParams2.xy;
@@ -789,6 +907,10 @@ void main() {
 	#endif
 
 	vec3 outgoingLight = vec3( 0.0 );
+	float specularStrength = 1.0;
+	#ifdef USE_SPECULARMAP
+	specularStrength = texture( specularMap, vUv ).r;
+	#endif
 
 	#if defined( LIGHTING_LAMBERT ) || defined( LIGHTING_PHONG ) || defined( LIGHTING_STANDARD )
 		// camera +Z axis in world space is the third row of the view matrix (no inverse needed)
@@ -804,20 +926,24 @@ void main() {
 		#if defined( LIGHTING_STANDARD )
 		vec3 diffuseBase = diffuseColor.rgb * ( 1.0 - metalnessFactor );
 		vec3 specularF0 = mix( vec3( 0.04 ), diffuseColor.rgb, metalnessFactor );
-		float dxy = max( abs( dFdx( normal.z ) ), abs( dFdy( normal.z ) ) );
-		float geometryRoughness = min( max( dxy, 0.0525 ), 1.0 );
+		// specular anti-aliasing term as in three.js (lights_physical_fragment): derivative of the
+		// view-space unperturbed normal, largest component; zero on flat surfaces
+		vec3 viewNormal = mat3( viewMatrix ) * nonPerturbedNormal;
+		vec3 dxy = max( abs( dFdx( viewNormal ) ), abs( dFdy( viewNormal ) ) );
+		float geometryRoughness = max( max( dxy.x, dxy.y ), dxy.z );
 		float roughness = max( roughnessFactor, 0.0525 );
 		roughness = min( roughness + geometryRoughness, 1.0 );
+		// DFG lookup (three.js lights_fragment_begin) and direct-light multi-scattering compensation
+		float dotNVms = clamp( dot( normal, viewDir ), 0.0, 1.0 );
+		vec2 dfg = texture( dfgLUT, vec2( roughness, dotNVms ) ).rg;
+		float EssMs = dfg.x + dfg.y;
+		vec3 msComp = 1.0 + specularF0 * ( 1.0 / EssMs - 1.0 );
 		#else
 		vec3 diffuseBase = diffuseColor.rgb;
 		#endif
 		#if defined( LIGHTING_PHONG )
 		vec3 specularColor = specular.rgb;
 		float shininess = specular.a;
-		float specularStrength = 1.0;
-			#ifdef USE_SPECULARMAP
-			specularStrength = texture( specularMap, vUv ).r;
-			#endif
 		#endif
 		vec3 directDiffuse = vec3( 0.0 );
 		vec3 directSpecular = vec3( 0.0 );
@@ -835,10 +961,12 @@ void main() {
 				irradiance *= dirShadowFactor( i );
 			}
 			#endif
-			directDiffuse += irradiance * BRDF_Lambert( diffuseBase );
 			#if defined( LIGHTING_STANDARD )
-			directSpecular += irradiance * BRDF_GGX( L, viewDir, normal, specularF0, 1.0, roughness );
-			#elif defined( LIGHTING_PHONG )
+			RE_Direct_Standard( irradiance, L, viewDir, normal, specularF0, roughness, msComp, diffuseBase, directDiffuse, directSpecular );
+			#else
+			directDiffuse += irradiance * BRDF_Lambert( diffuseBase );
+			#endif
+			#if defined( LIGHTING_PHONG )
 			directSpecular += irradiance * BRDF_BlinnPhong( L, viewDir, normal, specularColor, shininess ) * specularStrength;
 			#endif
 		}
@@ -855,10 +983,12 @@ void main() {
 				irradiance *= pointShadowFactor( i );
 			}
 			#endif
-			directDiffuse += irradiance * BRDF_Lambert( diffuseBase );
 			#if defined( LIGHTING_STANDARD )
-			directSpecular += irradiance * BRDF_GGX( L, viewDir, normal, specularF0, 1.0, roughness );
-			#elif defined( LIGHTING_PHONG )
+			RE_Direct_Standard( irradiance, L, viewDir, normal, specularF0, roughness, msComp, diffuseBase, directDiffuse, directSpecular );
+			#else
+			directDiffuse += irradiance * BRDF_Lambert( diffuseBase );
+			#endif
+			#if defined( LIGHTING_PHONG )
 			directSpecular += irradiance * BRDF_BlinnPhong( L, viewDir, normal, specularColor, shininess ) * specularStrength;
 			#endif
 		}
@@ -878,10 +1008,12 @@ void main() {
 					irradiance *= spotShadowFactor( i );
 				}
 				#endif
-				directDiffuse += irradiance * BRDF_Lambert( diffuseBase );
 				#if defined( LIGHTING_STANDARD )
-				directSpecular += irradiance * BRDF_GGX( L, viewDir, normal, specularF0, 1.0, roughness );
-				#elif defined( LIGHTING_PHONG )
+				RE_Direct_Standard( irradiance, L, viewDir, normal, specularF0, roughness, msComp, diffuseBase, directDiffuse, directSpecular );
+				#else
+				directDiffuse += irradiance * BRDF_Lambert( diffuseBase );
+				#endif
+				#if defined( LIGHTING_PHONG )
 				directSpecular += irradiance * BRDF_BlinnPhong( L, viewDir, normal, specularColor, shininess ) * specularStrength;
 				#endif
 			}
@@ -894,7 +1026,27 @@ void main() {
 			float hemiDiffuseWeight = 0.5 * dotNLh + 0.5;
 			indirectIrradiance += mix( hemiLights[ i ].ground.rgb, hemiLights[ i ].sky.rgb, hemiDiffuseWeight );
 		}
+		// environment: irradiance (PMREM mip 1) for every lit material, radiance for Standard (three.js lights_fragment_maps)
+		vec3 iblIrradiance = vec3( 0.0 );
+		#if defined( USE_ENVMAP ) && defined( ENVMAP_TYPE_CUBE_UV )
+		iblIrradiance += getIBLIrradiance( normal );
+		#endif
+		#if defined( LIGHTING_STANDARD )
+		// three.js RE_IndirectDiffuse_Physical: energy reflected by the specular lobe is not available to the diffuse layer
+		vec3 singleScattering = vec3( 0.0 );
+		vec3 multiScattering = vec3( 0.0 );
+		computeMultiscattering( dfg, vec3( 0.04 ), 1.0, singleScattering, multiScattering );
+		vec3 indirectDiffuse = indirectIrradiance * BRDF_Lambert( diffuseBase ) * ( 1.0 - singleScattering - multiScattering );
+		vec3 indirectSpecular = vec3( 0.0 );
+		vec3 radiance = vec3( 0.0 );
+			#if defined( USE_ENVMAP ) && defined( ENVMAP_TYPE_CUBE_UV )
+			radiance += getIBLRadiance( viewDir, normal, roughness );
+			#endif
+		RE_IndirectSpecular_Standard( radiance, iblIrradiance, dfg, diffuseColor.rgb, diffuseBase, metalnessFactor, indirectDiffuse, indirectSpecular );
+		#else
+		indirectIrradiance += iblIrradiance;
 		vec3 indirectDiffuse = indirectIrradiance * BRDF_Lambert( diffuseBase );
+		#endif
 		#ifdef USE_AOMAP
 			#ifdef USE_UV1
 			float ambientOcclusion = ( texture( aoMap, vUv1 ).r - 1.0 ) * matParams.z + 1.0;
@@ -902,12 +1054,22 @@ void main() {
 			float ambientOcclusion = ( texture( aoMap, vUv ).r - 1.0 ) * matParams.z + 1.0;
 			#endif
 		indirectDiffuse *= ambientOcclusion;
+			#if defined( USE_ENVMAP ) && defined( LIGHTING_STANDARD )
+			float dotNV = clamp( dot( normal, viewDir ), 0.0, 1.0 );
+			indirectSpecular *= computeSpecularOcclusion( dotNV, ambientOcclusion, roughness );
+			#endif
 		#endif
 		vec3 totalEmissive = emissive.rgb * matParams.w;
 		#ifdef USE_EMISSIVEMAP
 		totalEmissive *= texture( emissiveMap, vUv ).rgb;
 		#endif
+		#if defined( LIGHTING_STANDARD )
+		vec3 totalDiffuse = directDiffuse + indirectDiffuse;
+		vec3 totalSpecular = directSpecular + indirectSpecular;
+		outgoingLight = totalDiffuse + totalSpecular + totalEmissive;
+		#else
 		outgoingLight = directDiffuse + indirectDiffuse + directSpecular + totalEmissive;
+		#endif
 	#else
 		// unlit
 		outgoingLight = diffuseColor.rgb;
@@ -919,6 +1081,36 @@ void main() {
 			#endif
 		outgoingLight *= ambientOcclusion;
 		#endif
+	#endif
+
+	#if defined( USE_ENVMAP ) && defined( ENVMAP_TYPE_CUBE ) && ! defined( LIGHTING_STANDARD )
+	{
+		// three.js <envmap_fragment>: reflection / refraction of a cube map blended into the lit colour
+		#ifdef ENV_WORLDPOS
+		vec3 cameraToFrag;
+		if ( cameraPosition.w > 0.5 ) {
+			cameraToFrag = normalize( vec3( - viewMatrix[ 0 ][ 2 ], - viewMatrix[ 1 ][ 2 ], - viewMatrix[ 2 ][ 2 ] ) );
+		} else {
+			cameraToFrag = normalize( vWorldPosition - cameraPosition.xyz );
+		}
+		vec3 worldNormal = normal;
+			#ifdef ENVMAP_MODE_REFLECTION
+			vec3 reflectVec = reflect( cameraToFrag, worldNormal );
+			#else
+			vec3 reflectVec = refract( cameraToFrag, worldNormal, refractionRatio );
+			#endif
+		#else
+		vec3 reflectVec = vReflect;
+		#endif
+		vec4 envColor = textureCube( envMap, envMapRotation * reflectVec );
+		#ifdef ENVMAP_BLENDING_MULTIPLY
+		outgoingLight = mix( outgoingLight, outgoingLight * envColor.xyz, specularStrength * reflectivity );
+		#elif defined( ENVMAP_BLENDING_MIX )
+		outgoingLight = mix( outgoingLight, envColor.xyz, specularStrength * reflectivity );
+		#elif defined( ENVMAP_BLENDING_ADD )
+		outgoingLight += envColor.xyz * specularStrength * reflectivity;
+		#endif
+	}
 	#endif
 
 	#ifdef OPAQUE
@@ -972,6 +1164,26 @@ function shadowFactorFunctions(numDir, numSpot, numPoint) {
 
 const spriteUniform = 'uniform vec2 uSpriteCenter;\n';
 
+const ENVMAP_BLENDING = { 0: 'ENVMAP_BLENDING_MULTIPLY', 1: 'ENVMAP_BLENDING_MIX', 2: 'ENVMAP_BLENDING_ADD' }; // MultiplyOperation, MixOperation, AddOperation
+/** The environment-map #defines three.js's WebGLProgram emits for these parameters (fragment: all; vertex: USE_ENVMAP + mode). */
+function envMapDefines(p, vertex) {
+	if (!p.envMap) return [];
+	const out = ['#define USE_ENVMAP', '#define ' + (p.envMapRefraction ? 'ENVMAP_MODE_REFRACTION' : 'ENVMAP_MODE_REFLECTION')];
+	if (vertex) return out;
+	out.push('#define ' + (p.envMapCubeUV ? 'ENVMAP_TYPE_CUBE_UV' : 'ENVMAP_TYPE_CUBE'));
+	out.push('#define ' + (ENVMAP_BLENDING[p.combine] || 'ENVMAP_BLENDING_NONE'));
+	if (p.envMapCubeUV) {
+		// same arithmetic as three.js generateCubeUVSize, so the define strings match character for character
+		const imageHeight = p.envMapCubeUVHeight;
+		const maxMip = Math.log2(imageHeight) - 2;
+		const texelHeight = 1.0 / imageHeight;
+		const texelWidth = 1.0 / (3 * Math.max(Math.pow(2, maxMip), 7 * 16));
+		out.push('#define CUBEUV_TEXEL_WIDTH ' + texelWidth, '#define CUBEUV_TEXEL_HEIGHT ' + texelHeight, '#define CUBEUV_MAX_MIP ' + maxMip + '.0');
+	}
+	return out;
+}
+let _resolvedFragment = null; // the fragment template with its #include <...> chunks resolved (once)
+
 /**
  * Build GLSL ES 3.00 sources for a built-in material program.
  * @param {object} p program parameters (see WebGLPrograms.getParameters)
@@ -980,6 +1192,7 @@ export function buildBuiltinShader(p) {
 	const defines = [];
 	const d = (name, value) => defines.push(value === undefined ? `#define ${name}` : `#define ${name} ${value}`);
 	switch (p.materialType) {
+		case MATERIAL_BASIC: if (p.envMap) d('USE_NORMAL'); break; // per-vertex reflection vector needs the normal
 		case MATERIAL_LAMBERT: d('LIGHTING_LAMBERT'); d('USE_NORMAL'); break;
 		case MATERIAL_PHONG: d('LIGHTING_PHONG'); d('USE_NORMAL'); break;
 		case MATERIAL_STANDARD: d('LIGHTING_STANDARD'); d('USE_NORMAL'); break;
@@ -1014,6 +1227,11 @@ export function buildBuiltinShader(p) {
 	if (p.materialArray) { d('USE_MATERIAL_ARRAY'); d('MATERIAL_ARRAY_SIZE', p.materialArraySize | 0); d('MATERIAL_PAD', p.materialPad | 0); }
 	if (p.flatShading) d('FLAT_SHADED');
 	if (p.doubleSided) d('DOUBLE_SIDED');
+	if (p.flipSided) d('FLIP_SIDED');
+	if (p.envMap) {
+		for (const line of envMapDefines(p, false)) defines.push(line);
+		if (p.envWorldPos) d('ENV_WORLDPOS');
+	}
 	if (p.fog) d('USE_FOG');
 	if (p.alphaTest) d('USE_ALPHATEST');
 	if (p.sizeAttenuation) d('SIZE_ATTENUATION');
@@ -1037,7 +1255,8 @@ export function buildBuiltinShader(p) {
 		return { vertexShader: vs, fragmentShader: '#version 300 es\nprecision mediump float;\nlayout(location = 0) out vec4 fragColor;\nvoid main() { fragColor = vec4( 0.0 ); }\n' };
 	}
 	// insert shadow helper functions after sampleShadow definition
-	let fs = fragmentShader;
+	if (_resolvedFragment === null) _resolvedFragment = resolveIncludes(fragmentShader);
+	let fs = _resolvedFragment;
 	const helpers = shadowFactorFunctions(p.numDirShadows | 0, p.numSpotShadows | 0, p.numPointShadows | 0);
 	if (helpers !== '') fs = fs.replace('#ifdef USE_NORMALMAP\nvec3 perturbNormal2Arb', helpers + '#ifdef USE_NORMALMAP\nvec3 perturbNormal2Arb');
 	return { vertexShader: vs, fragmentShader: prefix + fs };
@@ -1098,6 +1317,20 @@ function generateDefines(defines) {
 const filterEmptyLine = (string) => string !== '';
 
 /**
+ * Usage mask of the object uniforms in a ShaderMaterial's vertex shader with OBJ_ELIGIBLE set when a batched
+ * variant can be built (ShaderMaterialBatching.js), 0 otherwise. Computed on the include-resolved sources
+ * once per material version (`needsUpdate` recompiles anyway), so the renderer can pick the variant before
+ * any program is compiled.
+ */
+export function customShaderObjTexMode(material) {
+	if (material._objTexVersion === material.version && material._objTexMode !== undefined) return material._objTexMode;
+	let mode = analyzeVertexSource(resolveIncludes(material.vertexShader), material.isRawShaderMaterial === true);
+	if ((mode & OBJ_ELIGIBLE) === 0 || fragmentReferencesObjectUniforms(resolveIncludes(material.fragmentShader))) mode = 0;
+	material._objTexMode = mode; material._objTexVersion = material.version;
+	return mode;
+}
+
+/**
  * Builds a ShaderMaterial / RawShaderMaterial program the way three.js's WebGLProgram does:
  * same prefix (precision, SHADER_TYPE/NAME, custom defines, feature defines, built-in uniforms
  * and attributes), #include <chunk> resolution from the ported ShaderChunk library,
@@ -1137,6 +1370,8 @@ export function buildCustomShader(material, p) {
 			p.morphTargetsCount > 0 ? '#define MORPHTARGETS_TEXTURE_STRIDE ' + p.morphTextureStride : '',
 			p.morphTargetsCount > 0 ? '#define MORPHTARGETS_COUNT ' + p.morphTargetsCount : '',
 			p.doubleSided ? '#define DOUBLE_SIDED' : '',
+			p.flipSided ? '#define FLIP_SIDED' : '',
+			...envMapDefines(p, true),
 			p.sizeAttenuation ? '#define USE_SIZEATTENUATION' : '',
 			'uniform mat4 modelMatrix;',
 			'uniform mat4 modelViewMatrix;',
@@ -1179,11 +1414,13 @@ export function buildCustomShader(material, p) {
 			customDefines,
 			p.fog ? '#define USE_FOG' : '',
 			p.fogExp2 ? '#define FOG_EXP2' : '',
-			p.vertexColors ? '#define USE_COLOR' : '',
+			(p.vertexColors || p.instancingColor) ? '#define USE_COLOR' : '', // three.js defines USE_COLOR in the fragment shader for instance colours too
 			p.vertexAlphas ? '#define USE_COLOR_ALPHA' : '',
 			p.vertexUv1s ? '#define USE_UV1' : '',
 			p.flatShading ? '#define FLAT_SHADED' : '',
 			p.doubleSided ? '#define DOUBLE_SIDED' : '',
+			p.flipSided ? '#define FLIP_SIDED' : '',
+			...envMapDefines(p, false),
 			p.premultipliedAlpha ? '#define PREMULTIPLIED_ALPHA' : '',
 			'uniform mat4 viewMatrix;',
 			'uniform vec3 cameraPosition;',
@@ -1203,6 +1440,17 @@ export function buildCustomShader(material, p) {
 	vertexShader = resolveIncludes(vertexShader); vertexShader = replaceLightNums(vertexShader, material.defines);
 	fragmentShader = resolveIncludes(fragmentShader); fragmentShader = replaceLightNums(fragmentShader, material.defines);
 	vertexShader = unrollLoops(vertexShader); fragmentShader = unrollLoops(fragmentShader);
+
+	// Automatic instancing (ShaderMaterialBatching.js): can this program's object uniforms be fed from the matrix texture?
+	const objTexMode = customShaderObjTexMode(material);
+	let extensions = '';
+	if (p.objectTexture === true && objTexMode !== 0) {
+		const block = objectFetchBlock(objTexMode, p.multiDraw === true, MATRIX_TEXTURE_WIDTH, TEXELS_PER_OBJECT);
+		if (isRaw) prefixVertex = block + prefixVertex;
+		else prefixVertex = prefixVertex.replace('uniform mat4 modelMatrix;\nuniform mat4 modelViewMatrix;\n', block).replace('uniform mat3 normalMatrix;\n', '');
+		vertexShader = rewriteVertexSource(vertexShader, isRaw);
+		if (p.multiDraw === true) extensions = '#extension GL_ANGLE_multi_draw : require\n';
+	}
 
 	// Always GLSL ES 3.00 output. Sources written for GLSL 1.00 get the same shims three.js applies.
 	const versionString = '#version 300 es\n';
@@ -1225,7 +1473,7 @@ export function buildCustomShader(material, p) {
 			'#define textureCubeGradEXT textureGrad'
 		].filter(filterEmptyLine).join('\n') + '\n' + prefixFragment;
 	}
-	return { vertexShader: versionString + prefixVertex + vertexShader, fragmentShader: versionString + prefixFragment + fragmentShader };
+	return { vertexShader: versionString + extensions + prefixVertex + vertexShader, fragmentShader: versionString + prefixFragment + fragmentShader, objTexMode };
 }
 
 

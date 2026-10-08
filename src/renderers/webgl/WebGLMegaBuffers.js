@@ -4,8 +4,10 @@
  * DIFFERENT geometries can then be issued as a single multiDrawElementsWEBGL call, with each
  * sub-draw reading its object matrix from a per-frame matrix texture via gl_DrawID.
  *
- * Only attributes with fixed locations (position, normal, uv, color, uv1) are packed; indices are
- * rebased to the page's vertex base at upload time (no base-vertex extension needed).
+ * Only attributes with fixed locations (position, normal, uv, color, uv1, and custom ShaderMaterial attributes
+ * that have a per-name location, see WebGLPrograms.customAttributeLocation) are packed; indices are
+ * rebased to the page's vertex base at upload time, so any geometry of a page is drawn with the page's VAO
+ * and a plain index offset (drawElements) or first vertex (drawArrays): the base-vertex extensions would add nothing.
  *
  * Dynamic geometry: uploads are queued (`queue`) when a geometry is actually drawn through a page and
  * executed together (`flush`) before the draws. Only attributes whose `version` changed are queued, and
@@ -19,7 +21,9 @@
  */
 import { ATTRIBUTE_LOCATIONS } from './WebGLBindingStates.js';
 import { mergeUpdateRanges } from './WebGLAttributes.js';
+import { customAttributeLocation, customAttributeCount } from './WebGLPrograms.js';
 import { BufferAttribute } from '../../core/BufferAttribute.js';
+import { attributeEpoch } from '../../core/attributeEpoch.js';
 
 const NO_HOOK = BufferAttribute.prototype.onUploadCallback;
 
@@ -30,7 +34,7 @@ const MAX_STAGE_BYTES = 1 << 20; // longest run merged into one upload
 // and a private copy of a million-vertex buffer would double its GPU memory.
 const MAX_VERTICES = 1 << 16;
 
-/** What a record draws as. Strips, loops and segments of a Line are expanded to indexed LINES so any mix shares one multi-draw. */
+/** What a record draws as. Strips, loops and segments of a Line are expanded to indexed LINES pairs so any mix shares one multi-draw. */
 export const KIND_TRIANGLES = 0, KIND_LINE_STRIP = 1, KIND_LINE_LOOP = 2, KIND_LINE_SEGMENTS = 3, KIND_POINTS = 4;
 const KIND_COUNT = 5;
 const SLOT_COUNT = KIND_COUNT * 8;
@@ -39,7 +43,7 @@ export function slotOf(kind, needs) { return kind === KIND_TRIANGLES ? 0 : kind 
 /** Stand-ins for "this geometry is not paged as that slot", comparable by identity (draw-command caches remember them). */
 export const NULL_RECORDS = Array.from({ length: SLOT_COUNT }, (_, slot) => ({ page: null, slot }));
 
-/** Lines / points page only the attributes their material reads: position plus `needs` (bit 0 colour, 1 lineDistance, 2 uv). Meshes page everything with a fixed location. */
+/** Lines / points page only the attributes their material reads: position plus `needs` (bit 0 colour, 1 lineDistance, 2 uv). Meshes page everything with a location. */
 function wanted(name, kind, needs) {
 	if (kind === KIND_TRIANGLES) return true;
 	return name === 'position' || (name === 'color' && (needs & 1) !== 0) || (name === 'lineDistance' && (needs & 2) !== 0) || (name === 'uv' && (needs & 4) !== 0);
@@ -139,6 +143,7 @@ class WebGLMegaBuffers {
 		this.gl = gl;
 		this.state = state;
 		this.info = info;
+		this.maxAttributes = gl.getParameter(gl.MAX_VERTEX_ATTRIBS);
 		this.layouts = new Map(); // signature -> { signature, attributes:[{name,itemSize,glType,bytes,normalized,location}], indexed, pages: [] }
 		this.records = new WeakMap(); // geometry -> [record per (kind, needs) slot] (page === null: not eligible for this layout version)
 		this._onGeometryDispose = this._onGeometryDispose.bind(this);
@@ -152,10 +157,7 @@ class WebGLMegaBuffers {
 		this._idxStage = new Uint32Array(1 << 12); this._idxStageN = 0;
 	}
 
-	/**
-	 * Returns the allocation record for a geometry drawn as `kind` (allocating/reallocating as needed), or null if it must use
-	 * the regular path. `needs` (lines / points) lists the optional attributes the material reads, see `wanted`.
-	 */
+	/** Returns the allocation record for a geometry (allocating/reallocating as needed), or null if it must use the regular path. */
 	ensure(geometry, kind = KIND_TRIANGLES, needs = 0) {
 		const drawRange = geometry.drawRange;
 		if (drawRange.start !== 0 || drawRange.count !== Infinity) return null; // honoured by the regular path; checked every frame
@@ -172,8 +174,11 @@ class WebGLMegaBuffers {
 					return null;
 				}
 				const position = geometry.attributes.position, index = geometry.index;
-				if (position.count === rec.vertexCount) {
-					if (rec.kind >= KIND_LINE_STRIP && rec.kind <= KIND_LINE_SEGMENTS) { if (this._indexCountOf(geometry, rec.kind) === rec.indexCount) return rec; }
+				// a program linked after the page layout was made may have registered a name this geometry also carries
+				const known = customAttributeCount();
+				const stale = rec.registered !== known && (rec.registered = known, this._missesCustomAttribute(rec, geometry));
+				if (!stale && position.count === rec.vertexCount) {
+					if (kind >= KIND_LINE_STRIP && kind <= KIND_LINE_SEGMENTS) { if (this._indexCountOf(geometry, kind) === rec.indexCount) return rec; }
 					else if (rec.indexed ? index !== null && index.count === rec.indexCount : index === null) return rec;
 				}
 			}
@@ -187,6 +192,38 @@ class WebGLMegaBuffers {
 
 	/** `ensure` for a slot number (see slotOf). */
 	ensureSlot(geometry, slot) { return this.ensure(geometry, slot === 0 ? KIND_TRIANGLES : slot >> 3, slot & 7); }
+
+	_missesCustomAttribute(rec, geometry) {
+		const names = rec.layout.customNames;
+		for (const name in geometry.attributes) {
+			if (ATTRIBUTE_LOCATIONS[name] !== undefined || names.has(name)) continue;
+			const location = customAttributeLocation(name);
+			if (location >= 0 && location < this.maxAttributes) return true;
+		}
+		return false;
+	}
+
+	/** True when this record's page carries every custom attribute `program` reads, at the locations the program uses. */
+	supports(rec, program) {
+		if (!program.hasCustomAttributes) return true;
+		if (rec.okProgram === program) return true;
+		if (rec.badProgram === program) return false;
+		let ok = program.customFixed;
+		if (ok) {
+			const list = program.customAttributes;
+			for (let i = 0; i < list.length; i++) if (!rec.layout.customNames.has(list[i].name)) { ok = false; break; }
+		}
+		if (ok) rec.okProgram = program; else rec.badProgram = program;
+		return ok;
+	}
+
+	/** Uploads what changed in `geometry` since the record was last synchronised (nothing, cheaply, when no attribute was touched). */
+	sync(rec, geometry) {
+		if (rec.epoch === attributeEpoch.value) return;
+		this.queue(rec, geometry);
+		this.flush();
+		rec.epoch = attributeEpoch.value;
+	}
 
 	_onGeometryDispose(event) {
 		const geometry = event.target;
@@ -209,13 +246,16 @@ class WebGLMegaBuffers {
 		if (attributes.position === undefined || attributes.position.isInterleavedBufferAttribute) return null;
 		const list = [];
 		for (const name in attributes) {
-			const location = ATTRIBUTE_LOCATIONS[name];
-			if (location === undefined || !wanted(name, kind, needs)) continue;
+			let location = ATTRIBUTE_LOCATIONS[name];
+			if (location !== undefined && !wanted(name, kind, needs)) continue;
+			const custom = location === undefined;
+			if (custom) { location = customAttributeLocation(name); if (location < 0 || location >= this.maxAttributes) continue; }
 			const a = attributes[name];
-			if (a.isInterleavedBufferAttribute || a.isInstancedBufferAttribute || a.onUploadCallback !== NO_HOOK) return null;
+			// a custom attribute that cannot be packed is left out (a program that reads it is then drawn the regular way, see supports())
+			if (a.isInterleavedBufferAttribute || a.isInstancedBufferAttribute || a.onUploadCallback !== NO_HOOK || a.isFloat16BufferAttribute === true) { if (custom) continue; return null; }
 			const glType = glTypeOf(this.gl, a.array);
-			if (glType === 0) return null;
-			if (a.count !== attributes.position.count) return null;
+			const integerType = glType === this.gl.INT || glType === this.gl.UNSIGNED_INT;
+			if (glType === 0 || (a.gpuType === 1013 && !integerType) || a.count !== attributes.position.count) { if (custom) continue; return null; }
 			list.push({ name, itemSize: a.itemSize, glType, bytes: a.array.BYTES_PER_ELEMENT, normalized: a.normalized === true, location });
 		}
 		list.sort((x, y) => x.location - y.location);
@@ -223,7 +263,7 @@ class WebGLMegaBuffers {
 		const indexed = geometry.index !== null || kind === KIND_LINE_STRIP || kind === KIND_LINE_LOOP || kind === KIND_LINE_SEGMENTS;
 		const signature = list.map((a) => `${a.name}:${a.itemSize}:${a.glType}:${a.normalized ? 1 : 0}`).join('|') + (indexed ? '|i' : '');
 		let layout = this.layouts.get(signature);
-		if (layout === undefined) { layout = { signature, attributes: list, indexed, pages: [] }; this.layouts.set(signature, layout); }
+		if (layout === undefined) { layout = { signature, attributes: list, indexed, pages: [], customNames: new Set() }; for (const a of list) if (ATTRIBUTE_LOCATIONS[a.name] === undefined) layout.customNames.add(a.name); this.layouts.set(signature, layout); }
 		return layout;
 	}
 
@@ -270,6 +310,7 @@ class WebGLMegaBuffers {
 			versions: new Array(n).fill(-1), seqs: new Array(n).fill(-1), indexVersion: -1, indexSeq: -1,
 			layoutVersion: geometry._layoutVersion, indexed: layout.indexed, reuploads: 0, dynamic: false,
 			kind, slot: slotOf(kind, needs), mode: kind === KIND_TRIANGLES ? this.gl.TRIANGLES : kind === KIND_POINTS ? this.gl.POINTS : this.gl.LINES,
+			epoch: -1, okProgram: null, badProgram: null, registered: customAttributeCount(), counted: false,
 		};
 		if (this._registry !== null) this._registry.register(geometry, rec, rec);
 		return rec;

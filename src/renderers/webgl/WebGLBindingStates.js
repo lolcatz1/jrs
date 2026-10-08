@@ -10,7 +10,7 @@
 
 import { attributeEpoch } from '../../core/attributeEpoch.js';
 
-const LOC_POSITION = 0, LOC_NORMAL = 1, LOC_UV = 2, LOC_COLOR = 3, LOC_UV1 = 4, LOC_INSTANCE_COLOR = 5, LOC_SKIN_INDEX = 6, LOC_SKIN_WEIGHT = 7, LOC_INSTANCE_MATRIX = 8, LOC_LINE_DISTANCE = 12;
+const LOC_POSITION = 0, LOC_NORMAL = 1, LOC_UV = 2, LOC_COLOR = 3, LOC_UV1 = 4, LOC_INSTANCE_COLOR = 5, LOC_SKIN_INDEX = 6, LOC_SKIN_WEIGHT = 7, LOC_INSTANCE_MATRIX = 8, LOC_LINE_DISTANCE = 6;
 const ATTRIBUTE_LOCATIONS = { position: LOC_POSITION, normal: LOC_NORMAL, uv: LOC_UV, color: LOC_COLOR, uv1: LOC_UV1, skinIndex: LOC_SKIN_INDEX, skinWeight: LOC_SKIN_WEIGHT, lineDistance: LOC_LINE_DISTANCE };
 
 class WebGLBindingStates {
@@ -37,6 +37,20 @@ class WebGLBindingStates {
 		if (geometry.index !== null) this.attributes.remove(geometry.index);
 	}
 
+	_entry(geometry) {
+		let entry = this.cache.get(geometry);
+		if (entry === undefined) {
+			entry = { vaos: [null, null, null], layoutVersion: -1, instancedFor: null, hadInstanceColor: false, custom: null, attrList: null, versionSum: -1, epoch: -1, epochMode: -1 };
+			this.cache.set(geometry, entry);
+			geometry.addEventListener('dispose', this._onGeometryDispose);
+			if (this.info !== null) this.info.memory.geometries++;
+		}
+		return entry;
+	}
+
+	/** Counts a geometry that is drawn from a mega-buffer page (it never gets a VAO of its own) in info.memory and hooks its disposal. */
+	register(geometry) { this._entry(geometry); }
+
 	/**
 	 * Make sure the geometry's GPU buffers are current and bind the right VAO.
 	 * mode: 0 plain, 1 InstancedMesh (its own instance attributes), 2 batched (renderer's instance buffer).
@@ -48,13 +62,7 @@ class WebGLBindingStates {
 	 */
 	bind(geometry, mode, instancedObject, batchBuffer, program = null) {
 		const gl = this.gl, attributes = this.attributes;
-		let entry = this.cache.get(geometry);
-		if (entry === undefined) {
-			entry = { vaos: [null, null, null], layoutVersion: -1, instancedFor: null, hadInstanceColor: false, custom: null, attrList: null, versionSum: -1, epoch: -1, epochMode: -1 };
-			this.cache.set(geometry, entry);
-			geometry.addEventListener('dispose', this._onGeometryDispose);
-			if (this.info !== null) this.info.memory.geometries++;
-		}
+		const entry = this._entry(geometry);
 		const useCustom = program !== null && program.hasCustomAttributes === true;
 		// Fast path: layout unchanged and no attribute version changed since the VAO was last validated.
 		if (entry.layoutVersion === geometry._layoutVersion && entry.attrList !== null && (mode !== 1 || entry.instancedFor === instancedObject)) {

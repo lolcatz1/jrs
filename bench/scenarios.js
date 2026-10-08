@@ -357,6 +357,45 @@ export const scenarios = {
 			return { scene, camera };
 		}
 	},
+	// 2000 MeshStandardMaterial spheres lit by scene.environment (a procedural equirectangular DataTexture
+	// run through PMREMGenerator): image-based lighting through the PMREM path on every object, 8 materials.
+	'pbr-envmap': {
+		n: 2000,
+		build(T, n) {
+			const scene = new T.Scene();
+			const camera = new T.PerspectiveCamera(60, 4 / 3, 0.1, 500);
+			camera.position.set(0, 0, 35); camera.lookAt(0, 0, 0);
+			const w = 256, h = 128, data = new Uint8Array(w * h * 4);
+			for (let y = 0; y < h; y++) {
+				const v = (y + 0.5) / h;
+				for (let x = 0; x < w; x++) {
+					const u = (x + 0.5) / w;
+					let r, g, b;
+					if (v > 0.5) { const t = (v - 0.5) * 2; r = 80 + 50 * (1 - t); g = 130 + 70 * (1 - t); b = 255; } else { const t = v * 2; r = 120 * t + 30; g = 90 * t + 25; b = 50 * t + 15; }
+					const du = Math.min(Math.abs(u - 0.3), 1 - Math.abs(u - 0.3)), dv = v - 0.8;
+					const sun = Math.exp(-(du * du + dv * dv) * 400);
+					r += 255 * sun; g += 230 * sun; b += 160 * sun;
+					if (u > 0.6 && u < 0.75 && v > 0.45 && v < 0.6) { r = 255; g = 60; b = 30; }
+					const i = (y * w + x) * 4;
+					data[i] = Math.min(255, r | 0); data[i + 1] = Math.min(255, g | 0); data[i + 2] = Math.min(255, b | 0); data[i + 3] = 255;
+				}
+			}
+			const env = new T.DataTexture(data, w, h, T.RGBAFormat, T.UnsignedByteType);
+			env.mapping = T.EquirectangularReflectionMapping; env.magFilter = T.LinearFilter; env.minFilter = T.LinearFilter; env.needsUpdate = true;
+			scene.environment = env;
+			scene.environmentIntensity = 1.2;
+			const sun = new T.DirectionalLight(0xffffff, 1.5); sun.position.set(1, 2, 3); scene.add(sun);
+			const geometry = new T.SphereGeometry(0.45, 16, 12);
+			const materials = [];
+			for (let i = 0; i < 8; i++) materials.push(new T.MeshStandardMaterial({ color: new T.Color().setHSL(i / 8, 0.6, 0.55), roughness: (i % 4) / 3, metalness: i < 4 ? 1 : 0.1 }));
+			for (let i = 0; i < n; i++) {
+				const m = new T.Mesh(geometry, materials[(i * 5) % 8]);
+				const p = grid(i, n, 1.3); m.position.set(p[0], p[1], p[2]);
+				scene.add(m);
+			}
+			return { scene, camera };
+		}
+	},
 };
 
 function buildSkinnedCrowd(T, n) {

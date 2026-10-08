@@ -26,6 +26,83 @@ function baseScene(T, camZ = 5) {
 	return { scene, camera };
 }
 
+
+// ---------------------------------------------------------------------------
+// environment maps: the same scene is built with jrs and with three.js (when a three.js renderer is
+// available, see conformance.html) and the two images are compared pixel for pixel.
+// ---------------------------------------------------------------------------
+
+/** Seeded, library-independent procedural equirectangular sky: gradient + sun blob + a coloured band. */
+function equirectData(w, h) {
+	const data = new Uint8Array(w * h * 4);
+	for (let y = 0; y < h; y++) {
+		const v = (y + 0.5) / h; // 0 = bottom (-Y) .. 1 = top (+Y)
+		for (let x = 0; x < w; x++) {
+			const u = (x + 0.5) / w;
+			let r, g, b;
+			if (v > 0.5) { const t = (v - 0.5) * 2; r = 90 + 40 * (1 - t); g = 140 + 60 * (1 - t); b = 255; } // sky
+			else { const t = v * 2; r = 110 * t + 40; g = 80 * t + 30; b = 40 * t + 20; } // ground
+			const du = Math.min(Math.abs(u - 0.72), 1 - Math.abs(u - 0.72)), dv = v - 0.78;
+			const sun = Math.exp(-(du * du * 60 + dv * dv * 60) * 8);
+			r += 255 * sun; g += 240 * sun; b += 180 * sun;
+			if (u > 0.2 && u < 0.3 && v > 0.4 && v < 0.6) { r = 255; g = 40; b = 40; } // red billboard
+			if (u > 0.5 && u < 0.52) { r = 255; g = 255; b = 255; } // thin bright stripe
+			const i = (y * w + x) * 4;
+			data[i] = Math.min(255, r | 0); data[i + 1] = Math.min(255, g | 0); data[i + 2] = Math.min(255, b | 0); data[i + 3] = 255;
+		}
+	}
+	return data;
+}
+function equirectTexture(T, w = 128, h = 64, colorSpace = null) {
+	const tex = new T.DataTexture(equirectData(w, h), w, h, T.RGBAFormat, T.UnsignedByteType);
+	tex.mapping = T.EquirectangularReflectionMapping;
+	tex.magFilter = T.LinearFilter; tex.minFilter = T.LinearFilter;
+	if (colorSpace) tex.colorSpace = colorSpace;
+	tex.needsUpdate = true;
+	return tex;
+}
+/** Six 4x4 faces with distinct colours and a diagonal gradient, so reflections carry direction information. */
+function cubeTexture(T, mapping) {
+	const base = [[255, 40, 40], [40, 255, 40], [40, 40, 255], [255, 255, 40], [40, 255, 255], [255, 40, 255]];
+	const faces = base.map((c) => {
+		const d = new Uint8Array(4 * 4 * 4);
+		for (let y = 0; y < 4; y++) for (let x = 0; x < 4; x++) { const k = (x + y) / 6, i = (y * 4 + x) * 4; d[i] = c[0] * (1 - k) + 255 * k; d[i + 1] = c[1] * (1 - k) + 255 * k; d[i + 2] = c[2] * (1 - k) + 255 * k; d[i + 3] = 255; }
+		return new T.DataTexture(d, 4, 4, T.RGBAFormat, T.UnsignedByteType);
+	});
+	const tex = new T.CubeTexture(faces);
+	if (mapping !== undefined) tex.mapping = mapping;
+	tex.magFilter = T.LinearFilter; tex.minFilter = T.LinearFilter; tex.generateMipmaps = false;
+	tex.needsUpdate = true;
+	return tex;
+}
+function diffImagesEnv(a, b) {
+	let sum = 0, maxd = 0, differing = 0, over16 = 0;
+	for (let i = 0; i < a.length; i += 4) {
+		const d = Math.max(Math.abs(a[i] - b[i]), Math.abs(a[i + 1] - b[i + 1]), Math.abs(a[i + 2] - b[i + 2]));
+		sum += Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]);
+		if (d > maxd) maxd = d; if (d > 0) differing++; if (d > 16) over16++;
+	}
+	const n = a.length / 4;
+	return { mean: +(sum / (n * 3)).toFixed(3), max: maxd, differing, fractionOver16: over16 / n };
+}
+/**
+ * Renders `build(T, renderer)` -> { scene, camera } with jrs and (if available) with three.js and
+ * compares the images. `probe(px)` is the fallback sanity check when three.js is not available.
+ */
+function compareWithThree(T, renderer, ref, build, probe, limits = { mean: 0.1, max: 8 }) {
+	const run = (lib, r) => { const { scene, camera } = build(lib, r); r.render(scene, camera); return readAll(r); };
+	const ours = run(T, renderer);
+	if (!ref || !ref.THREE || !ref.renderer) {
+		const ok = probe ? probe(ours) : true;
+		return { pass: ok, detail: 'three.js not available here: probe only' + (ok ? ' (ok)' : ' (failed)') };
+	}
+	const theirs = run(ref.THREE, ref.renderer);
+	const d = diffImagesEnv(ours, theirs);
+	const pass = d.mean <= limits.mean && d.max <= limits.max && (!probe || probe(ours));
+	return { pass, detail: `vs three.js r${ref.THREE.REVISION}: mean abs diff ${d.mean}, max ${d.max}, ${d.differing} of ${ours.length / 4} pixels differ${d.fractionOver16 > 0 ? ` (${(100 * d.fractionOver16).toFixed(3)}% by >16)` : ''}` };
+}
+const notBackground = (px) => { let n = 0; for (let i = 0; i < px.length; i += 4) if (px[i] !== 0 || px[i + 1] !== 0 || px[i + 2] !== 64) n++; return n > px.length / 4 * 0.05; };
+
 export const SIZE = 256;
 
 /** Procedural skinned cylinder: 2 bones along Y (root at the bottom, child in the middle), weights blend across the middle. */
@@ -171,7 +248,7 @@ export function conformanceTests() {
 				renderer.render(scene, camera); const a2 = probe();
 				d.intensity = 0.2; renderer.render(scene, camera); const b = probe();           // direct light mutation
 				d.color.r = 0; renderer.render(scene, camera); const c = probe();                // direct colour channel mutation
-				scene.fog = new T.Fog(0x402000, 1, 7); renderer.render(scene, camera); const e = probe();
+				scene.fog = new T.Fog(0x402000, 1, 7); renderer.render(scene, camera); const e = probe(); // fog colour != background: a fully fogged pixel must stay distinguishable
 				scene.fog.near = 0.1; scene.fog.far = 4.8; renderer.render(scene, camera); const f = probe();  // direct fog mutation
 				camera.position.x = 3; renderer.render(scene, camera); const g = probe();                    // camera move
 				const same = a.every((v, i) => v === a2[i]);
@@ -609,6 +686,258 @@ export function conformanceTests() {
 				const pa = readPixel(renderer, 128 - 44, 128), pb = readPixel(renderer, 128 + 44, 128), pc = readPixel(renderer, 128, 128 - 66);
 				const switches = renderer.info.render.programSwitches;
 				return { pass: added === 2 && near(pa, [255, 0, 0], 2) && near(pb, [0, 0, 255], 2) && near(pc, [0, 255, 0], 2) && switches === 2, detail: `programs created ${added} (expected 2: same source -> shared, different defines -> own), colours ${fmt(pa)} ${fmt(pb)} ${fmt(pc)}, program switches per frame ${switches} (expected 2)` };
+			}
+		},
+
+		{
+			name: 'scene.environment (equirect DataTexture through PMREMGenerator) on MeshStandardMaterial', run(T, renderer, ctx) {
+				return compareWithThree(T, renderer, ctx, (L) => {
+					const { scene, camera } = baseScene(L, 6);
+					scene.environment = equirectTexture(L);
+					scene.environmentIntensity = 1.3;
+					scene.environmentRotation.set(0, 0.4, 0);
+					const geo = new L.SphereGeometry(0.7, 48, 24);
+					const mats = [
+						new L.MeshStandardMaterial({ color: 0xffffff, roughness: 0.05, metalness: 1 }),
+						new L.MeshStandardMaterial({ color: 0xdd8844, roughness: 0.4, metalness: 0.5 }),
+						new L.MeshStandardMaterial({ color: 0x88aaff, roughness: 1.0, metalness: 0 }),
+						new L.MeshStandardMaterial({ color: 0xffffff, roughness: 0.25, metalness: 0, envMapIntensity: 2 }),
+					];
+					for (let i = 0; i < 4; i++) { const m = new L.Mesh(geo, mats[i]); m.position.set((i % 2) * 1.6 - 0.8, (i < 2 ? 0.8 : -0.8), 0); scene.add(m); }
+					const d = new L.DirectionalLight(0xffffff, 1.5); d.position.set(2, 3, 4); scene.add(d);
+					return { scene, camera };
+				}, notBackground);
+			}
+		},
+		{
+			name: 'material.envMap on MeshStandardMaterial (cube texture) + PMREMGenerator.fromCubemap / fromEquirectangular as envMap', run(T, renderer, ctx) {
+				return compareWithThree(T, renderer, ctx, (L, r) => {
+					const { scene, camera } = baseScene(L, 6);
+					const cube = cubeTexture(L);
+					const pmrem = new L.PMREMGenerator(r);
+					pmrem.compileEquirectangularShader();
+					const fromEquirect = pmrem.fromEquirectangular(equirectTexture(L)).texture;
+					const fromCube = pmrem.fromCubemap(cube).texture;
+					pmrem.dispose();
+					const geo = new L.SphereGeometry(0.7, 48, 24);
+					const a = new L.Mesh(geo, new L.MeshStandardMaterial({ roughness: 0.2, metalness: 1, envMap: cube })); a.position.set(-0.8, 0.8, 0); scene.add(a);
+					const b = new L.Mesh(geo, new L.MeshStandardMaterial({ roughness: 0.6, metalness: 0.3, color: 0xcc9966, envMap: fromEquirect, envMapIntensity: 1.5 })); b.position.set(0.8, 0.8, 0); scene.add(b);
+					const c = new L.Mesh(geo, new L.MeshStandardMaterial({ roughness: 0.1, metalness: 0.9, envMap: fromCube })); c.position.set(-0.8, -0.8, 0); c.material.envMapRotation.set(0.3, 1.0, 0); scene.add(c);
+					const d = new L.Mesh(geo, new L.MeshPhysicalMaterial({ roughness: 0.3, metalness: 0, color: 0x3366ff, envMap: fromEquirect })); d.position.set(0.8, -0.8, 0); scene.add(d);
+					scene.add(new L.AmbientLight(0xffffff, 0.4));
+					return { scene, camera };
+				}, notBackground);
+			}
+		},
+		{
+			name: 'MeshBasicMaterial envMap: cube texture with Multiply / Mix / Add, reflectivity, refraction, rotation', run(T, renderer, ctx) {
+				return compareWithThree(T, renderer, ctx, (L) => {
+					const { scene, camera } = baseScene(L, 7);
+					const cube = cubeTexture(L), refr = cubeTexture(L, L.CubeRefractionMapping);
+					const geo = new L.SphereGeometry(0.75, 48, 24), box = new L.BoxGeometry(1.2, 1.2, 1.2);
+					const items = [
+						new L.Mesh(geo, new L.MeshBasicMaterial({ color: 0xffcc88, envMap: cube, combine: L.MultiplyOperation })),
+						new L.Mesh(geo, new L.MeshBasicMaterial({ color: 0xffcc88, envMap: cube, combine: L.MixOperation, reflectivity: 0.6 })),
+						new L.Mesh(geo, new L.MeshBasicMaterial({ color: 0x224466, envMap: cube, combine: L.AddOperation, reflectivity: 0.5 })),
+						new L.Mesh(box, new L.MeshBasicMaterial({ color: 0xffffff, envMap: refr, refractionRatio: 0.7 })),
+						new L.Mesh(geo, new L.MeshBasicMaterial({ color: 0xffffff, envMap: cube, combine: L.MixOperation, reflectivity: 1 })),
+						new L.Mesh(box, new L.MeshBasicMaterial({ color: 0xffffff, envMap: cube, combine: L.MixOperation, reflectivity: 1 })),
+					];
+					items[4].material.envMapRotation.set(0.5, 1.2, 0.2);
+					items[5].rotation.set(0.4, 0.6, 0);
+					for (let i = 0; i < items.length; i++) { items[i].position.set((i % 3) * 1.9 - 1.9, i < 3 ? 1 : -1, 0); scene.add(items[i]); }
+					return { scene, camera };
+				}, notBackground);
+			}
+		},
+		{
+			name: 'MeshLambertMaterial / MeshPhongMaterial envMap: equirect (converted to a cube map), specularMap strength, scene.environment irradiance', run(T, renderer, ctx) {
+				return compareWithThree(T, renderer, ctx, (L) => {
+					const { scene, camera } = baseScene(L, 7);
+					const env = equirectTexture(L);
+					const spec = new L.DataTexture(new Uint8Array([255, 255, 255, 255, 40, 40, 40, 255, 40, 40, 40, 255, 255, 255, 255, 255]), 2, 2, L.RGBAFormat, L.UnsignedByteType);
+					spec.magFilter = L.NearestFilter; spec.minFilter = L.NearestFilter; spec.needsUpdate = true;
+					const geo = new L.SphereGeometry(0.75, 48, 24);
+					const items = [
+						new L.Mesh(geo, new L.MeshLambertMaterial({ color: 0xffffff, envMap: env, combine: L.MixOperation, reflectivity: 0.8 })),
+						new L.Mesh(geo, new L.MeshPhongMaterial({ color: 0xaa6633, shininess: 50, envMap: env, combine: L.MultiplyOperation })),
+						new L.Mesh(geo, new L.MeshPhongMaterial({ color: 0xffffff, envMap: env, combine: L.MixOperation, specularMap: spec })),
+						new L.Mesh(geo, new L.MeshLambertMaterial({ color: 0xffffff })),
+						new L.Mesh(geo, new L.MeshPhongMaterial({ color: 0xffffff, shininess: 20 })),
+						new L.Mesh(geo, new L.MeshLambertMaterial({ color: 0x88ff88, envMap: env, combine: L.AddOperation, reflectivity: 0.3 })),
+					];
+					items[0].material.envMapRotation.set(0, 1.0, 0);
+					for (let i = 0; i < items.length; i++) { items[i].position.set((i % 3) * 1.9 - 1.9, i < 3 ? 1 : -1, 0); scene.add(items[i]); }
+					scene.environment = equirectTexture(L); // lights the two plain materials through PMREM irradiance
+					scene.environmentIntensity = 0.8;
+					const d = new L.DirectionalLight(0xffffff, 2); d.position.set(1, 2, 3); scene.add(d);
+					scene.add(new L.AmbientLight(0xffffff, 0.2));
+					return { scene, camera };
+				}, notBackground);
+			}
+		},
+		{
+			name: 'scene.background equirect texture: sharp, with backgroundBlurriness (PMREM), backgroundIntensity and backgroundRotation', run(T, renderer, ctx) {
+				const sharp = compareWithThree(T, renderer, ctx, (L) => {
+					const { scene, camera } = baseScene(L, 5);
+					scene.background = equirectTexture(L, 256, 128);
+					scene.backgroundIntensity = 0.9;
+					scene.backgroundRotation.set(0, 0.7, 0);
+					camera.rotation.set(0.2, 0.5, 0);
+					scene.add(new L.Mesh(new L.BoxGeometry(1, 1, 1), new L.MeshBasicMaterial({ color: 0xff0000 })));
+					return { scene, camera };
+				}, notBackground);
+				const blurred = compareWithThree(T, renderer, ctx, (L) => {
+					const { scene, camera } = baseScene(L, 5);
+					scene.background = equirectTexture(L, 256, 128);
+					scene.backgroundBlurriness = 0.35;
+					scene.backgroundIntensity = 1.2;
+					camera.rotation.set(-0.2, 2.5, 0);
+					return { scene, camera };
+				}, notBackground);
+				return { pass: sharp.pass && blurred.pass, detail: `sharp: ${sharp.detail}; blurred: ${blurred.detail}` };
+			}
+		},
+		{
+			name: 'scene.background cube texture + 2D texture plane; MeshStandardMaterial under a cube-texture environment', run(T, renderer, ctx) {
+				const cube = compareWithThree(T, renderer, ctx, (L) => {
+					const { scene, camera } = baseScene(L, 5);
+					scene.background = cubeTexture(L);
+					scene.environment = cubeTexture(L);
+					camera.rotation.set(0.3, -0.6, 0);
+					const m = new L.Mesh(new L.TorusKnotGeometry(0.8, 0.3, 96, 16), new L.MeshStandardMaterial({ color: 0xffffff, roughness: 0.3, metalness: 1 })); m.position.z = 0; scene.add(m);
+					return { scene, camera };
+				}, notBackground);
+				const plane = compareWithThree(T, renderer, ctx, (L) => {
+					const { scene, camera } = baseScene(L, 5);
+					const tex = new L.DataTexture(equirectData(32, 16), 32, 16, L.RGBAFormat, L.UnsignedByteType); tex.magFilter = L.LinearFilter; tex.minFilter = L.LinearFilter; tex.needsUpdate = true;
+					scene.background = tex;
+					scene.backgroundIntensity = 0.7;
+					scene.add(new L.Mesh(new L.SphereGeometry(0.8, 24, 12), new L.MeshBasicMaterial({ color: 0x00ff00 })));
+					return { scene, camera };
+				}, notBackground);
+				return { pass: cube.pass && plane.pass, detail: `cube: ${cube.detail}; plane: ${plane.detail}` };
+			}
+		},
+		{
+			name: 'CubeCamera + WebGLCubeRenderTarget reflection (Basic envMap, Standard through PMREM of the render target)', run(T, renderer, ctx) {
+				return compareWithThree(T, renderer, ctx, (L, r) => {
+					const { scene, camera } = baseScene(L, 6);
+					scene.background = new L.Color(0x203040);
+					// surroundings: coloured boxes on all sides
+					const colours = [0xff4444, 0x44ff44, 0x4444ff, 0xffff44, 0x44ffff, 0xff44ff];
+					const dirs = [[4, 0, 0], [-4, 0, 0], [0, 4, 0], [0, -4, 0], [0, 0, 4], [0, 0, -4]];
+					for (let i = 0; i < 6; i++) { const b = new L.Mesh(new L.BoxGeometry(2, 2, 2), new L.MeshBasicMaterial({ color: colours[i] })); b.position.set(dirs[i][0], dirs[i][1], dirs[i][2]); b.rotation.set(i * 0.3, i * 0.5, 0); scene.add(b); }
+					const d = new L.DirectionalLight(0xffffff, 2); d.position.set(1, 3, 2); scene.add(d);
+					scene.add(new L.AmbientLight(0xffffff, 0.3));
+					const target = new L.WebGLCubeRenderTarget(64, { generateMipmaps: true, minFilter: L.LinearMipmapLinearFilter });
+					const cubeCamera = new L.CubeCamera(0.1, 50, target);
+					cubeCamera.position.set(0, 0, 0);
+					scene.add(cubeCamera);
+					cubeCamera.update(r, scene);
+					const a = new L.Mesh(new L.SphereGeometry(0.9, 48, 24), new L.MeshBasicMaterial({ envMap: target.texture })); a.position.set(-1.1, 0, 0); scene.add(a);
+					const b = new L.Mesh(new L.SphereGeometry(0.9, 48, 24), new L.MeshStandardMaterial({ envMap: target.texture, roughness: 0.15, metalness: 1 })); b.position.set(1.1, 0, 0); scene.add(b);
+					return { scene, camera };
+				}, notBackground);
+			}
+		},
+		{
+			name: 'PMREMGenerator.fromScene as scene.environment', run(T, renderer, ctx) {
+				return compareWithThree(T, renderer, ctx, (L, r) => {
+					const { scene, camera } = baseScene(L, 5);
+					const envScene = new L.Scene();
+					envScene.background = new L.Color(0x334455);
+					const sky = new L.Mesh(new L.SphereGeometry(10, 16, 8), new L.MeshBasicMaterial({ color: 0x88aaff, side: L.BackSide })); envScene.add(sky);
+					const lamp = new L.Mesh(new L.BoxGeometry(2, 2, 2), new L.MeshBasicMaterial({ color: 0xffffff })); lamp.position.set(3, 4, 2); envScene.add(lamp);
+					const floor = new L.Mesh(new L.PlaneGeometry(20, 20), new L.MeshBasicMaterial({ color: 0x664422 })); floor.rotation.x = -Math.PI / 2; floor.position.y = -3; envScene.add(floor);
+					const pmrem = new L.PMREMGenerator(r);
+					const rt = pmrem.fromScene(envScene, 0.04, 0.1, 100);
+					pmrem.dispose();
+					scene.environment = rt.texture;
+					const geo = new L.SphereGeometry(0.8, 48, 24);
+					const a = new L.Mesh(geo, new L.MeshStandardMaterial({ color: 0xffffff, roughness: 0.1, metalness: 1 })); a.position.x = -1; scene.add(a);
+					const b = new L.Mesh(geo, new L.MeshStandardMaterial({ color: 0xff8844, roughness: 0.7, metalness: 0 })); b.position.x = 1; scene.add(b);
+					return { scene, camera };
+				}, notBackground);
+			}
+		},
+		{
+			name: 'ShaderMaterial batching: 50 instances reading modelViewMatrix / normalMatrix (matches individual draws and three.js)', run(T, renderer, ref) {
+				const build = (L) => {
+					const { scene, camera } = baseScene(L, 6);
+					const vsView = 'varying vec3 vN; varying vec3 vP; void main(){ vN = normalize( normalMatrix * normal ); vec4 mv = modelViewMatrix * vec4( position, 1.0 ); vP = mv.xyz; gl_Position = projectionMatrix * mv; }';
+					const vsWorld = 'varying vec3 vN; varying vec3 vP; void main(){ vec4 wp = modelMatrix * vec4( position, 1.0 ); vN = normalize( mat3( modelMatrix ) * normal ); vP = ( viewMatrix * wp ).xyz; gl_Position = projectionMatrix * viewMatrix * wp; }';
+					const fs = 'uniform vec3 color; varying vec3 vN; varying vec3 vP; void main(){ vec3 n = normalize( vN ); vec3 l = normalize( vec3( 0.4, 0.8, 0.6 ) ); float d = max( dot( n, l ), 0.0 ); float s = pow( max( dot( reflect( -l, n ), normalize( -vP ) ), 0.0 ), 24.0 ); gl_FragColor = vec4( color * ( 0.25 + 0.75 * d ) + s, 1.0 ); }';
+					const view = new L.ShaderMaterial({ vertexShader: vsView, fragmentShader: fs, uniforms: { color: { value: new L.Color(0xff8844) } } });
+					const world = new L.ShaderMaterial({ vertexShader: vsWorld, fragmentShader: fs, uniforms: { color: { value: new L.Color(0x4488ff) } } });
+					const box = new L.BoxGeometry(0.3, 0.3, 0.3), meshes = [];
+					// 50 instances of one geometry + one view-space material -> one instanced draw
+					for (let i = 0; i < 50; i++) { const m = new L.Mesh(box, view); m.position.set((i % 10 - 4.5) * 0.42, (Math.floor(i / 10) - 2) * 0.42 + 0.9, 0); m.rotation.set(i * 0.3, i * 0.5, 0); m.scale.setScalar(0.8 + (i % 3) * 0.15); scene.add(m); meshes.push(m); }
+					// 25 unique geometries + one world-space material -> one multi-draw (instanced per geometry without WEBGL_multi_draw)
+					for (let i = 0; i < 25; i++) { const m = new L.Mesh(new L.BoxGeometry(0.3, 0.3 + (i % 4) * 0.08, 0.3), world); m.position.set((i % 5 - 2) * 0.5, -1.7 + Math.floor(i / 5) * 0.2 - 0.3, 0); m.rotation.set(i * 0.4, i * 0.7, 0); scene.add(m); meshes.push(m); }
+					// per-object uniform through onBeforeRender: stays a draw of its own and sees its own value
+					const hooked = new L.Mesh(box, view); hooked.position.set(2.4, -0.3, 0); hooked.scale.setScalar(2);
+					hooked.onBeforeRender = (r, sc, c, g, mat) => { mat.uniforms.color.value.setRGB(0.2, 0.9, 0.3); mat.uniformsNeedUpdate = true; };
+					hooked.onAfterRender = (r, sc, c, g, mat) => { mat.uniforms.color.value.setHex(0xff8844); mat.uniformsNeedUpdate = true; };
+					scene.add(hooked); meshes.push(hooked);
+					return { scene, camera, meshes };
+				};
+				const a = build(T);
+				renderer.autoBatchShaderMaterials = true; renderer.render(a.scene, a.camera); renderer.render(a.scene, a.camera);
+				const batched = readAll(renderer), callsA = renderer.info.render.calls, programs = renderer.info.programs.length;
+				renderer.autoBatchShaderMaterials = false; renderer.render(a.scene, a.camera);
+				const single = readAll(renderer), callsB = renderer.info.render.calls;
+				renderer.autoBatchShaderMaterials = true;
+				const vsSingle = diffImages(batched, single);
+				const d = compareWithReference(ref, build, batched);
+				const hookPx = readPixel(renderer, 230, 140);
+				const glErr = renderer.getContext().getError();
+				return { pass: callsA <= 4 && callsB === 76 && vsSingle.maxDiff === 0 && refOk(d) && hookPx[1] > hookPx[0] && glErr === 0,
+					detail: `draw calls ${callsB} -> ${callsA} (50 instanced + 25 multi-drawn + 1 hooked); batched vs individual draws max diff ${vsSingle.maxDiff}; ${refDetail(d)}; hooked mesh ${fmt(hookPx)} (green); programs ${programs}; GL error ${glErr}` };
+			}
+		},
+		{
+			name: 'ShaderMaterial custom attributes drawn from mega-buffer pages (matches three.js)', run(T, renderer, ref) {
+				const vs = 'attribute vec3 aTint; attribute float aMix; varying vec3 vTint; varying float vMix; void main(){ vTint = aTint; vMix = aMix; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }';
+				const fs = 'uniform vec3 base; varying vec3 vTint; varying float vMix; void main(){ gl_FragColor = vec4(mix(base, vTint, vMix), 1.0); }';
+				const tinted = (L, geometry, seed) => {
+					const n = geometry.attributes.position.count, tint = new Float32Array(n * 3), mixv = new Float32Array(n);
+					for (let i = 0; i < n; i++) { tint[i * 3] = ((i + seed) % 3) / 2; tint[i * 3 + 1] = ((i * 2 + seed) % 5) / 4; tint[i * 3 + 2] = (seed % 2); mixv[i] = 0.5 + 0.5 * ((i + seed) % 2); }
+					geometry.setAttribute('aTint', new L.BufferAttribute(tint, 3)); geometry.setAttribute('aMix', new L.BufferAttribute(mixv, 1));
+					return geometry;
+				};
+				const build = (L, frame) => {
+					const { scene, camera } = baseScene(L, 7);
+					const mats = [0, 1].map((k) => new L.ShaderMaterial({ uniforms: { base: { value: new L.Color(0.1 + 0.4 * k, 0.2, 0.3) } }, vertexShader: vs, fragmentShader: fs }));
+					const make = (geometry, x, y, m) => { const mesh = new L.Mesh(geometry, m); mesh.position.set(x, y, 0); mesh.rotation.set(0.3 * x, 0.4 + 0.2 * y, 0); scene.add(mesh); return mesh; };
+					const g0 = tinted(L, new L.BoxGeometry(1.2, 1.2, 1.2), 1), g1 = tinted(L, new L.SphereGeometry(0.7, 12, 8), 2), g2 = tinted(L, new L.PlaneGeometry(1.4, 1.4).toNonIndexed(), 3);
+					const g3 = tinted(L, new L.BoxGeometry(1, 1, 1, 2, 2, 2), 4); g3.clearGroups(); g3.addGroup(0, 36, 0); g3.addGroup(36, 36, 1);
+					const a = make(g0, -2.2, 1.2, mats[0]), b = make(g1, 0, 1.2, mats[1]), c = make(g2, 2.2, 1.2, mats[0]), d = make(g0, -2.2, -1.2, mats[1]), e = make(g3, 0, -1.2, mats);
+					const w = make(g1, 2.2, -1.2, mats[0]);
+					if (frame > 0) { // dynamic update of a custom attribute, and wireframe toggled
+						const t = g1.attributes.aTint; for (let i = 0; i < t.array.length; i++) t.array[i] = 1 - t.array[i]; t.needsUpdate = true;
+						w.material = new L.ShaderMaterial({ uniforms: { base: { value: new L.Color(1, 1, 0) } }, vertexShader: vs, fragmentShader: fs, wireframe: true });
+					}
+					return { scene, camera, mats, g1 };
+				};
+				const run = (L, rend, frame) => {
+					const s = build(L, frame);
+					// a depth-only pass first (position only), as a shadow pass would: page layouts are made before the colour programs exist
+					const depth = new L.ShaderMaterial({ vertexShader: 'void main(){ gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }', fragmentShader: 'void main(){ gl_FragColor = vec4(1.0); }' });
+					if (rend === renderer) { s.scene.overrideMaterial = depth; renderer.render(s.scene, s.camera); s.scene.overrideMaterial = null; }
+					return s;
+				};
+				const s0 = run(T, renderer, 0);
+				renderer.render(s0.scene, s0.camera);
+				const px0 = readAll(renderer);
+				const d0 = compareWithReference(ref, (L) => build(L, 0), px0);
+				const s1 = run(T, renderer, 1);
+				renderer.render(s1.scene, s1.camera);
+				const px1 = readAll(renderer);
+				const d1 = compareWithReference(ref, (L) => build(L, 1), px1);
+				const recs = renderer.megaBuffers ? renderer.megaBuffers.records.get(s1.g1) : null; const rec = recs ? recs[0] : null; // slot 0: meshes // the sphere must have been drawn from a page that carries the custom attributes
+				const paged = rec === null || (rec.page !== null && rec.layout.customNames.has('aTint') && rec.layout.customNames.has('aMix'));
+				return { pass: paged && refOk(d0) && refOk(d1) && diffImages(px0, px1).badFraction > 0.001, detail: `${paged ? 'paged' : 'NOT paged'}; static: ${refDetail(d0)}; after attribute update + wireframe: ${refDetail(d1)}` };
 			}
 		},
 		{

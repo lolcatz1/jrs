@@ -2,14 +2,53 @@ import {
 	MATERIAL_BASIC, MATERIAL_LAMBERT, MATERIAL_PHONG, MATERIAL_STANDARD, MATERIAL_NORMAL, MATERIAL_DEPTH, MATERIAL_LINE, MATERIAL_POINTS,
 	MATERIAL_SPRITE, MATERIAL_SHADER, MATERIAL_SHADOW_DEPTH, TEXTURE_UNITS, pointShadowUnit, buildBuiltinShader, buildCustomShader
 } from '../shaders/ShaderLib.js';
-import { DoubleSide, NoToneMapping, SRGBColorSpace, BasicShadowMap, NormalBlending } from '../../constants.js';
+import { DoubleSide, BackSide, NoToneMapping, SRGBColorSpace, BasicShadowMap, NormalBlending, CubeUVReflectionMapping, CubeRefractionMapping } from '../../constants.js';
+import { OBJ_ELIGIBLE, OBJ_USES_MODEL } from '../shaders/ShaderMaterialBatching.js';
 
 export const BLOCK_FRAME = 0;
 export const BLOCK_LIGHTS = 1;
 export const BLOCK_MATERIAL = 2;
 
 let _programId = 0;
-const FIXED_ATTRIBUTES = { position: 0, normal: 1, uv: 2, color: 3, uv1: 4, instanceColor: 5, skinIndex: 6, skinWeight: 7, instanceMatrix: 8, lineDistance: 12 };
+const FIXED_ATTRIBUTES = { position: 0, normal: 1, uv: 2, color: 3, uv1: 4, instanceColor: 5, skinIndex: 6, skinWeight: 7, instanceMatrix: 8, lineDistance: 6 };
+
+/**
+ * Custom (ShaderMaterial) attribute names get one location per name, shared by every program and every
+ * renderer, so geometries holding them can live in a mega-buffer page whose VAO fits all those programs.
+ * Locations start at 9, just above instanceMatrix (a mat4, 8-11): a program that declares instanceMatrix
+ * cannot use 9-11 and keeps linker-chosen locations for the colliding names (see WebGLProgram.customFixed).
+ */
+const CUSTOM_ATTRIBUTE_BASE = 9;
+const customAttributeIndex = new Map();
+/** Fixed location for a custom attribute name, or -1 when it has none (not seen in any program yet). */
+export function customAttributeLocation(name) {
+	const i = customAttributeIndex.get(name);
+	return i === undefined ? -1 : CUSTOM_ATTRIBUTE_BASE + i;
+}
+/** Number of custom attribute names registered so far (grows when a program with a new name is linked). */
+export function customAttributeCount() { return customAttributeIndex.size; }
+const ATTRIBUTE_DECLARATION = /(?<=^|[;}\n])\s*(?:attribute|in)\s+(?:(?:highp|mediump|lowp)\s+)?(\w+)\s+([^;(){}]+);/g; // a declaration starts a line or follows ';' / '}' (function parameters follow '(' or ',')
+function bindCustomAttributeLocations(gl, program, vertexSource, maxAttributes) {
+	if (/layout\s*\(\s*location/.test(vertexSource)) return; // explicit locations: leave everything to the shader
+	const usesInstanceMatrix = /^[ \t]*#define[ \t]+USE_INSTANCING\b/m.test(vertexSource); // the prefix declares instanceMatrix only under this define
+	const hasTangent = /^[ \t]*#define[ \t]+USE_TANGENT\b/m.test(vertexSource);
+	ATTRIBUTE_DECLARATION.lastIndex = 0;
+	let m;
+	while ((m = ATTRIBUTE_DECLARATION.exec(vertexSource)) !== null) {
+		if (m[1].startsWith('mat')) continue; // multi-location attributes stay with the linker
+		const names = m[2].split(',');
+		for (let k = 0; k < names.length; k++) {
+			if (names[k].indexOf('[') !== -1) continue;
+			const name = names[k].trim();
+			if (name === '' || FIXED_ATTRIBUTES[name] !== undefined || (name === 'tangent' && !hasTangent)) continue; // the prefix declares tangent (and the other optional attributes) under defines
+			let i = customAttributeIndex.get(name);
+			if (i === undefined) { i = customAttributeIndex.size; customAttributeIndex.set(name, i); }
+			const location = CUSTOM_ATTRIBUTE_BASE + i;
+			if (location >= maxAttributes || (usesInstanceMatrix && location < 12)) continue;
+			gl.bindAttribLocation(program, location, name);
+		}
+	}
+}
 
 /**
  * A compiled program plus everything the renderer needs to drive it without
@@ -35,8 +74,9 @@ class WebGLProgram {
 		gl.bindAttribLocation(program, 5, 'instanceColor');
 		gl.bindAttribLocation(program, 6, 'skinIndex');
 		gl.bindAttribLocation(program, 7, 'skinWeight');
+		gl.bindAttribLocation(program, 6, 'lineDistance'); // shares the skinning slot: a program never reads both
 		gl.bindAttribLocation(program, 8, 'instanceMatrix');
-		gl.bindAttribLocation(program, 12, 'lineDistance');
+		if (parameters.materialType === MATERIAL_SHADER) bindCustomAttributeLocations(gl, program, vertexSource, gl.getParameter(gl.MAX_VERTEX_ATTRIBS)); // built-in shaders have no custom attributes
 		gl.linkProgram(program);
 		if (gl.getProgramParameter(program, gl.LINK_STATUS) === false) {
 			const log = gl.getProgramInfoLog(program);
@@ -100,15 +140,23 @@ class WebGLProgram {
 			if (FIXED_ATTRIBUTES[info.name] === undefined && location >= 0) this.customAttributes.push(record);
 		}
 		this.hasCustomAttributes = this.customAttributes.length > 0;
+		/** every custom attribute sits at its per-name fixed location (so a mega-buffer page VAO can feed this program) */
+		this.customFixed = true;
+		for (let i = 0; i < this.customAttributes.length; i++) {
+			const r = this.customAttributes[i];
+			if (r.locationSize !== 1 || customAttributeLocation(r.name) !== r.location) { this.customFixed = false; break; }
+		}
 
 		// Texture units are assigned once per program at link time and never change:
 		// built-in programs use the fixed table, custom (ShaderMaterial) programs number their
 		// samplers sequentially. Every active sampler gets its own unit(s) whether or not a
 		// texture is ever assigned to it, so a program is always valid to draw with.
 		const isCustom = parameters.materialType === MATERIAL_SHADER;
+		const reserveMatrixUnit = isCustom && this.uniforms.objectMatrices !== undefined; // batched variant: unit 15 belongs to the matrix texture
 		this.samplerUniforms = [];
 		let nextUnit = 0;
-		gl.useProgram(program);
+		gl.useProgram(program); // leaves this program current in GL: the renderer syncs its state cache (justLinked)
+		this.justLinked = true;
 		for (const name in this.uniforms) {
 			const u = this.uniforms[name];
 			const target = samplerTarget(gl, u.type);
@@ -127,8 +175,16 @@ class WebGLProgram {
 				continue;
 			}
 			if (!isCustom && (TEXTURE_UNITS[name] !== undefined || TEXTURE_UNITS[name + '0'] !== undefined)) {
-				unit = u.size > 1 ? TEXTURE_UNITS[name + '0'] : TEXTURE_UNITS[name];
+				// a sampler array of size 1 (one shadow-casting light) is still an array: it takes the '<name>0' slot
+				unit = TEXTURE_UNITS[name] !== undefined ? TEXTURE_UNITS[name] : TEXTURE_UNITS[name + '0'];
+			} else if (isCustom && name === 'objectMatrices') {
+				// batched variant of a custom program: the matrix texture keeps its fixed unit (bound by the renderer, never by the material)
+				unit = TEXTURE_UNITS.objectMatrices;
+				u.unit = unit;
+				gl.uniform1i(u.location, unit);
+				continue;
 			} else {
+				if (reserveMatrixUnit && nextUnit <= TEXTURE_UNITS.objectMatrices && nextUnit + u.size > TEXTURE_UNITS.objectMatrices) nextUnit = TEXTURE_UNITS.objectMatrices + 1;
 				unit = nextUnit; nextUnit += u.size;
 			}
 			u.unit = unit;
@@ -141,6 +197,12 @@ class WebGLProgram {
 			}
 			this.samplerUniforms.push(u);
 		}
+		/**
+		 * Automatic instancing (ShaderMaterialBatching.js): 0 when this program's object uniforms cannot be fed
+		 * from the matrix texture, else the usage mask (which of modelMatrix / modelViewMatrix / normalMatrix
+		 * the vertex shader reads) with OBJ_ELIGIBLE set. Built-in programs always qualify.
+		 */
+		this.objTexMode = OBJ_ELIGIBLE | OBJ_USES_MODEL;
 		this.materialVersion = -1; // last material version whose non-block uniforms were set (ShaderMaterial)
 		this.materialId = -1;
 	}
@@ -206,7 +268,8 @@ class WebGLPrograms {
 	}
 
 	/** Compute the integer key + parameters for a built-in material. */
-	getParameters(material, object, scene, lights, variant) {
+	/** `envMap` is the texture the material will actually sample (resolved by the renderer from material.envMap / scene.environment), or null. */
+	getParameters(material, object, scene, lights, variant, envMap = null) {
 		const renderer = this.renderer;
 		const materialType = variant.shadowPass ? MATERIAL_SHADOW_DEPTH : materialTypeOf(material);
 		const geometry = object.geometry;
@@ -218,7 +281,7 @@ class WebGLPrograms {
 		// so those features are dropped from the key and every such caster shares one lean program.
 		const leanShadow = variant.shadowPass === true && !(material.alphaTest > 0);
 		const vertexColors = !leanShadow && material.vertexColors === true && attributes.color !== undefined;
-		const fog = scene.fog !== null && material.fog === true && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH;
+		const fog = scene.fog != null && material.fog === true && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH;
 		const map = !leanShadow && !!material.map;
 		const alphaMap = !leanShadow && !!material.alphaMap;
 		const emissiveMap = isLit && !!material.emissiveMap;
@@ -226,8 +289,13 @@ class WebGLPrograms {
 		const roughnessMap = materialType === MATERIAL_STANDARD && !!material.roughnessMap;
 		const metalnessMap = materialType === MATERIAL_STANDARD && !!material.metalnessMap;
 		const aoMap = (isLit || materialType === MATERIAL_BASIC) && !!material.aoMap;
-		const specularMap = materialType === MATERIAL_PHONG && !!material.specularMap;
-		const useUv = hasUv && (map || alphaMap || emissiveMap || normalMap || roughnessMap || metalnessMap || aoMap || specularMap);
+		if (variant.shadowPass || !(isLit || materialType === MATERIAL_BASIC || materialType === MATERIAL_SHADER)) envMap = null;
+		if (materialType === MATERIAL_STANDARD && envMap !== null && envMap.mapping !== CubeUVReflectionMapping) envMap = null; // Standard samples the PMREM layout only
+		const hasEnvMap = envMap !== null;
+		const envMapCubeUV = hasEnvMap && envMap.mapping === CubeUVReflectionMapping;
+		// specularMap modulates Phong's specular term and the env-map reflection of Basic / Lambert
+		const specularMap = (materialType === MATERIAL_PHONG || (hasEnvMap && (materialType === MATERIAL_BASIC || materialType === MATERIAL_LAMBERT))) && !!material.specularMap;
+		const useUv = hasUv && (map || alphaMap || emissiveMap || normalMap || roughnessMap || metalnessMap || aoMap || specularMap) ;
 		const useUv1 = hasUv1 && aoMap;
 		const receiveShadow = variant.receiveShadow && isLit && renderer.shadowMap.enabled;
 		const numDirShadows = receiveShadow ? lights.numDirShadows : 0;
@@ -236,7 +304,9 @@ class WebGLPrograms {
 		const pointShadowBasic = numPointShadows > 0 && renderer.shadowMap.type === BasicShadowMap;
 		const toneMapping = (material.toneMapped && renderer.toneMapping !== NoToneMapping && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH && materialType !== MATERIAL_NORMAL) ? renderer.toneMapping : NoToneMapping;
 		const currentRenderTarget = renderer.getRenderTarget();
-		const sRGBOutput = (currentRenderTarget === null ? renderer.outputColorSpace : currentRenderTarget.texture.colorSpace) === SRGBColorSpace && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH && materialType !== MATERIAL_NORMAL;
+		// three.js: shaders encode to the output colour space only when rendering to the canvas; a render target
+		// is written in the working (linear) space (an sRGB render target encodes in hardware)
+		const sRGBOutput = currentRenderTarget === null && renderer.outputColorSpace === SRGBColorSpace && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH && materialType !== MATERIAL_NORMAL;
 		// skinning and morph targets are object / geometry features (same rule as three.js: the program follows the object)
 		const skinning = object.isSkinnedMesh === true;
 		const morphAttributes = geometry.morphAttributes;
@@ -272,8 +342,15 @@ class WebGLPrograms {
 		p.materialArraySize = renderer._materialWindow;
 		p.materialPad = renderer._materialPad;
 		p.flatShading = isLit && material.flatShading === true;
-		p.doubleSided = !leanShadow && material.side === DoubleSide;
+		p.doubleSided = !leanShadow && variant.side === DoubleSide;
+		p.flipSided = !leanShadow && variant.side === BackSide;
 		p.leanShadow = leanShadow;
+		p.envMap = hasEnvMap;
+		p.envMapCubeUV = envMapCubeUV;
+		p.envMapRefraction = hasEnvMap && envMap.mapping === CubeRefractionMapping;
+		p.envMapCubeUVHeight = envMapCubeUV ? envMap.image.height : 0;
+		p.combine = hasEnvMap && material.combine !== undefined ? material.combine : 0;
+		p.envWorldPos = hasEnvMap && (materialType === MATERIAL_LAMBERT || materialType === MATERIAL_PHONG || normalMap);
 		p.fog = fog;
 		p.fogExp2 = fog && scene.fog.isFogExp2 === true;
 		p.alphaTest = material.alphaTest > 0;
@@ -301,7 +378,7 @@ class WebGLPrograms {
 		key = key * 2 + (map ? 1 : 0); key = key * 2 + (alphaMap ? 1 : 0); key = key * 2 + (emissiveMap ? 1 : 0); key = key * 2 + (normalMap ? 1 : 0);
 		key = key * 2 + (roughnessMap ? 1 : 0); key = key * 2 + (metalnessMap ? 1 : 0); key = key * 2 + (aoMap ? 1 : 0); key = key * 2 + (specularMap ? 1 : 0);
 		key = key * 2 + (useUv ? 1 : 0); key = key * 2 + (useUv1 ? 1 : 0); key = key * 2 + (vertexColors ? 1 : 0); key = key * 2 + (p.vertexAlphas ? 1 : 0);
-		key = key * 2 + (p.instancing ? 1 : 0); key = key * 2 + (p.instancingColor ? 1 : 0); key = key * 2 + (p.flatShading ? 1 : 0); key = key * 2 + (p.doubleSided ? 1 : 0);
+		key = key * 2 + (p.instancing ? 1 : 0); key = key * 2 + (p.instancingColor ? 1 : 0); key = key * 2 + (p.flatShading ? 1 : 0); key = key * 2 + (p.doubleSided ? 1 : 0); key = key * 2 + (p.flipSided ? 1 : 0);
 		key = key * 2 + (fog ? 1 : 0); key = key * 2 + (p.alphaTest ? 1 : 0); key = key * 2 + (p.sizeAttenuation ? 1 : 0); key = key * 2 + (p.premultipliedAlpha ? 1 : 0);
 		key = key * 2 + (p.dithering ? 1 : 0); key = key * 2 + (hasUv1 ? 1 : 0); key = key * 8 + toneMapping; key = key * 2 + (sRGBOutput ? 1 : 0);
 		key = key * 8 + numDirShadows; key = key * 8 + numSpotShadows; key = key * 2 + (p.multiDraw ? 1 : 0); key = key * 2 + (p.objectTexture ? 1 : 0); key = key * 2 + (leanShadow ? 1 : 0);
@@ -315,6 +392,8 @@ class WebGLPrograms {
 		key = key * 2 + (skinning ? 1 : 0); key = key * 2 + (p.morphTargets ? 1 : 0); key = key * 2 + (p.morphNormals ? 1 : 0); key = key * 2 + (p.morphColors ? 1 : 0);
 		key = key * 4 + morphTextureStride; key = key * 256 + morphTargetsCount;
 		key = key * 2 + (instanceMaterial ? 1 : 0); key = key * 2 + (p.dashed ? 1 : 0); key = key * 2 + (p.opaque ? 1 : 0);
+		key = key * 2 + (hasEnvMap ? 1 : 0); key = key * 2 + (envMapCubeUV ? 1 : 0); key = key * 2 + (p.envMapRefraction ? 1 : 0);
+		key = key * 4 + (p.combine & 3); key = key * 16 + (envMapCubeUV ? (Math.log2(p.envMapCubeUVHeight) | 0) & 15 : 0);
 		p.key = key;
 		return p;
 	}
@@ -332,6 +411,7 @@ class WebGLPrograms {
 			parameters = Object.assign({}, parameters); // `parameters` is the shared scratch object of getParameters
 			const src = parameters.materialType === MATERIAL_SHADER ? buildCustomShader(material, parameters) : buildBuiltinShader(parameters);
 			program = new WebGLProgram(this.gl, parameters, src.vertexShader, src.fragmentShader);
+			if (src.objTexMode !== undefined) program.objTexMode = src.objTexMode;
 			// the constructor binds the new program to set sampler units; tell the state cache
 			this.renderer.state.currentProgram = program.program;
 			this.cache.set(key, program);

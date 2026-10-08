@@ -3,6 +3,7 @@ bench/results/*.png
 bench/results/full-run.log
 *.log
 .DS_Store
+bench/results/fuzz/
 
 # raw CDP profiles from bench/profile-cpu.mjs (large; summaries are committed as JSON)
 bench/results/swarm/profiles/*.cpuprofile
