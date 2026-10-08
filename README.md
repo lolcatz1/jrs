@@ -190,7 +190,14 @@ npm install        # pulls three.js (for parity tests and benchmarks) and playwr
 npm test           # 100 parity tests against three.js r186 (math, scene graph, raycasting, geometries)
 npm run bench      # headless benchmark, all scenarios; add scenario names or --compare
 node bench/smoke.mjs   # end-to-end rendering checks in headless Chromium
+npm run fuzz           # differential fuzzer: random scenes rendered with three.js and jrs, pixels compared per frame
 ```
+
+`npm run fuzz -- --seeds=200` builds 200 seeded random scenes (geometries, materials, maps, blending,
+stencil, fog, lights, shadows, instancing, hierarchies, render targets, override materials, tone
+mapping, camera moves) with both libraries and fails on the first frame whose pixels differ beyond the
+tolerances of `bench/results/latest.json`; `--seed=N` reproduces one and writes both images plus a diff
+to `bench/results/fuzz/`. See `bench/results/swarm/parity-fuzzer.md` for coverage and known exclusions.
 
 The tests construct the same objects with both libraries from the same seeded random inputs
 and compare results numerically, so every API listed above is checked for identical behaviour,
