@@ -64,7 +64,7 @@ over 60 frames after 10 warm-up frames, 320x240 (median frame time, so single ga
 | instanced-100k: one InstancedMesh, 100 000 instances | 100,000 | 0.1 ms | 0.0 ms | n/a (both < 0.1 ms) | 0 → 1 ms | 1 → 1 | 0 / 0 |
 | shader-client: 1,313 meshes, all ShaderMaterial, 12 shaders × 2 material instances sharing one 30-uniform object, 2D/3D/array/cube samplers, custom attributes, opaque + transparent (no auto-batching possible) | 1,313 | 5.1 ms | 2.8 ms | **1.8x** | 121 → 6 ms | 1313 → 1313 | 0 / 0 |
 | shader-client-static: same materials, fixed camera, nothing moving, 3 passes per frame (2 shadow render targets with `scene.overrideMaterial`, main pass with stencil shadow volumes), ~215 draws per pass | 211 | 34.3 ms | 22.5 ms | **1.5x** | 424 → 647 ms | 217 → 217 | 0 / 0 |
-| shadows: 2 000 casters/receivers, 1024² directional shadow map | 2,000 | 69.1 ms | 1.6 ms | **43.2x** | 152 → 3 ms | 4001 → 3 | 0.134 / 33 |
+| shadows: 2 000 casters/receivers, 1024² directional shadow map | 2,000 | 7.6 ms | 1.5 ms | **5.1x** | 165 → 2 ms | 4001 → 3 | 0.134 / 33 |
 
 The instanced scenario is a single draw call in both libraries; it measures only the fixed per-frame cost. Full data: `bench/results/latest.json`.
 

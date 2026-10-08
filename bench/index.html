@@ -164,6 +164,39 @@ window.compareScenario = async function (scenarioName, n) {
 	const count = a.length * 3 / 4;
 	return { scenario: scenarioName, meanAbsDiff: +(sum / count).toFixed(3), maxDiff: maxd, fractionOver32: +(bad / count).toFixed(4), differingPixels: differing, samples, jrs: images.jrs.url, three: images.three.url };
 };
+/** Captures `frames` rendered images of a scenario (camera orbiting once) plus the JS time spent in each render. */
+window.captureScenario = async function (libName, scenarioName, opts = {}) {
+	const T = libs[libName];
+	const sc = scenarios[scenarioName];
+	const n = opts.n || sc.n, frames = opts.frames || 120, warmup = 5;
+	const width = opts.width || 480, height = opts.height || 360;
+	const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height; document.body.appendChild(canvas);
+	const renderer = new T.WebGLRenderer({ canvas, antialias: false, preserveDrawingBuffer: true, stencil: true });
+	renderer.setSize(width, height, false);
+	if (scenarioName === 'shadows') renderer.shadowMap.enabled = true;
+	const { scene, camera, update, warm, frame } = sc.build(T, n);
+	camera.aspect = width / height; camera.updateProjectionMatrix();
+	if (warm) warm(renderer);
+	const r = camera.position.length(), y0 = camera.position.y;
+	const rxz = Math.sqrt(r * r - y0 * y0);
+	const base = Math.atan2(camera.position.x, camera.position.z);
+	const orbit = (f) => { if (opts.orbit === false) return; const a = base + (f / frames) * Math.PI * 2; camera.position.set(rxz * Math.sin(a), y0, rxz * Math.cos(a)); camera.lookAt(0, 0, 0); };
+	const gl = renderer.getContext();
+	for (let f = 0; f < warmup; f++) { if (update) update(f); orbit(0); if (frame) frame(renderer); else renderer.render(scene, camera); }
+	gl.finish();
+	const images = [], times = [];
+	for (let f = 0; f < frames; f++) {
+		if (update) update(warmup + f);
+		orbit(f);
+		const s = performance.now();
+		if (frame) frame(renderer); else renderer.render(scene, camera);
+		times.push(performance.now() - s);
+		images.push(canvas.toDataURL('image/png'));
+	}
+	const calls = renderer.info.render.calls;
+	renderer.dispose(); canvas.remove();
+	return { lib: libName, scenario: scenarioName, times, images, drawCalls: calls };
+};
 window.ready = true;
 </script>
 </body></html>
