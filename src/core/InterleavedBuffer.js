@@ -1,5 +1,6 @@
 import { generateUUID } from '../math/MathUtils.js';
 import { StaticDrawUsage } from '../constants.js';
+import { attributeEpoch } from './attributeEpoch.js';
 
 /**
  * Interleaved vertex data shared by several InterleavedBufferAttributes.
@@ -15,10 +16,11 @@ class InterleavedBuffer {
 		this.usage = StaticDrawUsage;
 		this.updateRanges = [];
 		this.version = 0;
+		this._uploadSeq = 0;
 		this.uuid = generateUUID();
 	}
 	onUploadCallback() {}
-	set needsUpdate(value) { if (value === true) this.version++; }
+	set needsUpdate(value) { if (value === true) { this.version++; attributeEpoch.value++; } }
 	setUsage(value) { this.usage = value; return this; }
 	addUpdateRange(start, count) { this.updateRanges.push({ start, count }); }
 	clearUpdateRanges() { this.updateRanges.length = 0; }

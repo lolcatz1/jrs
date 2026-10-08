@@ -47,10 +47,22 @@ async function main() {
 	report.glVersion = gl.getParameter(gl.VERSION);
 	$('env').textContent = `${report.gpu} · ${report.glVersion} · dpr ${devicePixelRatio}`;
 
+	// three.js reference renderer for the pixel-comparison checks (local copy first, then the CDN)
+	let ref = null;
+	try {
+		let THREE;
+		try { THREE = await import('../node_modules/three/build/three.module.js'); } catch (e) { THREE = await import('https://unpkg.com/three@0.186.1/build/three.module.js'); }
+		const rc = document.createElement('canvas'); rc.width = rc.height = SIZE;
+		const rr = new THREE.WebGLRenderer({ canvas: rc, antialias: false, preserveDrawingBuffer: true, stencil: true });
+		rr.setPixelRatio(1); rr.setSize(SIZE, SIZE, false);
+		ref = { THREE, renderer: rr };
+	} catch (e) { ref = null; }
+	report.threeReference = ref !== null;
+
 	let pass = 0, fail = 0;
 	for (const t of conformanceTests()) {
 		let r;
-		try { r = t.run(JRS, renderer); } catch (e) { r = { pass: false, detail: 'threw: ' + (e && e.message) }; }
+		try { r = t.run(JRS, renderer, ref); } catch (e) { r = { pass: false, detail: 'threw: ' + (e && e.message) + (e && e.stack ? ' ' + e.stack.split('\n')[1] : '') }; }
 		const glErr = gl.getError();
 		if (glErr !== 0) { r.pass = false; r.detail += ` (GL error 0x${glErr.toString(16)})`; }
 		report.tests.push({ name: t.name, pass: r.pass, detail: r.detail });

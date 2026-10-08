@@ -8,8 +8,10 @@
  * recreated.
  */
 
-const LOC_POSITION = 0, LOC_NORMAL = 1, LOC_UV = 2, LOC_COLOR = 3, LOC_UV1 = 4, LOC_INSTANCE_COLOR = 5, LOC_LINE_DISTANCE = 6, LOC_INSTANCE_MATRIX = 8;
-const ATTRIBUTE_LOCATIONS = { position: LOC_POSITION, normal: LOC_NORMAL, uv: LOC_UV, color: LOC_COLOR, uv1: LOC_UV1, lineDistance: LOC_LINE_DISTANCE };
+import { attributeEpoch } from '../../core/attributeEpoch.js';
+
+const LOC_POSITION = 0, LOC_NORMAL = 1, LOC_UV = 2, LOC_COLOR = 3, LOC_UV1 = 4, LOC_INSTANCE_COLOR = 5, LOC_SKIN_INDEX = 6, LOC_SKIN_WEIGHT = 7, LOC_INSTANCE_MATRIX = 8, LOC_LINE_DISTANCE = 12;
+const ATTRIBUTE_LOCATIONS = { position: LOC_POSITION, normal: LOC_NORMAL, uv: LOC_UV, color: LOC_COLOR, uv1: LOC_UV1, skinIndex: LOC_SKIN_INDEX, skinWeight: LOC_SKIN_WEIGHT, lineDistance: LOC_LINE_DISTANCE };
 
 class WebGLBindingStates {
 	constructor(gl, state, attributes, info = null) {
@@ -48,7 +50,7 @@ class WebGLBindingStates {
 		const gl = this.gl, attributes = this.attributes;
 		let entry = this.cache.get(geometry);
 		if (entry === undefined) {
-			entry = { vaos: [null, null, null], layoutVersion: -1, instancedFor: null, hadInstanceColor: false, custom: null, attrList: null, versionSum: -1 };
+			entry = { vaos: [null, null, null], layoutVersion: -1, instancedFor: null, hadInstanceColor: false, custom: null, attrList: null, versionSum: -1, epoch: -1, epochMode: -1 };
 			this.cache.set(geometry, entry);
 			geometry.addEventListener('dispose', this._onGeometryDispose);
 			if (this.info !== null) this.info.memory.geometries++;
@@ -56,12 +58,18 @@ class WebGLBindingStates {
 		const useCustom = program !== null && program.hasCustomAttributes === true;
 		// Fast path: layout unchanged and no attribute version changed since the VAO was last validated.
 		if (entry.layoutVersion === geometry._layoutVersion && entry.attrList !== null && (mode !== 1 || entry.instancedFor === instancedObject)) {
-			const list = entry.attrList;
-			let sum = 0;
-			for (let i = 0, l = list.length; i < l; i++) sum += list[i].version;
-			if (geometry.index !== null) sum += geometry.index.version;
-			if (mode === 1) { sum += instancedObject.instanceMatrix.version; if (instancedObject.instanceColor !== null) sum += instancedObject.instanceColor.version + 1000003; }
-			if (sum === entry.versionSum) {
+			// No BufferAttribute.needsUpdate anywhere since the last validation: the version sum cannot have changed.
+			let valid = entry.epoch === attributeEpoch.value && entry.epochMode === mode; // the sum is mode-specific (mode 1 adds the instance attributes)
+			if (!valid) {
+				const list = entry.attrList;
+				let sum = 0;
+				for (let i = 0, l = list.length; i < l; i++) sum += list[i].version;
+				if (geometry.index !== null) sum += geometry.index.version;
+				if (mode === 1) { sum += instancedObject.instanceMatrix.version; if (instancedObject.instanceColor !== null) sum += instancedObject.instanceColor.version + 1000003; }
+				valid = sum === entry.versionSum;
+				if (valid) { entry.epoch = attributeEpoch.value; entry.epochMode = mode; }
+			}
+			if (valid) {
 				let record;
 				if (useCustom) { if (entry.custom !== null) { record = entry.custom.get(program.id * 4 + mode); if (record === undefined) record = null; } else record = null; }
 				else record = entry.vaos[mode];
@@ -124,13 +132,14 @@ class WebGLBindingStates {
 			}
 		}
 		// remember the validated state for the fast path
-		const list = [];
-		for (const name in geometryAttributes) list.push(geometryAttributes[name]);
+		const list = entry.attrList !== null ? entry.attrList : [];
+		list.length = 0;
+		for (const name in geometryAttributes) { const a = geometryAttributes[name]; list.push(a.isInterleavedBufferAttribute === true ? a.data : a); } // owners of `version`
 		let sum = 0;
 		for (let i = 0; i < list.length; i++) sum += list[i].version;
 		if (geometry.index !== null) sum += geometry.index.version;
 		if (mode === 1) { sum += instancedObject.instanceMatrix.version; if (instancedObject.instanceColor !== null) sum += instancedObject.instanceColor.version + 1000003; }
-		entry.attrList = list; entry.versionSum = sum;
+		entry.attrList = list; entry.versionSum = sum; entry.epoch = attributeEpoch.value; entry.epochMode = mode;
 		return record;
 	}
 
@@ -190,10 +199,12 @@ class WebGLBindingStates {
 		gl.bindBuffer(gl.ARRAY_BUFFER, data.buffer);
 		gl.enableVertexAttribArray(location);
 		const integer = data.type === gl.INT || data.type === gl.UNSIGNED_INT || attribute.gpuType === 1013;
+		let stride = 0, offset = 0;
+		if (attribute.isInterleavedBufferAttribute === true) { stride = attribute.data.stride * data.bytesPerElement; offset = attribute.offset * data.bytesPerElement; }
 		if (integer && data.type !== gl.FLOAT && !attribute.normalized) {
-			gl.vertexAttribIPointer(location, attribute.itemSize, data.type, 0, 0);
+			gl.vertexAttribIPointer(location, attribute.itemSize, data.type, stride, offset);
 		} else {
-			gl.vertexAttribPointer(location, attribute.itemSize, data.type, attribute.normalized, 0, 0);
+			gl.vertexAttribPointer(location, attribute.itemSize, data.type, attribute.normalized, stride, offset);
 		}
 	}
 

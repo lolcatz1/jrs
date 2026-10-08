@@ -1,5 +1,9 @@
+import { epochs } from './epochs.js';
+
 class Layers {
-	constructor() { this.mask = 1 | 0; }
+	constructor() { this._mask = 1 | 0; }
+	get mask() { return this._mask; }
+	set mask(value) { if (value !== this._mask) { this._mask = value; epochs.structure++; } }
 	set(channel) { this.mask = (1 << channel | 0) >>> 0; }
 	enable(channel) { this.mask |= 1 << channel | 0; }
 	enableAll() { this.mask = 0xffffffff | 0; }

@@ -29,6 +29,7 @@ window.runScenario = async function (libName, scenarioName, opts = {}) {
 	const renderer = new T.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
 	renderer.setSize(320, 240, false);
 	if (scenarioName.startsWith('shadows')) renderer.shadowMap.enabled = true;
+	if (opts.autoMultiDraw === false && 'autoMultiDraw' in renderer) renderer.autoMultiDraw = false;
 	if (scenarioName.startsWith('shader-client')) { renderer.dispose(); canvas.remove(); return runScenarioStencil(T, libName, scenarioName, sc, n, frames, warmup, opts); }
 	const t0 = performance.now();
 	const { scene, camera, update, warm } = sc.build(T, n);
@@ -41,28 +42,34 @@ window.runScenario = async function (libName, scenarioName, opts = {}) {
 	const glCalls = opts.countGL === false ? null : countGLCalls(gl, () => { if (update) update(warmup); renderer.render(scene, camera); });
 	const glErrors = gl.getError();
 	let jsMs = 0, best = Infinity, worst = 0;
-	const samples = [];
+	const samples = [], renderSamples = [];
 	const wall0 = performance.now();
 	for (let f = 0; f < frames; f++) {
 		const s = performance.now();
 		if (update) update(warmup + f);
+		const s1 = performance.now();
 		renderer.render(scene, camera);
-		const d = performance.now() - s;
+		const e = performance.now();
+		const d = e - s;
+		renderSamples.push(e - s1);
 		jsMs += d; if (d < best) best = d; if (d > worst) worst = d; samples.push(d);
 	}
+	renderSamples.sort((a, b) => a - b);
 	gl.finish();
 	const wallMs = performance.now() - wall0;
+	const rawSamples = opts.raw ? samples.slice() : null;
 	samples.sort((a, b) => a - b);
 	const info = renderer.info.render;
 	const result = {
 		lib: libName, scenario: scenarioName, n, frames,
 		buildMs: +buildMs.toFixed(2),
-		avgMs: +(jsMs / frames).toFixed(3), medianMs: +samples[samples.length >> 1].toFixed(3), bestMs: +best.toFixed(3), worstMs: +worst.toFixed(3),
+		renderMedianMs: +renderSamples[renderSamples.length >> 1].toFixed(3), avgMs: +(jsMs / frames).toFixed(3), medianMs: +samples[samples.length >> 1].toFixed(3), bestMs: +best.toFixed(3), worstMs: +worst.toFixed(3),
 		wallAvgMs: +(wallMs / frames).toFixed(3),
 		drawCalls: info.calls, triangles: Math.round(info.triangles),
 		programs: renderer.info.programs ? renderer.info.programs.length : undefined,
 		glCalls, glError: glErrors,
 	};
+	if (rawSamples) result.rawSamples = rawSamples.map((v) => +v.toFixed(2));
 	// capture a thumbnail for visual sanity
 	if (opts.capture) result.image = canvas.toDataURL('image/png');
 	renderer.dispose();
@@ -145,7 +152,8 @@ window.compareScenario = async function (scenarioName, n) {
 		if (scenarioName.startsWith('shadows')) renderer.shadowMap.enabled = true;
 		const { scene, camera, update, warm, frame } = sc.build(T, n || sc.n);
 		if (warm) warm(renderer);
-		if (update) update(0);
+		const cf = sc.compareFrames || 1;
+		for (let f = 0; f < cf; f++) { if (update) update(f); if (f < cf - 1) renderer.render(scene, camera); }
 		if (frame) { frame(renderer); frame(renderer); } else renderer.render(scene, camera);
 		const gl = renderer.getContext();
 		const px = new Uint8Array(320 * 240 * 4);

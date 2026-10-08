@@ -2,6 +2,7 @@ import { Sphere } from '../math/Sphere.js';
 import { Ray } from '../math/Ray.js';
 import { Matrix4 } from '../math/Matrix4.js';
 import { Object3D } from '../core/Object3D.js';
+import { trackRenderProperty } from '../core/epochs.js';
 import { Vector3 } from '../math/Vector3.js';
 import { LineBasicMaterial } from '../materials/LineBasicMaterial.js';
 import { BufferGeometry } from '../core/BufferGeometry.js';
@@ -127,5 +128,9 @@ function checkIntersection(object, raycaster, ray, thresholdSq, a, b, i) {
 		index: i, face: null, faceIndex: null, barycoord: null, object: object
 	};
 }
+
+// swapping geometry or material changes what is drawn: invalidates cached render lists
+trackRenderProperty(Line.prototype, 'geometry');
+trackRenderProperty(Line.prototype, 'material');
 
 export { Line };

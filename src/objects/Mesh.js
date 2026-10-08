@@ -3,6 +3,7 @@ import { Vector2 } from '../math/Vector2.js';
 import { Ray } from '../math/Ray.js';
 import { Matrix4 } from '../math/Matrix4.js';
 import { Object3D } from '../core/Object3D.js';
+import { trackRenderProperty } from '../core/epochs.js';
 import { Triangle } from '../math/Triangle.js';
 import { BackSide, FrontSide } from '../constants.js';
 import { MeshBasicMaterial } from '../materials/MeshBasicMaterial.js';
@@ -126,7 +127,7 @@ class Mesh extends Object3D {
 
 		const useMorph = this.morphTargetInfluences !== undefined && geometry.morphAttributes.position !== undefined;
 		// `fast`: positions can be read straight from the typed array and rejected with scalar math
-		const fast = useMorph === false && position.isInterleavedBufferAttribute !== true && position.normalized !== true;
+		const fast = useMorph === false && this.isSkinnedMesh !== true && position.isInterleavedBufferAttribute !== true && position.normalized !== true;
 		const multi = Array.isArray(material);
 		const totalCount = index !== null ? index.count : position.count;
 		const triCount = totalCount / 3;
@@ -259,5 +260,9 @@ function checkGeometryIntersection(object, material, raycaster, ray, uv, uv1, no
 	}
 	return intersection;
 }
+
+// swapping geometry or material changes what is drawn: invalidates cached render lists
+trackRenderProperty(Mesh.prototype, 'geometry');
+trackRenderProperty(Mesh.prototype, 'material');
 
 export { Mesh };

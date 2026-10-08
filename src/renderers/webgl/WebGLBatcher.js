@@ -39,15 +39,17 @@ class WebGLBatcher {
 		}
 	}
 	/**
-	 * Append an object's world matrix and (CPU-cached) normal matrix. Sprites, points and lines have no normal matrix; the
-	 * texels it would use carry their material's per-object values instead (see INSTANCE_MATERIAL in the vertex shader).
-	 * Returns its index in the texture.
+	 * Append an object's world matrix. Meshes also get their (CPU-cached) normal matrix and `materialIndex` (the index of
+	 * the object's material record inside the Materials window bound for its batch, 0 when the batch is single-material)
+	 * in the spare eighth texel. Sprites, points and lines have no normal matrix: the texels it would use carry their
+	 * material's per-object values instead (see INSTANCE_MATERIAL in the vertex shader), a sprite's anchor goes in texel 6.
+	 * Returns the object's index in the texture.
 	 */
-	addTex(object, material) {
+	addTex(object, material, materialIndex = 0) {
 		const d = this.texData, o = this.texCount * TEX_STRIDE_FLOATS;
 		const s = object._slabData, so = object._slabOffset + 16;
 		for (let i = 0; i < 16; i++) d[o + i] = s[so + i];
-		// FNV-1a style mix of id and world version: unchanged hash -> the upload is skipped
+		// FNV-1a style mix of id, world version and material index / per-object material values: unchanged hash -> the upload is skipped
 		let h = this.texHash;
 		h = Math.imul(h ^ object.id, 16777619);
 		h = Math.imul(h ^ object._worldVersion, 16777619);
@@ -57,26 +59,27 @@ class WebGLBatcher {
 			d[o + 16] = s[no]; d[o + 17] = s[no + 1]; d[o + 18] = s[no + 2]; d[o + 19] = 0;
 			d[o + 20] = s[no + 3]; d[o + 21] = s[no + 4]; d[o + 22] = s[no + 5]; d[o + 23] = 0;
 			d[o + 24] = s[no + 6]; d[o + 25] = s[no + 7]; d[o + 26] = s[no + 8]; d[o + 27] = 0;
+			d[o + 28] = materialIndex; d[o + 29] = 0; d[o + 30] = 0; d[o + 31] = 0;
+			h = Math.imul(h ^ materialIndex, 16777619);
 		} else {
 			let n = 0;
 			if (object.isSprite === true) {
-				// the anchor (a plain mutable Vector2) travels in the last texel
 				const c = object.center;
-				d[o + 28] = c.x; d[o + 29] = c.y;
-				_f32[0] = c.x; _f32[1] = c.y; n = 2;
-				if (material !== undefined && material.isSpriteMaterial === true) { // B: rotation, attenuation flag
+				d[o + 24] = c.x; d[o + 25] = c.y;
+				_f32[8] = c.x; _f32[9] = c.y; n = 2;
+				if (material !== undefined && material.isSpriteMaterial === true) { // A: colour, opacity. B: rotation, attenuation flag, -, alphaTest
 					const color = material.color;
 					d[o + 16] = color.r; d[o + 17] = color.g; d[o + 18] = color.b; d[o + 19] = material.opacity;
 					d[o + 20] = material.rotation; d[o + 21] = material.sizeAttenuation === true ? 1 : 0; d[o + 22] = 0; d[o + 23] = material.alphaTest;
 					n = 10;
 				}
 			} else if (material !== undefined) {
-				if (object.isPoints === true && material.isPointsMaterial === true) {
+				if (object.isPoints === true && material.isPointsMaterial === true) { // B: size, height / 2 when attenuated, -, alphaTest
 					const color = material.color;
 					d[o + 16] = color.r; d[o + 17] = color.g; d[o + 18] = color.b; d[o + 19] = material.opacity;
 					d[o + 20] = material.size * this.pixelRatio; d[o + 21] = material.sizeAttenuation === true ? this.pointScale : 0; d[o + 22] = 0; d[o + 23] = material.alphaTest;
 					n = 8;
-				} else if (object.isLine === true && material.isLineBasicMaterial === true) {
+				} else if (object.isLine === true && material.isLineBasicMaterial === true) { // B (dashed): scale, dashSize, totalSize, alphaTest
 					const color = material.color;
 					d[o + 16] = color.r; d[o + 17] = color.g; d[o + 18] = color.b; d[o + 19] = material.opacity;
 					if (material.isLineDashedMaterial === true) { d[o + 20] = material.scale; d[o + 21] = material.dashSize; d[o + 22] = material.dashSize + material.gapSize; } else { d[o + 20] = 0; d[o + 21] = 0; d[o + 22] = 1; }
@@ -84,9 +87,9 @@ class WebGLBatcher {
 					n = 8;
 				}
 			}
-			if (n > 2) for (let k = 0; k < 8; k++) { _f32[k] = d[o + 16 + k]; }
-			// the scratch holds the values in order: sprite adds its centre as two more entries
-			if (n === 10) { _f32[8] = d[o + 28]; _f32[9] = d[o + 29]; }
+			d[o + 28] = 0; d[o + 29] = 0; d[o + 30] = 0; d[o + 31] = 0;
+			if (n >= 8) for (let k = 0; k < 8; k++) _f32[k] = d[o + 16 + k];
+			if (n === 2) { _f32[0] = _f32[8]; _f32[1] = _f32[9]; }
 			for (let k = 0; k < n; k++) h = Math.imul(h ^ _i32[k], 16777619);
 		}
 		this.texHash = h;
@@ -121,9 +124,10 @@ class WebGLBatcher {
 		}
 		if (this.texCount === 0) return;
 		if (this.textureHash === this.texHash && this.textureCount === this.texCount) return;
-		state.activeTexture(unit); // the cached binding can make bindTexture a no-op while another unit is active; texImage2D targets the active unit
-		gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
-		gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+		// texImage2D targets the *active* unit: when the cached bind above was a no-op (the texture was
+		// already on `unit`) the active unit may still be the one a material texture was uploaded to
+		state.activeTexture(unit);
+		state.setUnpack(false, false, 4);
 		gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, MATRIX_TEXTURE_WIDTH, rows, 0, gl.RGBA, gl.FLOAT, this.texData, 0);
 		this.textureRows = rows; this.textureHash = this.texHash; this.textureCount = this.texCount;
 	}

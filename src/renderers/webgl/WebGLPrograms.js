@@ -1,15 +1,15 @@
 import {
 	MATERIAL_BASIC, MATERIAL_LAMBERT, MATERIAL_PHONG, MATERIAL_STANDARD, MATERIAL_NORMAL, MATERIAL_DEPTH, MATERIAL_LINE, MATERIAL_POINTS,
-	MATERIAL_SPRITE, MATERIAL_SHADER, MATERIAL_SHADOW_DEPTH, TEXTURE_UNITS, buildBuiltinShader, buildCustomShader
+	MATERIAL_SPRITE, MATERIAL_SHADER, MATERIAL_SHADOW_DEPTH, TEXTURE_UNITS, pointShadowUnit, buildBuiltinShader, buildCustomShader
 } from '../shaders/ShaderLib.js';
-import { DoubleSide, NoToneMapping, SRGBColorSpace, NormalBlending } from '../../constants.js';
+import { DoubleSide, NoToneMapping, SRGBColorSpace, BasicShadowMap, NormalBlending } from '../../constants.js';
 
 export const BLOCK_FRAME = 0;
 export const BLOCK_LIGHTS = 1;
 export const BLOCK_MATERIAL = 2;
 
 let _programId = 0;
-const FIXED_ATTRIBUTES = { position: 0, normal: 1, uv: 2, color: 3, uv1: 4, instanceColor: 5, lineDistance: 6, instanceMatrix: 8 };
+const FIXED_ATTRIBUTES = { position: 0, normal: 1, uv: 2, color: 3, uv1: 4, instanceColor: 5, skinIndex: 6, skinWeight: 7, instanceMatrix: 8, lineDistance: 12 };
 
 /**
  * A compiled program plus everything the renderer needs to drive it without
@@ -33,8 +33,10 @@ class WebGLProgram {
 		gl.bindAttribLocation(program, 3, 'color');
 		gl.bindAttribLocation(program, 4, 'uv1');
 		gl.bindAttribLocation(program, 5, 'instanceColor');
-		gl.bindAttribLocation(program, 6, 'lineDistance');
+		gl.bindAttribLocation(program, 6, 'skinIndex');
+		gl.bindAttribLocation(program, 7, 'skinWeight');
 		gl.bindAttribLocation(program, 8, 'instanceMatrix');
+		gl.bindAttribLocation(program, 12, 'lineDistance');
 		gl.linkProgram(program);
 		if (gl.getProgramParameter(program, gl.LINK_STATUS) === false) {
 			const log = gl.getProgramInfoLog(program);
@@ -65,6 +67,14 @@ class WebGLProgram {
 		this._frameStamp = -1; this._frameRid = 0;
 		this.spriteCenterLocation = this.uniforms.uSpriteCenter ? this.uniforms.uSpriteCenter.location : null;
 		this.drawBaseUniform = this.uniforms.drawBase || null;
+		// skinning / morph target uniforms (built-in and custom programs alike)
+		this.bindMatrixUniform = this.uniforms.bindMatrix || null;
+		this.bindMatrixInverseUniform = this.uniforms.bindMatrixInverse || null;
+		this.boneTextureUniform = this.uniforms.boneTexture || null;
+		this.morphBaseInfluenceUniform = this.uniforms.morphTargetBaseInfluence || null;
+		this.morphInfluencesUniform = this.uniforms.morphTargetInfluences || null;
+		this.morphTextureUniform = this.uniforms.morphTargetsTexture || null;
+		this.morphTextureSizeUniform = this.uniforms.morphTargetsTextureSize || null;
 
 		// uniform blocks
 		const bind = (name, index) => {
@@ -74,7 +84,9 @@ class WebGLProgram {
 		};
 		this.hasFrameBlock = bind('Frame', BLOCK_FRAME);
 		this.hasLightsBlock = bind('Lights', BLOCK_LIGHTS);
-		this.hasMaterialBlock = bind('Material', BLOCK_MATERIAL);
+		this.hasMaterialBlock = bind('Material', BLOCK_MATERIAL) || bind('Materials', BLOCK_MATERIAL);
+		/** true when the program reads its material from a window of the material buffer indexed per instance (see ShaderLib MATERIAL_BLOCK). */
+		this.materialArray = parameters.materialArray === true;
 
 		// attributes; names outside the fixed table (custom ShaderMaterial attributes) get linker-assigned locations
 		this.attributes = {};
@@ -105,6 +117,15 @@ class WebGLProgram {
 			u.isShadowSampler = u.type === gl.SAMPLER_2D_SHADOW || u.type === gl.SAMPLER_CUBE_SHADOW || u.type === gl.SAMPLER_2D_ARRAY_SHADOW;
 			u.boundStamp = -1;
 			let unit;
+			if (!isCustom && name === 'pointShadowMap') {
+				// point shadow cube maps take the units left free by the directional and spot shadow maps
+				const units = new Int32Array(u.size);
+				for (let k = 0; k < u.size; k++) units[k] = pointShadowUnit(k, parameters.numDirShadows | 0, parameters.numSpotShadows | 0);
+				u.unit = units[0]; u.units = units;
+				gl.uniform1iv(u.location, units);
+				this.samplerUniforms.push(u);
+				continue;
+			}
 			if (!isCustom && (TEXTURE_UNITS[name] !== undefined || TEXTURE_UNITS[name + '0'] !== undefined)) {
 				unit = u.size > 1 ? TEXTURE_UNITS[name + '0'] : TEXTURE_UNITS[name];
 			} else {
@@ -179,6 +200,7 @@ class WebGLPrograms {
 		this.gl = gl;
 		this.renderer = renderer;
 		this.cache = new Map();
+		this._baseKeyIds = new Map();
 		this.programs = [];
 		this._params = {};
 	}
@@ -210,9 +232,20 @@ class WebGLPrograms {
 		const receiveShadow = variant.receiveShadow && isLit && renderer.shadowMap.enabled;
 		const numDirShadows = receiveShadow ? lights.numDirShadows : 0;
 		const numSpotShadows = receiveShadow ? lights.numSpotShadows : 0;
+		const numPointShadows = receiveShadow ? lights.numPointShadows : 0;
+		const pointShadowBasic = numPointShadows > 0 && renderer.shadowMap.type === BasicShadowMap;
 		const toneMapping = (material.toneMapped && renderer.toneMapping !== NoToneMapping && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH && materialType !== MATERIAL_NORMAL) ? renderer.toneMapping : NoToneMapping;
 		const currentRenderTarget = renderer.getRenderTarget();
 		const sRGBOutput = (currentRenderTarget === null ? renderer.outputColorSpace : currentRenderTarget.texture.colorSpace) === SRGBColorSpace && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH && materialType !== MATERIAL_NORMAL;
+		// skinning and morph targets are object / geometry features (same rule as three.js: the program follows the object)
+		const skinning = object.isSkinnedMesh === true;
+		const morphAttributes = geometry.morphAttributes;
+		const morphAttribute = morphAttributes.position || morphAttributes.normal || morphAttributes.color;
+		const morphTargetsCount = morphAttribute !== undefined ? Math.min(morphAttribute.length, 255) : 0;
+		let morphTextureStride = 0;
+		if (morphAttributes.position !== undefined) morphTextureStride = 1;
+		if (morphAttributes.normal !== undefined) morphTextureStride = 2;
+		if (morphAttributes.color !== undefined) morphTextureStride = 3;
 
 		// batched sprites / points / lines read colour, opacity, rotation, point size, dash sizes ... per object from the matrix texture
 		const instanceMaterial = (variant.objectTexture === true || variant.multiDraw === true) && (materialType === MATERIAL_SPRITE || materialType === MATERIAL_POINTS || materialType === MATERIAL_LINE);
@@ -235,17 +268,17 @@ class WebGLPrograms {
 		p.instancingColor = variant.instancing && variant.instancingColor;
 		p.objectTexture = variant.objectTexture === true || variant.multiDraw === true;
 		p.multiDraw = variant.multiDraw === true;
+		p.materialArray = variant.materialArray === true && (variant.objectTexture === true || variant.multiDraw === true);
+		p.materialArraySize = renderer._materialWindow;
+		p.materialPad = renderer._materialPad;
 		p.flatShading = isLit && material.flatShading === true;
 		p.doubleSided = !leanShadow && material.side === DoubleSide;
 		p.leanShadow = leanShadow;
 		p.fog = fog;
 		p.fogExp2 = fog && scene.fog.isFogExp2 === true;
 		p.alphaTest = material.alphaTest > 0;
-		p.instanceMaterial = instanceMaterial;
 		p.sizeAttenuation = !instanceMaterial && (materialType === MATERIAL_POINTS || materialType === MATERIAL_SPRITE) && material.sizeAttenuation === true;
 		p.premultipliedAlpha = material.premultipliedAlpha === true;
-		p.dashed = materialType === MATERIAL_LINE && material.isLineDashedMaterial === true;
-		p.opaque = material.transparent === false && material.blending === NormalBlending && material.alphaToCoverage === false;
 		p.dithering = material.dithering === true;
 		p.vertexUv1s = hasUv1;
 		p.toneMapped = toneMapping !== NoToneMapping;
@@ -253,6 +286,17 @@ class WebGLPrograms {
 		p.sRGBOutput = sRGBOutput;
 		p.numDirShadows = numDirShadows;
 		p.numSpotShadows = numSpotShadows;
+		p.numPointShadows = numPointShadows;
+		p.pointShadowBasic = pointShadowBasic;
+		p.skinning = skinning;
+		p.morphTargets = morphAttributes.position !== undefined;
+		p.morphNormals = morphAttributes.normal !== undefined;
+		p.morphColors = morphAttributes.color !== undefined;
+		p.morphTargetsCount = morphTargetsCount;
+		p.morphTextureStride = morphTextureStride;
+		p.instanceMaterial = instanceMaterial;
+		p.dashed = materialType === MATERIAL_LINE && material.isLineDashedMaterial === true;
+		p.opaque = material.transparent === false && material.blending === NormalBlending && material.alphaToCoverage === false;
 		let key = materialType;
 		key = key * 2 + (map ? 1 : 0); key = key * 2 + (alphaMap ? 1 : 0); key = key * 2 + (emissiveMap ? 1 : 0); key = key * 2 + (normalMap ? 1 : 0);
 		key = key * 2 + (roughnessMap ? 1 : 0); key = key * 2 + (metalnessMap ? 1 : 0); key = key * 2 + (aoMap ? 1 : 0); key = key * 2 + (specularMap ? 1 : 0);
@@ -261,6 +305,15 @@ class WebGLPrograms {
 		key = key * 2 + (fog ? 1 : 0); key = key * 2 + (p.alphaTest ? 1 : 0); key = key * 2 + (p.sizeAttenuation ? 1 : 0); key = key * 2 + (p.premultipliedAlpha ? 1 : 0);
 		key = key * 2 + (p.dithering ? 1 : 0); key = key * 2 + (hasUv1 ? 1 : 0); key = key * 8 + toneMapping; key = key * 2 + (sRGBOutput ? 1 : 0);
 		key = key * 8 + numDirShadows; key = key * 8 + numSpotShadows; key = key * 2 + (p.multiDraw ? 1 : 0); key = key * 2 + (p.objectTexture ? 1 : 0); key = key * 2 + (leanShadow ? 1 : 0);
+		// With every feature the product of the fields above exceeds 2^53 (precision loss would merge programs that differ
+		// only in their low bits), so the base part is interned to a small id and the remaining fields are packed under it.
+		let baseId = this._baseKeyIds.get(key);
+		if (baseId === undefined) { baseId = this._baseKeyIds.size; this._baseKeyIds.set(key, baseId); }
+		key = baseId;
+		key = key * 8 + numPointShadows; key = key * 2 + (pointShadowBasic ? 1 : 0);
+		key = key * 2 + (p.materialArray ? 1 : 0);
+		key = key * 2 + (skinning ? 1 : 0); key = key * 2 + (p.morphTargets ? 1 : 0); key = key * 2 + (p.morphNormals ? 1 : 0); key = key * 2 + (p.morphColors ? 1 : 0);
+		key = key * 4 + morphTextureStride; key = key * 256 + morphTargetsCount;
 		key = key * 2 + (instanceMaterial ? 1 : 0); key = key * 2 + (p.dashed ? 1 : 0); key = key * 2 + (p.opaque ? 1 : 0);
 		p.key = key;
 		return p;
