@@ -52,35 +52,44 @@ Details, with the reasoning behind each choice, are in [ARCHITECTURE.md](./ARCHI
 `npm run bench` renders identical scenes with three.js r186 and jrs in headless Chromium
 (SwiftShader software WebGL2, so the numbers are CPU-bound frame costs; a real GPU widens the
 gap for draw-call-bound scenes and narrows it for fill-bound ones). Average JS time per frame
-over 60 frames after 10 warm-up frames, 320x240 (median frame time, so single garbage-collection or driver stalls do not define the number; the raw data has means and worst frames):
+over 60 frames after 40 warm-up frames, 320x240 (median frame time, so single garbage-collection or driver stalls do not define the number; the raw data has means and worst frames):
 
 | Scenario | Objects | three.js r186 (median) | jrs (median) | Speed-up | Worst frame (three → jrs) | Draw calls (three → jrs) | Pixel diff (mean / max, 0–255) |
 |---|---:|---:|---:|---:|---|---|---|
-| shared-static: one geometry + one material, static | 10,000 | 11.6 ms | 0.6 ms | **19.3x** | 94 → 1 ms | 10000 → 1 | 0 / 0 |
-| shared-animated: same, every object rotating | 10,000 | 11.5 ms | 7.3 ms | **1.6x** | 115 → 20 ms | 10000 → 1 | 0 / 1 |
-| many-materials: 3 geometries x 200 Phong materials, point + hemisphere light (batches span materials) | 5,000 | 7.3 ms | 0.5 ms | **14.6x** | 171 → 3 ms | 5000 → 3 | 0 / 0 |
-| unique-geometries: a distinct geometry per mesh (multi-draw over the mega-buffer) | 2,000 | 3.4 ms | 0.7 ms | **4.9x** | 55 → 2 ms | 2000 → 1 | 0 / 0 |
-| hierarchy-animated: 200 chains of 40 nested objects, roots rotating | 8,000 | 13.0 ms | 3.4 ms | **3.8x** | 48 → 1280 ms | 8000 → 1 | 0 / 0 |
+| shared-static: one geometry + one material, static | 10,000 | 11.1 ms | 0.6 ms | **18.5x** | 164 → 1 ms | 10000 → 1 | 0 / 0 |
+| shared-animated: same, every object rotating | 10,000 | 12.3 ms | 4.0 ms | **3.1x** | 60 → 20 ms | 10000 → 1 | 0 / 1 |
+| many-materials: 3 geometries x 200 Phong materials, point + hemisphere light (batches span materials) | 5,000 | 7.7 ms | 0.5 ms | **15.4x** | 169 → 2 ms | 5000 → 3 | 0 / 0 |
+| unique-geometries: a distinct geometry per mesh (multi-draw over the mega-buffer) | 2,000 | 3.3 ms | 0.9 ms | **3.7x** | 32 → 5 ms | 2000 → 1 | 0 / 0 |
+| hierarchy-animated: 200 chains of 40 nested objects, roots rotating | 8,000 | 12.6 ms | 3.2 ms | **3.9x** | 37 → 15 ms | 8000 → 1 | 0 / 0 |
 | instanced-100k: one InstancedMesh, 100 000 instances | 100,000 | 0.0 ms | 0.0 ms | n/a (both < 0.1 ms) | 0 → 0 ms | 1 → 1 | 0 / 0 |
-| shader-client: 1,313 meshes, all ShaderMaterial, 12 shaders × 2 material instances sharing one 30-uniform object, 2D/3D/array/cube samplers, custom attributes, opaque + transparent (custom programs instanced automatically) | 1,313 | 6.2 ms | 1.0 ms | **6.2x** | 12 → 7 ms | 1313 → 297 | 0 / 0 |
-| shader-client-static: same materials, fixed camera, nothing moving, 3 passes per frame (2 shadow render targets with `scene.overrideMaterial`, main pass with stencil shadow volumes), ~215 draws per pass | 211 | 34.1 ms | 0.4 ms | **85.2x** | 492 → 8 ms | 217 → 53 | 0 / 0 |
-| shadows: 2 000 casters/receivers, 1024² directional shadow map | 2,000 | 64.4 ms | 0.3 ms | **214.7x** | 176 → 2 ms | 4001 → 2 | 0 / 0 |
-| shadows-animated: same scene, every third caster moving each frame | 2,000 | 73.7 ms | 1.4 ms | **52.6x** | 171 → 5 ms | 4001 → 3 | 0 / 0 |
-| skinned-crowd: 200 skinned meshes, 20 bones each, every bone animated by an `AnimationMixer` | 200 | 3.3 ms | 1.6 ms | **2.1x** | 419 → 4 ms | 200 → 200 | 0 / 2 |
-| transparent-sort: 10 000 transparent boxes, orbiting camera (depth re-sort every frame) | 10,000 | 11.1 ms | 3.3 ms | **3.4x** | 92 → 6 ms | 10000 → 1 | 0 / 0 |
-| dynamic-geometry: 200 meshes rewriting vertex data every frame (full and ranged updates, growth, rebuilds) | 200 | 1.5 ms | 1.4 ms | **1.1x** | 81 → 120 ms | 200 → 200 | 0 / 0 |
-| dynamic-geometry-large: 12 large meshes, ~3.7 MB of vertex data rewritten per frame | 12 | 2.6 ms | 3.2 ms | **0.8x** | 10 → 6 ms | 12 → 12 | 0 / 0 |
-| shadows-point: 2 000 casters, one shadow-casting point light (cube depth map) | 2,000 | 76.0 ms | 0.3 ms | **253.3x** | 166 → 2 ms | 4001 → 2 | 0 / 0 |
-| shadows-point-animated: same, a third of the casters moving | 2,000 | 75.4 ms | 2.8 ms | **26.9x** | 170 → 689 ms | 4001 → 3 | 0 / 0 |
-| shadows-point-multi: directional + spot + two point shadows + one unshadowed point light | 400 | 50.4 ms | 0.3 ms | **168.0x** | 70 → 1 ms | 2031 → 2 | 0 / 1 |
-| pbr-envmap: 2 000 MeshStandardMaterial spheres under a PMREM `scene.environment` | 2,000 | 4.6 ms | 0.2 ms | **23.0x** | 8 → 0 ms | 2000 → 1 | 0 / 0 |
-| lines-many: 5 000 Line / LineSegments / LineLoop objects, basic and dashed materials | 5,000 | 17.8 ms | 8.3 ms | **2.1x** | 88 → 15 ms | 4972 → 218 | 0 / 17 |
-| points-cloud: one 1 000 000-vertex Points object plus 2 000 small point clouds | 1,000,000 | 5.1 ms | 2.0 ms | **2.5x** | 200 → 6 ms | 1919 → 233 | 0 / 3 |
-| sprites-many: 5 000 Sprites, most with their own material | 5,000 | 13.9 ms | 5.1 ms | **2.7x** | 212 → 12 ms | 4083 → 525 | 0 / 11 |
-| skinned-crowd-large: 1 000 skinned meshes, 40 bones each | 1,000 | 37.0 ms | 16.3 ms | **2.3x** | 84 → 42 ms | 1000 → 1000 | 0 / 10 |
-| morph-crowd: 500 meshes with 8 morph targets, influences animated every frame | 500 | 1.4 ms | 0.7 ms | **2.0x** | 887 → 1688 ms | 497 → 497 | 0 / 1 |
+| shader-client: 1,313 meshes, all ShaderMaterial, 12 shaders × 2 material instances sharing one 30-uniform object, 2D/3D/array/cube samplers, custom attributes, opaque + transparent (custom programs instanced automatically) | 1,313 | 4.8 ms | 1.1 ms | **4.4x** | 203 → 99 ms | 1313 → 297 | 0 / 0 |
+| shader-client-static: same materials, fixed camera, nothing moving, 3 passes per frame (2 shadow render targets with `scene.overrideMaterial`, main pass with stencil shadow volumes), ~215 draws per pass | 211 | 41.8 ms | 0.4 ms | **104.5x** | 92 → 6 ms | 217 → 53 | 0 / 0 |
+| shadows: 2 000 casters/receivers, 1024² directional shadow map | 2,000 | 73.8 ms | 0.3 ms | **246.0x** | 186 → 2 ms | 4001 → 2 | 0 / 0 |
+| shadows-animated: same scene, every third caster moving each frame | 2,000 | 77.5 ms | 1.3 ms | **59.6x** | 208 → 265 ms | 4001 → 3 | 0 / 0 |
+| skinned-crowd: 200 skinned meshes, 20 bones each, every bone animated by an `AnimationMixer` | 200 | 3.2 ms | 1.8 ms | **1.8x** | 7 → 4 ms | 200 → 200 | 0 / 2 |
+| transparent-sort: 10 000 transparent boxes, orbiting camera (depth re-sort every frame) | 10,000 | 20.9 ms | 3.2 ms | **6.5x** | 87 → 4 ms | 10000 → 1 | 0 / 0 |
+| dynamic-geometry: 200 meshes rewriting vertex data every frame (full and ranged updates, growth, rebuilds) | 200 | 1.3 ms | 0.9 ms | **1.4x** | 96 → 8 ms | 200 → 200 | 0 / 0 |
+| dynamic-geometry-large: 12 large meshes, ~3.7 MB of vertex data rewritten per frame | 12 | 2.7 ms | 2.3 ms | **1.2x** | 26 → 26 ms | 12 → 12 | 0 / 0 |
+| shadows-point: 2 000 casters, one shadow-casting point light (cube depth map) | 2,000 | 78.2 ms | 0.3 ms | **260.7x** | 185 → 1 ms | 4001 → 2 | 0 / 0 |
+| shadows-point-animated: same, a third of the casters moving | 2,000 | 80.9 ms | 1.6 ms | **50.6x** | 164 → 1249 ms | 4001 → 3 | 0 / 0 |
+| shadows-point-multi: directional + spot + two point shadows + one unshadowed point light | 400 | 48.4 ms | 0.2 ms | **242.0x** | 82 → 1 ms | 2031 → 2 | 0 / 1 |
+| pbr-envmap: 2 000 MeshStandardMaterial spheres under a PMREM `scene.environment` | 2,000 | 3.8 ms | 0.3 ms | **12.7x** | 9 → 1 ms | 2000 → 1 | 0 / 0 |
+| lines-many: 5 000 Line / LineSegments / LineLoop objects, basic and dashed materials | 5,000 | 16.6 ms | 8.3 ms | **2.0x** | 77 → 20 ms | 4971 → 216 | 0 / 17 |
+| points-cloud: one 1 000 000-vertex Points object plus 2 000 small point clouds | 1,000,000 | 5.1 ms | 1.8 ms | **2.8x** | 24 → 84 ms | 1932 → 245 | 0 / 3 |
+| sprites-many: 5 000 Sprites, most with their own material | 5,000 | 13.1 ms | 6.0 ms | **2.2x** | 202 → 9 ms | 4107 → 544 | 0 / 11 |
+| skinned-crowd-large: 1 000 skinned meshes, 40 bones each | 1,000 | 28.9 ms | 13.2 ms | **2.2x** | 103 → 18 ms | 1000 → 1000 | 0 / 10 |
+| morph-crowd: 500 meshes with 8 morph targets, influences animated every frame | 500 | 1.5 ms | 0.6 ms | **2.5x** | 3 → 6 ms | 497 → 497 | 0 / 1 |
 
 The instanced scenario is a single draw call in both libraries; it measures only the fixed per-frame cost. Full data: `bench/results/latest.json`.
+
+The medians above are JS time: what the main thread spends in `update()` and `render()`. The bench
+also records whole-frame wall time with `gl.finish()` (`gpuMs` / `finishMs` in `latest.json`; a
+timer-query path is used where `EXT_disjoint_timer_query_webgl2` returns real values). On SwiftShader
+that number is dominated by software rasterisation and is the same for both libraries wherever the
+pixels are the same: the animated shadow scenes, for example, take about 85 ms of rasterisation per
+frame in either library, so jrs's JS saving there only shows on a real GPU. `node bench/run.mjs
+--runs=5` alternates the two libraries and reports the median of five runs; `--nogpu` skips the
+wall-time pass; `--cpu-stubbed` stubs the draw calls to isolate renderer CPU cost.
 
 Worst frames: in this software-GL environment both libraries hit occasional stalls (garbage collection, driver, command-buffer back-pressure), so read the ratios, not the absolute numbers. Pixel differences are now 0 mean / ≤ 2 levels on every scene after the differential fuzzer's parity fixes (`npm run fuzz`, see `bench/results/swarm/parity-fuzzer.md`). The 12–17 s stalls jrs used to show in the batched scenes were traced to Chromium's transfer ring buffer on large `texSubImage2D` uploads of the matrix texture; the texture is now defined with `texImage2D` per upload, which takes the mapped-memory path, and that stall is gone (`bench/results/swarm/stall-hunter.md`). A rarer 1–3 s stall remains in 60-frame runs of the batched scenes; it also appears in three.js at smaller sizes and is still being investigated. The device check page reports per-frame times on real hardware.
 
