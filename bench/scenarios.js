@@ -77,6 +77,25 @@ export const scenarios = {
 			return { scene, camera };
 		}
 	},
+	// 10k transparent objects, camera orbits every frame so every depth key changes: exercises the transparent sort path.
+	'transparent-sort': {
+		n: 10000,
+		build(T, n) {
+			const scene = new T.Scene();
+			const camera = new T.PerspectiveCamera(60, 4 / 3, 0.1, 500);
+			const radius = 60, height = 15;
+			camera.position.set(0, height, radius); camera.lookAt(0, 0, 0);
+			const geometry = new T.BoxGeometry(0.5, 0.5, 0.5);
+			const material = new T.MeshBasicMaterial({ color: 0x66aaff, transparent: true, opacity: 0.35, depthWrite: false });
+			for (let i = 0; i < n; i++) {
+				const m = new T.Mesh(geometry, material);
+				const p = grid(i, n, 1.2); m.position.set(p[0], p[1], p[2]);
+				scene.add(m);
+			}
+			const update = (f) => { const a = f * 0.01; camera.position.set(Math.sin(a) * radius, height, Math.cos(a) * radius); camera.lookAt(0, 0, 0); };
+			return { scene, camera, update };
+		}
+	},
 	// Deep hierarchy with animated root: tests world-matrix propagation.
 	'hierarchy-animated': {
 		n: 8000,
@@ -140,7 +159,18 @@ export const scenarios = {
 	// Shadows: 2000 casters/receivers under a shadow-casting directional light.
 	'shadows': {
 		n: 2000,
-		build(T, n) {
+		build(T, n) { return buildShadows(T, n, false); }
+	},
+	// Same scene, but a third of the casters move every frame, so the shadow pass cannot be skipped.
+	'shadows-animated': {
+		n: 2000,
+		build(T, n) { return buildShadows(T, n, true); }
+	},
+};
+
+function buildShadows(T, n, animated) {
+	{
+		{
 			const scene = new T.Scene();
 			const camera = new T.PerspectiveCamera(60, 4 / 3, 0.1, 500);
 			camera.position.set(0, 25, 45); camera.lookAt(0, 0, 0);
@@ -153,16 +183,20 @@ export const scenarios = {
 			floor.rotation.x = -Math.PI / 2; floor.position.y = -8; floor.receiveShadow = true; scene.add(floor);
 			const geometry = new T.BoxGeometry(0.6, 0.6, 0.6);
 			const material = new T.MeshLambertMaterial({ color: 0x8899ff });
+			const meshes = [];
 			for (let i = 0; i < n; i++) {
 				const m = new T.Mesh(geometry, material);
 				const p = grid(i, n, 1.5); m.position.set(p[0], p[1], p[2]);
 				m.castShadow = true; m.receiveShadow = true;
 				scene.add(m);
+				meshes.push(m);
 			}
-			return { scene, camera };
+			if (!animated) return { scene, camera };
+			// every third caster bobs and spins
+			return { scene, camera, update: (f) => { for (let i = 0; i < meshes.length; i += 3) { const m = meshes[i]; m.position.y += Math.sin(f * 0.1 + i) * 0.02; m.rotation.y = f * 0.05 + i; } } };
 		}
-	},
-};
+	}
+}
 
 function buildShaderClient(T, n, opts) {
 	const scale = opts.scale, staticFrame = opts.staticFrame === true;

@@ -109,8 +109,15 @@ class WebGLRenderer {
 		this._currentRenderTarget = null;
 		this._renderCallDepth = 0;
 		this._frameId = 0;
+		this._cameraLayerMask = 1;
 		this._envVersion = 0;
-		this._lastEnvKey = '';
+		// env version = lights epoch * 65536 + interned id of the (tone mapping, colour space, shadows, fog)
+		// state, so switching between render targets and the screen revisits the same version instead
+		// of minting a new one, and no string key is built per frame
+		this._lightsEpoch = 0;
+		this._envKeyId = -1;
+		this._envKeyIds = new Map();
+		this._colorSpaceIds = new Map([['srgb-linear', 0], ['srgb', 1]]);
 		this._lastLightsVersion = -1;
 		this._samplerStamp = 0;
 		this._programCounter = 0;
@@ -163,6 +170,10 @@ class WebGLRenderer {
 
 		// uniform buffers
 		this._frameData = new Float32Array(FRAME_BLOCK_SIZE / 4);
+		// copies of what the GPU buffers currently hold: an unchanged block is not re-uploaded
+		this._frameUploaded = new Float32Array(FRAME_BLOCK_SIZE / 4);
+		this._lightsUploaded = new Float32Array(LIGHTS_BLOCK_SIZE / 4);
+		this._blocksValid = false;
 		this._frameBuffer = gl.createBuffer();
 		gl.bindBuffer(gl.UNIFORM_BUFFER, this._frameBuffer);
 		gl.bufferData(gl.UNIFORM_BUFFER, FRAME_BLOCK_SIZE, gl.DYNAMIC_DRAW);
@@ -186,10 +197,9 @@ class WebGLRenderer {
 		this._onMaterialDispose = this._onMaterialDispose.bind(this);
 
 		// render-order ranking (renderOrder -> 0..63), rebuilt per frame
-		this._renderOrders = new Map();
 		this._renderOrderList = [];
 		this._lastNotedRenderOrder = NaN;
-		this._rankOfRenderOrder = (ro) => { if (this._renderOrderList.length <= 1) return 0; const r = this._renderOrders.get(ro); return r === undefined ? 63 : r; };
+		this._rankOfRenderOrder = (ro) => this._rankOf(ro);
 
 		// draw commands
 		this._cmdCapacity = 1024;
@@ -288,7 +298,7 @@ class WebGLRenderer {
 		this.setAnimationLoop(null);
 	}
 	_onContextLost(event) { event.preventDefault(); this._isContextLost = true; }
-	_onContextRestore() { this._isContextLost = false; this.state.reset(); this.programs.dispose(); this._materialProperties = new WeakMap(); }
+	_onContextRestore() { this._isContextLost = false; this._blocksValid = false; this.state.reset(); this.programs.dispose(); this._materialProperties = new WeakMap(); }
 	setAnimationLoop(callback) {
 		this._animationLoop = callback;
 		if (this._requestId !== null) { cancelAnimationFrame(this._requestId); this._requestId = null; }
@@ -378,9 +388,10 @@ class WebGLRenderer {
 		list.init();
 		this.lights.begin();
 		this._renderOrderReset();
+		this._cameraLayerMask = camera.layers.mask;
 		this._projectObject(scene, camera, 0, this.sortObjects, list);
 		this.lights.end(this.shadowMap.enabled);
-		if (this.lights.version !== this._lastLightsVersion) { this._lastLightsVersion = this.lights.version; this._envVersion++; }
+		if (this.lights.version !== this._lastLightsVersion) { this._lastLightsVersion = this.lights.version; this._lightsEpoch++; this._envVersion = this._lightsEpoch * 65536 + this._envKeyId; }
 		this._resolvePrograms(list, scene);
 
 		if (this.info.autoReset === true && this._renderCallDepth === 1) { this.info.reset(); this._traceDraws = 0; }
@@ -390,10 +401,14 @@ class WebGLRenderer {
 
 		// per-frame blocks (light data is filled after the shadow pass so shadow matrices are current)
 		this.lights.fill();
-		gl.bindBuffer(gl.UNIFORM_BUFFER, this._lightsBuffer);
-		gl.bufferSubData(gl.UNIFORM_BUFFER, 0, this.lights.data);
-		this.state.currentUniformBuffer = this._lightsBuffer;
+		if (!this._blocksValid || !sameFloats(this.lights.data, this._lightsUploaded)) {
+			this._lightsUploaded.set(this.lights.data);
+			gl.bindBuffer(gl.UNIFORM_BUFFER, this._lightsBuffer);
+			gl.bufferSubData(gl.UNIFORM_BUFFER, 0, this.lights.data);
+			this.state.currentUniformBuffer = this._lightsBuffer;
+		}
 		this._uploadFrameBlock(camera, scene);
+		this._blocksValid = true;
 		this.shadowMap.bindShadowMaps(this.lights);
 
 		list.finish(this.sortObjects, this._rankOfRenderOrder);
@@ -437,17 +452,28 @@ class WebGLRenderer {
 		if (this._renderCallDepth === 0) this.info.render.frame++;
 	}
 
-	_renderOrderReset() { this._renderOrders.clear(); this._renderOrderList.length = 0; this._lastNotedRenderOrder = NaN; }
+	_renderOrderReset() { this._renderOrderList.length = 0; this._lastNotedRenderOrder = NaN; }
+	/** Index of `ro` in the sorted distinct-renderOrder list, or the insertion point (binary search). */
+	_renderOrderIndex(ro) {
+		const l = this._renderOrderList;
+		let lo = 0, hi = l.length;
+		while (lo < hi) { const mid = (lo + hi) >> 1; if (l[mid] < ro) lo = mid + 1; else hi = mid; }
+		return lo;
+	}
 	_noteRenderOrder(ro) {
 		if (ro === this._lastNotedRenderOrder) return;
 		this._lastNotedRenderOrder = ro;
-		if (!this._renderOrders.has(ro)) {
-			const l = this._renderOrderList;
-			l.push(ro);
-			l.sort((a, b) => a - b);
-			this._renderOrders.clear();
-			for (let i = 0; i < l.length; i++) this._renderOrders.set(l[i], Math.min(i, 63));
-		}
+		const l = this._renderOrderList, at = this._renderOrderIndex(ro);
+		if (at < l.length && l[at] === ro) return;
+		l.push(ro); // sorted insertion by hand: no comparator closure, no splice result array
+		for (let i = l.length - 1; i > at; i--) l[i] = l[i - 1];
+		l[at] = ro;
+	}
+	_rankOf(ro) {
+		const l = this._renderOrderList;
+		if (l.length <= 1) return 0;
+		const at = this._renderOrderIndex(ro);
+		return at < l.length && l[at] === ro ? (at < 63 ? at : 63) : 63;
 	}
 
 	/** Detects changes in frame-wide shader-affecting state and bumps the env version. */
@@ -455,8 +481,12 @@ class WebGLRenderer {
 		const target = this._currentRenderTarget;
 		const cs = target === null ? this._outputColorSpace : target.texture.colorSpace;
 		const fog = scene.fog === null ? 0 : (scene.fog.isFogExp2 ? 2 : 1);
-		const key = this.toneMapping + '|' + cs + '|' + (this.shadowMap.enabled ? 1 : 0) + '|' + fog;
-		if (key !== this._lastEnvKey) { this._lastEnvKey = key; this._envVersion++; }
+		let csId = this._colorSpaceIds.get(cs);
+		if (csId === undefined) { csId = this._colorSpaceIds.size; this._colorSpaceIds.set(cs, csId); }
+		const key = ((this.toneMapping * 64 + csId) * 2 + (this.shadowMap.enabled ? 1 : 0)) * 3 + fog;
+		let id = this._envKeyIds.get(key);
+		if (id === undefined) { id = this._envKeyIds.size % 65536; this._envKeyIds.set(key, id); }
+		if (id !== this._envKeyId) { this._envKeyId = id; this._envVersion = this._lightsEpoch * 65536 + id; }
 	}
 
 	_uploadFrameBlock(camera, scene) {
@@ -482,6 +512,8 @@ class WebGLRenderer {
 		d[59] = this.toneMappingExposure;
 		const v = this._currentViewport;
 		d[60] = v.x; d[61] = v.y; d[62] = v.z; d[63] = v.w;
+		if (this._blocksValid && sameFloats(d, this._frameUploaded)) return;
+		this._frameUploaded.set(d);
 		gl.bindBuffer(gl.UNIFORM_BUFFER, this._frameBuffer);
 		gl.bufferSubData(gl.UNIFORM_BUFFER, 0, d);
 		this.state.currentUniformBuffer = this._frameBuffer;
@@ -501,40 +533,27 @@ class WebGLRenderer {
 		}
 		const s = object._slabData, o = object._slabOffset;
 		const c = bs.center;
-		if (object._cullVersion !== object._worldVersion || object._cullSphere !== bs || object._cullRadius !== bs.radius || object._cullCx !== c.x || object._cullCy !== c.y || object._cullCz !== c.z) {
+		// double-valued cache keys live in the object's snapshot record, contiguous with the change-detection data
+		const n = object._snapData, q = object._snapOffset + 10;
+		const cx = c.x, cy = c.y, cz = c.z, r = bs.radius;
+		if (object._cullVersion !== object._worldVersion || object._cullSphere !== bs || n[q] !== r || n[q + 1] !== cx || n[q + 2] !== cy || n[q + 3] !== cz) {
 			const e = o + 16;
-			const x = c.x, y = c.y, z = c.z;
 			const e0 = s[e], e1 = s[e + 1], e2 = s[e + 2], e4 = s[e + 4], e5 = s[e + 5], e6 = s[e + 6], e8 = s[e + 8], e9 = s[e + 9], e10 = s[e + 10];
-			s[o + 41] = e0 * x + e4 * y + e8 * z + s[e + 12];
-			s[o + 42] = e1 * x + e5 * y + e9 * z + s[e + 13];
-			s[o + 43] = e2 * x + e6 * y + e10 * z + s[e + 14];
+			s[o + 41] = e0 * cx + e4 * cy + e8 * cz + s[e + 12];
+			s[o + 42] = e1 * cx + e5 * cy + e9 * cz + s[e + 13];
+			s[o + 43] = e2 * cx + e6 * cy + e10 * cz + s[e + 14];
 			const sx = e0 * e0 + e1 * e1 + e2 * e2, sy = e4 * e4 + e5 * e5 + e6 * e6, sz = e8 * e8 + e9 * e9 + e10 * e10;
-			s[o + 44] = bs.radius * Math.sqrt(sx > sy ? (sx > sz ? sx : sz) : (sy > sz ? sy : sz));
-			object._cullVersion = object._worldVersion; object._cullSphere = bs; object._cullRadius = bs.radius;
-			object._cullCx = c.x; object._cullCy = c.y; object._cullCz = c.z;
+			s[o + 44] = r * Math.sqrt(sx > sy ? (sx > sz ? sx : sz) : (sy > sz ? sy : sz));
+			object._cullVersion = object._worldVersion; object._cullSphere = bs;
+			n[q] = r; n[q + 1] = cx; n[q + 2] = cy; n[q + 3] = cz;
 		}
 		return frustum.intersectsSphereFlat(s[o + 41], s[o + 42], s[o + 43], s[o + 44]);
 	}
 
 	_projectObject(object, camera, groupOrder, sortObjects, list) {
 		if (object.visible === false) return;
-		const visible = object.layers.test(camera.layers);
-		if (visible) {
-			if (object.isGroup) {
-				groupOrder = object.renderOrder;
-			} else if (object.isLOD) {
-				if (object.autoUpdate === true) object.update(camera);
-			} else if (object.isLight) {
-				this.lights.push(object);
-			} else if (object.isSprite) {
-				if (!object.frustumCulled || _frustum.intersectsSprite(object)) {
-					const material = object.material;
-					if (material.visible) {
-						const we = object.matrixWorld.elements;
-						this._pushItem(list, object, object.geometry, material, null, ndcDepth(we[12], we[13], we[14]), false);
-					}
-				}
-			} else if (object.isMesh || object.isLine || object.isPoints) {
+		if ((object.layers.mask & this._cameraLayerMask) !== 0) {
+			if (object.isMesh === true || object.isLine === true || object.isPoints === true) {
 				const geometry = object.geometry;
 				const material = object.material;
 				if (!object.frustumCulled || this._cullTest(object, geometry, _frustum)) {
@@ -552,15 +571,31 @@ class WebGLRenderer {
 							z = ndcDepth(_vector3.x, _vector3.y, _vector3.z);
 						}
 					}
+					list.zScratch[0] = z;
 					if (Array.isArray(material)) {
 						const groups = geometry.groups;
 						for (let i = 0, l = groups.length; i < l; i++) {
 							const group = groups[i];
 							const groupMaterial = material[group.materialIndex];
-							if (groupMaterial && groupMaterial.visible) this._pushItem(list, object, geometry, groupMaterial, group, z, false);
+							if (groupMaterial && groupMaterial.visible) this._pushItem(list, object, geometry, groupMaterial, group, false);
 						}
 					} else if (material.visible) {
-						this._pushItem(list, object, geometry, material, null, z, false);
+						this._pushItem(list, object, geometry, material, null, false);
+					}
+				}
+			} else if (object.isGroup) {
+				groupOrder = object.renderOrder;
+			} else if (object.isLOD) {
+				if (object.autoUpdate === true) object.update(camera);
+			} else if (object.isLight) {
+				this.lights.push(object);
+			} else if (object.isSprite) {
+				if (!object.frustumCulled || _frustum.intersectsSprite(object)) {
+					const material = object.material;
+					if (material.visible) {
+						const we = object.matrixWorld.elements;
+						list.zScratch[0] = ndcDepth(we[12], we[13], we[14]); // three.js: NDC depth of the world position
+						this._pushItem(list, object, object.geometry, material, null, false);
 					}
 				}
 			}
@@ -569,7 +604,7 @@ class WebGLRenderer {
 		for (let i = 0, l = children.length; i < l; i++) this._projectObject(children[i], camera, groupOrder, sortObjects, list);
 	}
 
-	_pushItem(list, object, geometry, material, group, z, shadowPass) {
+	_pushItem(list, object, geometry, material, group, shadowPass) {
 		if (shadowPass === false) {
 			const override = this._currentScene !== null ? this._currentScene.overrideMaterial : null;
 			if (override !== null && override !== undefined && material.allowOverride === true) material = override;
@@ -580,7 +615,7 @@ class WebGLRenderer {
 		const frame = this._frameId;
 		if (material._frameStamp !== frame) { material._frameStamp = frame; material._frameRid = this._materialCounter++; }
 		if (geometry._frameStamp !== frame) { geometry._frameStamp = frame; geometry._frameRid = this._geometryCounter++; }
-		list.push(object, geometry, material, group, z, material._frameRid, geometry._frameRid, variant);
+		list.push(object, geometry, material, group, material._frameRid, geometry._frameRid, variant);
 	}
 
 	/** Resolve the program of every item in the list. Runs after the frame's lights are collected. */
@@ -630,7 +665,7 @@ class WebGLRenderer {
 		material.removeEventListener('dispose', this._onMaterialDispose);
 		const props = this._materialProperties.get(material);
 		if (props !== undefined) {
-			for (let i = 0; i < props.programs.length; i++) { const e = props.programs[i]; if (e) this.programs.releaseProgram(e.program); }
+			for (let i = 0; i < props.programs.length; i++) { const e = props.programs[i]; if (e) { this.programs.releaseProgram(e.program); if (e.altProgram !== null) this.programs.releaseProgram(e.altProgram); } }
 			if (props.blockSlot >= 0) this._materialFreeSlots.push(props.blockSlot);
 		}
 		this._materialProperties.delete(material);
@@ -645,7 +680,16 @@ class WebGLRenderer {
 	}
 	_getProgramSlow(props, material, object, scene, variant) {
 		let entry = props.programs[variant];
-		if (entry !== undefined && entry.materialVersion === material.version && entry.envVersion === this._envVersion) return entry.program;
+		if (entry !== undefined) {
+			if (entry.materialVersion === material.version && entry.envVersion === this._envVersion) return entry.program;
+			// the previous environment (typically the other of render target / screen) is kept as a second slot
+			if (entry.altProgram !== null && entry.altMaterialVersion === material.version && entry.altEnvVersion === this._envVersion) {
+				const p = entry.program, mv = entry.materialVersion, ev = entry.envVersion;
+				entry.program = entry.altProgram; entry.materialVersion = entry.altMaterialVersion; entry.envVersion = entry.altEnvVersion;
+				entry.altProgram = p; entry.altMaterialVersion = mv; entry.altEnvVersion = ev;
+				return entry.program;
+			}
+		}
 		const vflags = {
 			instancing: (variant & V_INSTANCING) !== 0, instancingColor: (variant & V_INSTANCING_COLOR) !== 0,
 			receiveShadow: (variant & V_RECEIVE_SHADOW) !== 0, shadowPass: (variant & V_SHADOW_PASS) !== 0,
@@ -658,8 +702,14 @@ class WebGLRenderer {
 			return entry.program;
 		}
 		const program = this.programs.acquireProgram(parameters, material);
-		if (entry !== undefined) this.programs.releaseProgram(entry.program);
-		entry = { program, materialVersion: material.version, envVersion: this._envVersion };
+		if (entry !== undefined) {
+			// current program becomes the alternate; the one it displaces is released
+			if (entry.altProgram !== null) this.programs.releaseProgram(entry.altProgram);
+			entry.altProgram = entry.program; entry.altMaterialVersion = entry.materialVersion; entry.altEnvVersion = entry.envVersion;
+			entry.program = program; entry.materialVersion = material.version; entry.envVersion = this._envVersion;
+		} else {
+			entry = { program, materialVersion: material.version, envVersion: this._envVersion, altProgram: null, altMaterialVersion: -1, altEnvVersion: -1 };
+		}
 		props.programs[variant] = entry;
 		material._programDirty = false;
 		return program;
@@ -881,6 +931,7 @@ class WebGLRenderer {
 		const program = this._getProgram(material, object, scene, variant);
 		this._setupMaterial(item, program, material, camera, false, this._sideOverride >= 0 ? this._sideOverride : (shadowPass ? shadowSideOf(material) : material.side));
 		const mu = program.modelMatrixUniform;
+		if (mu !== null) mu._lastObject = null;
 		if (mu !== null && !cacheArray(mu, IDENTITY, 16)) { gl.uniformMatrix4fv(mu.location, false, IDENTITY); if (this._traceUniforms !== null) this._trace(mu); }
 		const du = program.drawBaseUniform;
 		if (du !== null && du.cache !== drawBase) { du.cache = drawBase; gl.uniform1i(du.location, drawBase); if (this._traceUniforms !== null) this._trace(du); }
@@ -998,7 +1049,11 @@ class WebGLRenderer {
 		// per-object uniforms
 		const s = object._slabData, o = object._slabOffset;
 		const mu = program.modelMatrixUniform;
-		if (mu !== null && !cacheSlab(mu, s, o + 16, 16)) { gl.uniformMatrix4fv(mu.location, false, s, o + 16, 16); if (this._traceUniforms !== null) this._trace(mu); }
+		if (mu !== null && (mu._lastObject !== object || mu._lastVersion !== object._worldVersion)) {
+			// the cache already holds this object's matrix at this world version when both match
+			mu._lastObject = object; mu._lastVersion = object._worldVersion;
+			if (!cacheSlab(mu, s, o + 16, 16)) { gl.uniformMatrix4fv(mu.location, false, s, o + 16, 16); if (this._traceUniforms !== null) this._trace(mu); }
+		}
 		if (material.isShaderMaterial) {
 			this._uploadObjectUniformsForShaderMaterial(program, object, camera);
 		} else {
@@ -1029,6 +1084,7 @@ class WebGLRenderer {
 		this._setupMaterial(item, program, material, camera, false, this._sideOverride >= 0 ? this._sideOverride : (shadowPass ? shadowSideOf(material) : material.side));
 		if (material.wireframe === true) geometry = this._wireframeGeometry(geometry);
 		const mu = program.modelMatrixUniform;
+		if (mu !== null) mu._lastObject = null;
 		if (mu !== null && !cacheArray(mu, IDENTITY, 16)) { gl.uniformMatrix4fv(mu.location, false, IDENTITY); if (this._traceUniforms !== null) this._trace(mu); }
 		const du = program.drawBaseUniform;
 		if (du !== null && du.cache !== drawBase) { du.cache = drawBase; gl.uniform1i(du.location, drawBase); if (this._traceUniforms !== null) this._trace(du); }
@@ -1079,7 +1135,20 @@ class WebGLRenderer {
 		// Values are read from the uniform objects now (not snapshotted), so textures assigned
 		// later to uniform objects shared between materials are picked up.
 		this._samplerStamp++;
-		for (const name in uniforms) this._uploadUniform(program, name, uniforms[name].value);
+		let plan = material._uniformPlan;
+		if (plan === undefined || plan.program !== program || plan.uniforms !== uniforms || plan.version !== material.version || plan.count !== Object.keys(uniforms).length) plan = this._buildUniformPlan(program, material);
+		const names = plan.names, recs = plan.records, objs = plan.objects, n = names.length;
+		if (this._traceUniforms === null) {
+			for (let i = 0; i < n; i++) {
+				const value = objs[i].value, u = recs[i];
+				if (u === null) this._uploadUniform(program, names[i], value);
+				else if (value !== null && value !== undefined) u.setter(gl, this, u, value);
+			}
+		} else {
+			for (let i = 0; i < n; i++) {
+				if (recs[i] === null) this._uploadUniform(program, names[i], objs[i].value); else setUniformValue(gl, this, recs[i], objs[i].value);
+			}
+		}
 		// every sampler the program declares but this material left null gets an empty texture
 		// of the right target on its own unit (mixed sampler types on one unit is INVALID_OPERATION)
 		const samplers = program.samplerUniforms;
@@ -1099,6 +1168,18 @@ class WebGLRenderer {
 			if (fog.isFog) { if (pu.fogNear) setUniformValue(gl, this, pu.fogNear, fog.near); if (pu.fogFar) setUniformValue(gl, this, pu.fogFar, fog.far); }
 			else if (pu.fogDensity) setUniformValue(gl, this, pu.fogDensity, fog.density);
 		}
+	}
+	/** Names (and program uniform records) a ShaderMaterial uploads to `program`; rebuilt when its uniforms object, key count, version or program change. */
+	_buildUniformPlan(program, material) {
+		const uniforms = material.uniforms, names = [], records = [], objects = [], pu = program.uniforms;
+		for (const name in uniforms) {
+			const u = pu[name];
+			if (u !== undefined) { if (u.setter === undefined) u.setter = pickSetter(this._gl, u.type); names.push(name); records.push(u); objects.push(uniforms[name]); continue; }
+			const v = uniforms[name].value;
+			// struct / array-of-struct / flattened-array values resolve to nested program uniforms at upload time
+			if (v !== null && v !== undefined && (Array.isArray(v) || (typeof v === 'object' && !isLeafValue(v)))) { names.push(name); records.push(null); objects.push(uniforms[name]); }
+		}
+		return (material._uniformPlan = { program, uniforms, version: material.version, count: Object.keys(uniforms).length, names, records, objects });
 	}
 	/** Uploads one uniform value; recurses into structs ({...}) and arrays of structs like three.js. */
 	_uploadUniform(program, name, value) {
@@ -1152,6 +1233,37 @@ const _wireGroup = { start: 0, count: 0, materialIndex: 0 };
 const MAP_KEYS = ['map', 'alphaMap', 'normalMap', 'emissiveMap', 'roughnessMap', 'metalnessMap', 'aoMap', 'specularMap'];
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
+// WebGL2 uniform type enums as literals: reading them off the context costs a getter call per switch case
+const U_FLOAT = 0x1406;
+const U_INT = 0x1404;
+const U_BOOL = 0x8B56;
+const U_UNSIGNED_INT = 0x1405;
+const U_FLOAT_VEC2 = 0x8B50;
+const U_FLOAT_VEC3 = 0x8B51;
+const U_FLOAT_VEC4 = 0x8B52;
+const U_INT_VEC2 = 0x8B53;
+const U_INT_VEC3 = 0x8B54;
+const U_INT_VEC4 = 0x8B55;
+const U_BOOL_VEC2 = 0x8B57;
+const U_BOOL_VEC3 = 0x8B58;
+const U_BOOL_VEC4 = 0x8B59;
+const U_FLOAT_MAT2 = 0x8B5A;
+const U_FLOAT_MAT3 = 0x8B5B;
+const U_FLOAT_MAT4 = 0x8B5C;
+const U_SAMPLER_2D = 0x8B5E;
+const U_SAMPLER_3D = 0x8B5F;
+const U_SAMPLER_CUBE = 0x8B60;
+const U_SAMPLER_2D_SHADOW = 0x8B62;
+const U_SAMPLER_2D_ARRAY = 0x8DC1;
+const U_SAMPLER_2D_ARRAY_SHADOW = 0x8DC4;
+const U_SAMPLER_CUBE_SHADOW = 0x8DC5;
+const U_INT_SAMPLER_2D = 0x8DCA;
+const U_INT_SAMPLER_3D = 0x8DCB;
+const U_INT_SAMPLER_2D_ARRAY = 0x8DCF;
+const U_UNSIGNED_INT_SAMPLER_2D = 0x8DD2;
+const U_UNSIGNED_INT_SAMPLER_3D = 0x8DD3;
+const U_UNSIGNED_INT_SAMPLER_2D_ARRAY = 0x8DD7;
+
 function isLeafValue(v) {
 	return v.isVector2 || v.isVector3 || v.isVector4 || v.isColor || v.isMatrix3 || v.isMatrix4 || v.isQuaternion || v.isTexture || ArrayBuffer.isView(v);
 }
@@ -1172,12 +1284,18 @@ function bindTextureUniform(renderer, u, value, unit) {
 	if (!value || !value.isTexture) return;
 	// never sample a texture attached to the framebuffer being rendered to (feedback loop)
 	if (value.renderTarget !== null && value.renderTarget !== undefined && value.renderTarget === renderer._currentRenderTarget) { renderer.textures.bindEmpty(u, unit); return; }
-	if (u.type === gl.SAMPLER_3D) renderer.textures.setTexture3D(value, unit);
-	else if (u.type === gl.SAMPLER_2D_ARRAY) renderer.textures.setTexture2DArray(value, unit);
-	else if (u.type === gl.SAMPLER_CUBE || u.type === gl.SAMPLER_CUBE_SHADOW) renderer.textures.setTextureCube(value, unit);
+	if (u.type === U_SAMPLER_3D) renderer.textures.setTexture3D(value, unit);
+	else if (u.type === U_SAMPLER_2D_ARRAY) renderer.textures.setTexture2DArray(value, unit);
+	else if (u.type === U_SAMPLER_CUBE || u.type === U_SAMPLER_CUBE_SHADOW) renderer.textures.setTextureCube(value, unit);
 	else renderer.textures.setTexture2D(value, unit);
 }
 /** True if `u.cache` already holds these components; otherwise stores them. */
+/** Bitwise-equal compare of two same-length float images (NaN-safe: a NaN never equals, so it just re-uploads). */
+function sameFloats(a, b) {
+	for (let i = 0, n = a.length; i < n; i++) if (a[i] !== b[i]) return false;
+	return true;
+}
+
 function cacheVec(u, a, b, c, d) {
 	let k = u.cache;
 	if (k === undefined) { k = u.cache = new Float64Array(4); k[0] = NaN; }
@@ -1214,53 +1332,75 @@ function setUniformValue(gl, renderer, u, value) {
 }
 let traceCounter = 0;
 function setUniformValueImpl(gl, renderer, u, value) {
-	const loc = u.location;
 	if (value === null || value === undefined) return;
-	switch (u.type) {
-		case gl.FLOAT:
-			if (u.size > 1 || Array.isArray(value) || ArrayBuffer.isView(value)) { if (!cacheArray(u, value, value.length)) { traceCounter++; gl.uniform1fv(loc, value); } }
-			else if (u.cache !== value) { u.cache = value; { traceCounter++; gl.uniform1f(loc, value); } }
-			break;
-		case gl.INT: case gl.BOOL:
-			if (u.size > 1 || Array.isArray(value) || ArrayBuffer.isView(value)) { if (!cacheArray(u, value, value.length)) { traceCounter++; gl.uniform1iv(loc, value); } }
-			else { const v = value ? (typeof value === 'boolean' ? 1 : value) : 0; if (u.cache !== v) { u.cache = v; { traceCounter++; gl.uniform1i(loc, v); } } }
-			break;
-		case gl.UNSIGNED_INT: if (u.size > 1) { traceCounter++; gl.uniform1uiv(loc, value); } else if (u.cache !== value) { u.cache = value; { traceCounter++; gl.uniform1ui(loc, value); } } break;
-		case gl.FLOAT_VEC2:
-			if (value.isVector2) { if (!cacheVec(u, value.x, value.y, 0, 0)) { traceCounter++; gl.uniform2f(loc, value.x, value.y); } }
-			else { const a = flattenArray(value, 2); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniform2fv(loc, a); } }
-			break;
-		case gl.FLOAT_VEC3:
-			if (value.isVector3) { if (!cacheVec(u, value.x, value.y, value.z, 0)) { traceCounter++; gl.uniform3f(loc, value.x, value.y, value.z); } }
-			else if (value.isColor) { if (!cacheVec(u, value.r, value.g, value.b, 0)) { traceCounter++; gl.uniform3f(loc, value.r, value.g, value.b); } }
-			else { const a = flattenArray(value, 3); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniform3fv(loc, a); } }
-			break;
-		case gl.FLOAT_VEC4:
-			if (value.isVector4 || value.isQuaternion) { if (!cacheVec(u, value.x, value.y, value.z, value.w)) { traceCounter++; gl.uniform4f(loc, value.x, value.y, value.z, value.w); } }
-			else { const a = flattenArray(value, 4); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniform4fv(loc, a); } }
-			break;
-		case gl.INT_VEC2: case gl.BOOL_VEC2: if (value.isVector2) { traceCounter++; gl.uniform2i(loc, value.x, value.y); } else { traceCounter++; gl.uniform2iv(loc, value); } break;
-		case gl.INT_VEC3: case gl.BOOL_VEC3: if (value.isVector3) { traceCounter++; gl.uniform3i(loc, value.x, value.y, value.z); } else { traceCounter++; gl.uniform3iv(loc, value); } break;
-		case gl.INT_VEC4: case gl.BOOL_VEC4: if (value.isVector4) { traceCounter++; gl.uniform4i(loc, value.x, value.y, value.z, value.w); } else { traceCounter++; gl.uniform4iv(loc, value); } break;
-		case gl.FLOAT_MAT2: { const a = value.elements || flattenArray(value, 4); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniformMatrix2fv(loc, false, a); } break; }
-		case gl.FLOAT_MAT3: { const a = value.elements || flattenArray(value, 9); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniformMatrix3fv(loc, false, a); } break; }
-		case gl.FLOAT_MAT4: { const a = value.elements || flattenArray(value, 16); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniformMatrix4fv(loc, false, a); } break; }
-		case gl.SAMPLER_2D: case gl.SAMPLER_2D_SHADOW: case gl.SAMPLER_3D: case gl.SAMPLER_2D_ARRAY: case gl.SAMPLER_CUBE: case gl.SAMPLER_CUBE_SHADOW:
-		case gl.INT_SAMPLER_2D: case gl.UNSIGNED_INT_SAMPLER_2D: case gl.INT_SAMPLER_3D: case gl.UNSIGNED_INT_SAMPLER_3D: case gl.INT_SAMPLER_2D_ARRAY: case gl.UNSIGNED_INT_SAMPLER_2D_ARRAY:
-			// units were assigned at link time (u.unit .. u.unit + size - 1); bind textures, placeholders for gaps
-			u.boundStamp = renderer._samplerStamp;
-			if (Array.isArray(value)) {
-				for (let i = 0; i < u.size; i++) {
-					const t = value[i];
-					if (t && t.isTexture) bindTextureUniform(renderer, u, t, u.unit + i); else renderer.textures.bindEmpty(u, u.unit + i);
-				}
-			} else if (value.isTexture) {
-				bindTextureUniform(renderer, u, value, u.unit);
-			} else {
-				renderer.textures.bindEmpty(u, u.unit);
-			}
-			break;
-		default: break;
+	let f = u.setter;
+	if (f === undefined) f = u.setter = pickSetter(gl, u.type);
+	f(gl, renderer, u, value);
+}
+const noopSetter = () => {};
+function setFloat(gl, renderer, u, value) {
+	if (u.size > 1 || Array.isArray(value) || ArrayBuffer.isView(value)) { if (!cacheArray(u, value, value.length)) { traceCounter++; gl.uniform1fv(u.location, value); } }
+	else if (u.cache !== value) { u.cache = value; traceCounter++; gl.uniform1f(u.location, value); }
+}
+function setInt(gl, renderer, u, value) {
+	if (u.size > 1 || Array.isArray(value) || ArrayBuffer.isView(value)) { if (!cacheArray(u, value, value.length)) { traceCounter++; gl.uniform1iv(u.location, value); } }
+	else { const v = value ? (typeof value === 'boolean' ? 1 : value) : 0; if (u.cache !== v) { u.cache = v; traceCounter++; gl.uniform1i(u.location, v); } }
+}
+function setUint(gl, renderer, u, value) {
+	if (u.size > 1) { traceCounter++; gl.uniform1uiv(u.location, value); } else if (u.cache !== value) { u.cache = value; traceCounter++; gl.uniform1ui(u.location, value); }
+}
+function setVec2(gl, renderer, u, value) {
+	if (value.isVector2) { if (!cacheVec(u, value.x, value.y, 0, 0)) { traceCounter++; gl.uniform2f(u.location, value.x, value.y); } }
+	else { const a = flattenArray(value, 2); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniform2fv(u.location, a); } }
+}
+function setVec3(gl, renderer, u, value) {
+	if (value.isVector3) { if (!cacheVec(u, value.x, value.y, value.z, 0)) { traceCounter++; gl.uniform3f(u.location, value.x, value.y, value.z); } }
+	else if (value.isColor) { if (!cacheVec(u, value.r, value.g, value.b, 0)) { traceCounter++; gl.uniform3f(u.location, value.r, value.g, value.b); } }
+	else { const a = flattenArray(value, 3); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniform3fv(u.location, a); } }
+}
+function setVec4(gl, renderer, u, value) {
+	if (value.isVector4 || value.isQuaternion) { if (!cacheVec(u, value.x, value.y, value.z, value.w)) { traceCounter++; gl.uniform4f(u.location, value.x, value.y, value.z, value.w); } }
+	else { const a = flattenArray(value, 4); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniform4fv(u.location, a); } }
+}
+function setIVec2(gl, renderer, u, value) { traceCounter++; if (value.isVector2) gl.uniform2i(u.location, value.x, value.y); else gl.uniform2iv(u.location, value); }
+function setIVec3(gl, renderer, u, value) { traceCounter++; if (value.isVector3) gl.uniform3i(u.location, value.x, value.y, value.z); else gl.uniform3iv(u.location, value); }
+function setIVec4(gl, renderer, u, value) { traceCounter++; if (value.isVector4) gl.uniform4i(u.location, value.x, value.y, value.z, value.w); else gl.uniform4iv(u.location, value); }
+function setMat2(gl, renderer, u, value) { const a = value.elements || flattenArray(value, 4); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniformMatrix2fv(u.location, false, a); } }
+function setMat3(gl, renderer, u, value) { const a = value.elements || flattenArray(value, 9); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniformMatrix3fv(u.location, false, a); } }
+function setMat4(gl, renderer, u, value) { const a = value.elements || flattenArray(value, 16); if (!cacheArray(u, a, a.length)) { traceCounter++; gl.uniformMatrix4fv(u.location, false, a); } }
+function setSampler(gl, renderer, u, value) {
+	// units were assigned at link time (u.unit .. u.unit + size - 1); bind textures, placeholders for gaps
+	u.boundStamp = renderer._samplerStamp;
+	if (Array.isArray(value)) {
+		for (let i = 0; i < u.size; i++) {
+			const t = value[i];
+			if (t && t.isTexture) bindTextureUniform(renderer, u, t, u.unit + i); else renderer.textures.bindEmpty(u, u.unit + i);
+		}
+	} else if (value.isTexture) {
+		bindTextureUniform(renderer, u, value, u.unit);
+	} else {
+		renderer.textures.bindEmpty(u, u.unit);
+	}
+}
+/** The upload function for a GL uniform type (chosen once per uniform record). */
+function pickSetter(gl, type) {
+	switch (type) {
+		case U_FLOAT: return setFloat;
+		case U_INT: case U_BOOL: return setInt;
+		case U_UNSIGNED_INT: return setUint;
+		case U_FLOAT_VEC2: return setVec2;
+		case U_FLOAT_VEC3: return setVec3;
+		case U_FLOAT_VEC4: return setVec4;
+		case U_INT_VEC2: case U_BOOL_VEC2: return setIVec2;
+		case U_INT_VEC3: case U_BOOL_VEC3: return setIVec3;
+		case U_INT_VEC4: case U_BOOL_VEC4: return setIVec4;
+		case U_FLOAT_MAT2: return setMat2;
+		case U_FLOAT_MAT3: return setMat3;
+		case U_FLOAT_MAT4: return setMat4;
+		case U_SAMPLER_2D: case U_SAMPLER_2D_SHADOW: case U_SAMPLER_3D: case U_SAMPLER_2D_ARRAY: case U_SAMPLER_CUBE: case U_SAMPLER_CUBE_SHADOW:
+		case U_INT_SAMPLER_2D: case U_UNSIGNED_INT_SAMPLER_2D: case U_INT_SAMPLER_3D: case U_UNSIGNED_INT_SAMPLER_3D: case U_INT_SAMPLER_2D_ARRAY: case U_UNSIGNED_INT_SAMPLER_2D_ARRAY:
+			return setSampler;
+		default: return noopSetter;
 	}
 }
 

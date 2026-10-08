@@ -24,12 +24,13 @@ class Raycaster {
 		}
 	}
 	intersectObject(object, recursive = true, intersects = []) {
-		intersect(object, this, intersects, recursive);
+		intersect(object, this, intersects, recursive, this.layers.mask);
 		intersects.sort(ascSort);
 		return intersects;
 	}
 	intersectObjects(objects, recursive = true, intersects = []) {
-		for (let i = 0, l = objects.length; i < l; i++) intersect(objects[i], this, intersects, recursive);
+		const mask = this.layers.mask;
+		for (let i = 0, l = objects.length; i < l; i++) intersect(objects[i], this, intersects, recursive, mask);
 		intersects.sort(ascSort);
 		return intersects;
 	}
@@ -37,15 +38,16 @@ class Raycaster {
 
 function ascSort(a, b) { return a.distance - b.distance; }
 
-function intersect(object, raycaster, intersects, recursive) {
+// Array.prototype.sort is stable, so equal distances keep traversal order, as in three.js.
+function intersect(object, raycaster, intersects, recursive, mask) {
 	let propagate = true;
-	if (object.layers.test(raycaster.layers)) {
+	if ((object.layers.mask & mask) !== 0) { // == object.layers.test(raycaster.layers)
 		const result = object.raycast(raycaster, intersects);
 		if (result === false) propagate = false;
 	}
 	if (propagate === true && recursive === true) {
 		const children = object.children;
-		for (let i = 0, l = children.length; i < l; i++) intersect(children[i], raycaster, intersects, true);
+		for (let i = 0, l = children.length; i < l; i++) intersect(children[i], raycaster, intersects, true, mask);
 	}
 }
 

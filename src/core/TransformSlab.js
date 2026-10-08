@@ -24,12 +24,19 @@ export const LOCAL_OFFSET = 0;
 export const WORLD_OFFSET = 16;
 export const NORMAL_OFFSET = 32;
 export const SPHERE_OFFSET = 41;
+/** Doubles per record in the page's snapshot: change detection (px py pz qx qy qz qw sx sy sz) + cull cache (radius, cx, cy, cz). */
+export const SNAPSHOT_SIZE = 14;
+export const CULL_SNAPSHOT_OFFSET = 10;
 
 const PAGE_RECORDS = 1024;
 
 class Page {
 	constructor() {
 		this.data = new Float32Array(RECORD_SIZE * PAGE_RECORDS);
+		// TRS snapshot used by Object3D.updateMatrix(). Kept in a typed array rather than in object
+		// fields: double fields read from receivers of many different shapes (Scene, lights, cameras,
+		// meshes) go megamorphic and box a HeapNumber per load, which was ~120 B per object per frame.
+		this.snapshot = new Float64Array(SNAPSHOT_SIZE * PAGE_RECORDS);
 		this.used = 0;
 	}
 }
@@ -57,7 +64,7 @@ class TransformSlab {
 				page = new Page();
 				this.pages.push(page);
 			}
-			slot = { page, offset: page.used * RECORD_SIZE };
+			slot = { page, offset: page.used * RECORD_SIZE, snapshotOffset: page.used * SNAPSHOT_SIZE };
 			page.used++;
 		}
 		const d = slot.page.data, o = slot.offset;
@@ -65,6 +72,7 @@ class TransformSlab {
 		for (let i = 0; i < RECORD_SIZE; i++) d[o + i] = 0;
 		d[o] = 1; d[o + 5] = 1; d[o + 10] = 1; d[o + 15] = 1;
 		d[o + 16] = 1; d[o + 21] = 1; d[o + 26] = 1; d[o + 31] = 1;
+		slot.page.snapshot[slot.snapshotOffset] = NaN; // NaN position snapshot forces the first compose
 		this.live++;
 		if (this.registry !== null) this.registry.register(owner, slot);
 		return slot;

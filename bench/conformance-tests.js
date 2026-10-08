@@ -69,6 +69,26 @@ export function conformanceTests() {
 			}
 		},
 		{
+			name: 'Unchanged Frame/Lights blocks are skipped, direct mutations still upload', run(T, renderer) {
+				const { scene, camera } = baseScene(T);
+				const m = new T.Mesh(new T.BoxGeometry(1, 1, 1), new T.MeshLambertMaterial({ color: 0xffffff }));
+				m.rotation.set(0.6, 0.7, 0); scene.add(m);
+				const d = new T.DirectionalLight(0xffffff, 1); d.position.set(0, 5, 2); scene.add(d);
+				const probe = () => readPixel(renderer, 128, 95);
+				renderer.render(scene, camera); const a = probe();
+				renderer.render(scene, camera); const a2 = probe();
+				d.intensity = 0.2; renderer.render(scene, camera); const b = probe();           // direct light mutation
+				d.color.r = 0; renderer.render(scene, camera); const c = probe();                // direct colour channel mutation
+				scene.fog = new T.Fog(0x402000, 1, 7); renderer.render(scene, camera); const e = probe(); // fog colour != background: a fully fogged pixel must stay distinguishable
+				scene.fog.near = 0.1; scene.fog.far = 4.8; renderer.render(scene, camera); const f = probe();  // direct fog mutation
+				camera.position.x = 3; renderer.render(scene, camera); const g = probe();                    // camera move
+				const same = a.every((v, i) => v === a2[i]);
+				const differs = (x, y) => x.some((v, i) => Math.abs(v - y[i]) > 2);
+				const ok = same && differs(a, b) && differs(b, c) && differs(c, e) && differs(e, f) && differs(f, g);
+				return { pass: ok, detail: `static ${fmt(a)}=${fmt(a2)}; intensity ${fmt(b)}; colour.r ${fmt(c)}; fog ${fmt(e)}; fog.near/far ${fmt(f)}; camera ${fmt(g)}` };
+			}
+		},
+		{
 			name: 'Lit MeshPhongMaterial with point and hemisphere light', run(T, renderer) {
 				const { scene, camera } = baseScene(T);
 				const m = new T.Mesh(new T.SphereGeometry(1, 32, 16), new T.MeshPhongMaterial({ color: 0x88aaff, shininess: 60 }));

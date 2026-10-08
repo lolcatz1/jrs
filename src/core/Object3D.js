@@ -62,6 +62,8 @@ class Object3D extends EventDispatcher {
 		const slot = transformSlab.allocate(this);
 		this._slabData = slot.page.data;
 		this._slabOffset = slot.offset;
+		this._snapData = slot.page.snapshot;
+		this._snapOffset = slot.snapshotOffset;
 		const matrix = new Matrix4(this._slabData.subarray(slot.offset + LOCAL_OFFSET, slot.offset + LOCAL_OFFSET + 16));
 		const matrixWorld = new Matrix4(this._slabData.subarray(slot.offset + WORLD_OFFSET, slot.offset + WORLD_OFFSET + 16));
 
@@ -77,16 +79,13 @@ class Object3D extends EventDispatcher {
 		this._matrix = matrix;
 		this._matrixWorld = matrixWorld;
 
-		// change-detection snapshot (NaN forces the first compose)
-		this._px = NaN; this._py = 0; this._pz = 0;
-		this._qx = 0; this._qy = 0; this._qz = 0; this._qw = 1;
-		this._sx = 1; this._sy = 1; this._sz = 1;
+		// change-detection snapshot lives in the slab page (_snapData/_snapOffset); NaN forces the first compose
 		this._worldVersion = 0;
 		this._parentWorldVersion = -1;
 		// renderer scratch (initialised here so every Object3D shares one hidden class)
 		this._normalVersion = -1;
 		this._flipVersion = -1; this._frontFaceCW = false;
-		this._cullVersion = -1; this._cullSphere = null; this._cullRadius = 0; this._cullCx = 0; this._cullCy = 0; this._cullCz = 0;
+		this._cullVersion = -1; this._cullSphere = null; // cull-cache doubles (radius, centre) live in the snapshot record at +10..+13
 
 		this.matrixAutoUpdate = Object3D.DEFAULT_MATRIX_AUTO_UPDATE;
 		this.matrixWorldAutoUpdate = Object3D.DEFAULT_MATRIX_WORLD_AUTO_UPDATE;
@@ -119,7 +118,7 @@ class Object3D extends EventDispatcher {
 		if (this.matrixAutoUpdate) this.updateMatrix();
 		this._matrix.premultiply(matrix);
 		this._matrix.decompose(this.position, this.quaternion, this.scale);
-		this._px = NaN; // force the next updateMatrix() to recompose from TRS, as three.js does
+		this._snapData[this._snapOffset] = NaN; // force the next updateMatrix() to recompose from TRS, as three.js does
 		this.matrixWorldNeedsUpdate = true;
 	}
 	applyQuaternion(q) { this.quaternion.premultiply(q); return this; }
@@ -254,10 +253,10 @@ class Object3D extends EventDispatcher {
 	}
 
 	_snapshot() {
-		const p = this.position, q = this.quaternion, s = this.scale;
-		this._px = p.x; this._py = p.y; this._pz = p.z;
-		this._qx = q._x; this._qy = q._y; this._qz = q._z; this._qw = q._w;
-		this._sx = s.x; this._sy = s.y; this._sz = s.z;
+		const p = this.position, q = this.quaternion, s = this.scale, d = this._snapData, o = this._snapOffset;
+		d[o] = p.x; d[o + 1] = p.y; d[o + 2] = p.z;
+		d[o + 3] = q._x; d[o + 4] = q._y; d[o + 5] = q._z; d[o + 6] = q._w;
+		d[o + 7] = s.x; d[o + 8] = s.y; d[o + 9] = s.z;
 	}
 
 	/**
@@ -265,15 +264,15 @@ class Object3D extends EventDispatcher {
 	 * one of them changed since the last call. Returns true when it did.
 	 */
 	updateMatrix() {
-		const p = this.position, q = this.quaternion, s = this.scale;
-		if (p.x === this._px && p.y === this._py && p.z === this._pz &&
-			q._x === this._qx && q._y === this._qy && q._z === this._qz && q._w === this._qw &&
-			s.x === this._sx && s.y === this._sy && s.z === this._sz) {
+		const p = this.position, q = this.quaternion, s = this.scale, d = this._snapData, o = this._snapOffset;
+		if (p.x === d[o] && p.y === d[o + 1] && p.z === d[o + 2] &&
+			q._x === d[o + 3] && q._y === d[o + 4] && q._z === d[o + 5] && q._w === d[o + 6] &&
+			s.x === d[o + 7] && s.y === d[o + 8] && s.z === d[o + 9]) {
 			return false;
 		}
-		this._px = p.x; this._py = p.y; this._pz = p.z;
-		this._qx = q._x; this._qy = q._y; this._qz = q._z; this._qw = q._w;
-		this._sx = s.x; this._sy = s.y; this._sz = s.z;
+		d[o] = p.x; d[o + 1] = p.y; d[o + 2] = p.z;
+		d[o + 3] = q._x; d[o + 4] = q._y; d[o + 5] = q._z; d[o + 6] = q._w;
+		d[o + 7] = s.x; d[o + 8] = s.y; d[o + 9] = s.z;
 
 		// inlined Matrix4.compose
 		const te = this._matrix.elements;

@@ -1,0 +1,71 @@
+shared-static/three: median 17.50 ms, worst 2220.6 ms; trace events 144052
+
+frame #0: 2220.7 ms  (GC 0.0 ms)
+  busiest threads: GPU Process/CrGpuMain 15376.5ms | Renderer/CrRendererMain 8846.9ms | GPU Process/ANGLE-GC 40.2ms | GPU Process/ThreadPoolForegroundWorker 14.1ms | GPU Process/VizCompositorThread 13.8ms | Renderer/ThreadPoolForegroundWorker 11.0ms
+    5231.2 ms  Renderer/CrRendererMain                  ThreadControllerImpl::RunTask [toplevel] {"src_file":"ipc/ipc_mojo_bootstrap.cc","src_func":"Accept","src_line":1141}
+    5231.2 ms  Renderer/CrRendererMain                  Receive mojo message [toplevel,mojom] {"chrome_mojo_event_info":{"data_num_bytes":832,"ipc_hash":3544143186,"mojo_interface_method":{"native_symbol":{"mapping_id":2,"rel_pc":119399304}},"mojo_interf
+    2169.3 ms  GPU Process/CrGpuMain                    SkiaOutputSurfaceImplOnGpu::SwapBuffers [viz] {}
+    2169.1 ms  GPU Process/CrGpuMain                    Graphics.Pipeline [viz,benchmark,graphics.pipeline] {"chrome_graphics_pipeline":{"display_trace_id":5808809626565434000,"step":"STEP_BUFFER_SWAP_POST_SUBMIT"},"current_task":{"event_offset_from_task_start_time_us
+      2169 ms  GPU Process/CrGpuMain                    FramebufferVk::readPixelsImpl [gpu.angle] {}
+      2169 ms  GPU Process/CrGpuMain                    ImageHelper::readPixels [gpu.angle] {}
+      2169 ms  GPU Process/CrGpuMain                    ImageHelper::readPixelsImpl [gpu.angle] {}
+    2168.9 ms  GPU Process/CrGpuMain                    ImageHelper::readPixelsImpl - CPU Readback [gpu.angle] {}
+    2167.7 ms  GPU Process/CrGpuMain                    ContextVk::finishImpl [gpu.angle] {}
+    2162.2 ms  Renderer/CrRendererMain                  CommandBufferHelper::WaitForAvailableEntries1 [gpu] {}
+    2162.2 ms  Renderer/CrRendererMain                  CommandBufferProxyImpl::WaitForGetOffset [gpu] {"end":131194,"start":131215}
+      40.2 ms  GPU Process/ANGLE-GC                     releaseFinishedCommandsLocked [gpu.angle] {}
+      38.3 ms  Renderer/CrRendererMain                  CommandBufferHelper::WaitForAvailableEntries1 [gpu] {}
+      38.3 ms  Renderer/CrRendererMain                  CommandBufferProxyImpl::WaitForGetOffset [gpu] {"end":132182,"start":132203}
+
+frame #108: 295.9 ms  (GC 0.0 ms)
+  busiest threads: GPU Process/CrGpuMain 2648.2ms | Renderer/CrRendererMain 1140.3ms | GPU Process/VizCompositorThread 13.4ms | Renderer/Compositor 12.4ms | GPU Process/Chrome_ChildIOThread 7.0ms | Renderer/Chrome_ChildIOThread 2.3ms
+    5231.2 ms  Renderer/CrRendererMain                  ThreadControllerImpl::RunTask [toplevel] {"src_file":"ipc/ipc_mojo_bootstrap.cc","src_func":"Accept","src_line":1141}
+    5231.2 ms  Renderer/CrRendererMain                  Receive mojo message [toplevel,mojom] {"chrome_mojo_event_info":{"data_num_bytes":832,"ipc_hash":3544143186,"mojo_interface_method":{"native_symbol":{"mapping_id":2,"rel_pc":119399304}},"mojo_interf
+     300.4 ms  GPU Process/CrGpuMain                    ThreadControllerImpl::RunTask [toplevel] {"src_file":"gpu/command_buffer/service/scheduler.cc","src_func":"RunNextTask","src_line":610}
+     300.4 ms  GPU Process/CrGpuMain                    Scheduler::RunTask [gpu,toplevel.flow] {}
+     300.4 ms  GPU Process/CrGpuMain                    GpuChannel::ExecuteDeferredRequest [gpu] {}
+     300.4 ms  GPU Process/CrGpuMain                    SharedImageStub::OnDestroySharedImage [gpu] {}
+     300.2 ms  GPU Process/CrGpuMain                    GLContextEGL::MakeCurrent [gpu] {"context":"0x4","surface":"0x396c00024780"}
+     300.2 ms  GPU Process/CrGpuMain                    ContextVk::flushAndSubmitCommands [gpu.angle] {}
+     299.3 ms  GPU Process/CrGpuMain                    Renderer::flushRenderPassCommands [gpu.angle] {}
+     299.3 ms  GPU Process/CrGpuMain                    RenderPassCommandBufferHelper::flushToPrimary [gpu.angle] {}
+     298.3 ms  GPU Process/CrGpuMain                    SecondaryCommandBuffer::executeCommands [gpu.angle] {}
+     270.2 ms  Renderer/CrRendererMain                  CommandBufferHelper::WaitForAvailableEntries1 [gpu] {}
+     270.2 ms  Renderer/CrRendererMain                  CommandBufferProxyImpl::WaitForGetOffset [gpu] {"end":211756,"start":211777}
+       3.8 ms  GPU Process/CrGpuMain                    ThreadControllerImpl::RunTask [toplevel] {"src_file":"gpu/command_buffer/service/scheduler.cc","src_func":"RunNextTask","src_line":610}
+
+frame #50: 267.0 ms  (GC 0.0 ms)
+  busiest threads: GPU Process/CrGpuMain 1591.5ms | Renderer/CrRendererMain 1023.4ms | GPU Process/ANGLE-GC 15.8ms | Renderer/Compositor 14.5ms | GPU Process/Chrome_ChildIOThread 8.5ms | Renderer/Chrome_ChildIOThread 8.0ms
+    5231.2 ms  Renderer/CrRendererMain                  ThreadControllerImpl::RunTask [toplevel] {"src_file":"ipc/ipc_mojo_bootstrap.cc","src_func":"Accept","src_line":1141}
+    5231.2 ms  Renderer/CrRendererMain                  Receive mojo message [toplevel,mojom] {"chrome_mojo_event_info":{"data_num_bytes":832,"ipc_hash":3544143186,"mojo_interface_method":{"native_symbol":{"mapping_id":2,"rel_pc":119399304}},"mojo_interf
+     255.8 ms  GPU Process/CrGpuMain                    ThreadControllerImpl::RunTask [toplevel] {"chrome_task_annotator":{"delay_policy":"FLEXIBLE_NO_SOONER","task_delay_us":1000000},"src_file":"gpu/command_buffer/service/gr_cache_controller.cc","src_func"
+     255.6 ms  GPU Process/CrGpuMain                    GLContextEGL::MakeCurrent [gpu] {"context":"0x4","surface":"0x396c00024780"}
+     255.6 ms  GPU Process/CrGpuMain                    ContextVk::flushAndSubmitCommands [gpu.angle] {}
+     254.7 ms  GPU Process/CrGpuMain                    Renderer::flushRenderPassCommands [gpu.angle] {}
+     254.6 ms  GPU Process/CrGpuMain                    RenderPassCommandBufferHelper::flushToPrimary [gpu.angle] {}
+     253.8 ms  GPU Process/CrGpuMain                    SecondaryCommandBuffer::executeCommands [gpu.angle] {}
+     235.8 ms  Renderer/CrRendererMain                  CommandBufferHelper::WaitForAvailableEntries1 [gpu] {}
+     235.8 ms  Renderer/CrRendererMain                  CommandBufferProxyImpl::WaitForGetOffset [gpu] {"end":628,"start":642}
+      15.8 ms  GPU Process/ANGLE-GC                     releaseFinishedCommandsLocked [gpu.angle] {}
+       6.2 ms  Renderer/CrRendererMain                  CommandBufferHelper::Flush [gpu] {}
+       6.2 ms  Renderer/CrRendererMain                  CommandBufferProxyImpl::Flush [gpu] {"put_offset":122304}
+       6.2 ms  Renderer/Chrome_ChildIOThread            ThreadControllerImpl::RunTask [toplevel] {"src_file":"mojo/public/cpp/bindings/lib/interface_endpoint_client.cc","src_func":"SendMessage","src_line":79}
+
+frame #107: 45.5 ms  (GC 0.0 ms)
+  busiest threads: GPU Process/CrGpuMain 174.9ms | Renderer/CrRendererMain 107.4ms | GPU Process/Chrome_ChildIOThread 8.2ms | Renderer/Chrome_ChildIOThread 3.2ms | Renderer/Compositor 1.4ms | GPU Process/VizCompositorThread 1.2ms
+    5231.2 ms  Renderer/CrRendererMain                  ThreadControllerImpl::RunTask [toplevel] {"src_file":"ipc/ipc_mojo_bootstrap.cc","src_func":"Accept","src_line":1141}
+    5231.2 ms  Renderer/CrRendererMain                  Receive mojo message [toplevel,mojom] {"chrome_mojo_event_info":{"data_num_bytes":832,"ipc_hash":3544143186,"mojo_interface_method":{"native_symbol":{"mapping_id":2,"rel_pc":119399304}},"mojo_interf
+     300.4 ms  GPU Process/CrGpuMain                    ThreadControllerImpl::RunTask [toplevel] {"src_file":"gpu/command_buffer/service/scheduler.cc","src_func":"RunNextTask","src_line":610}
+     300.4 ms  GPU Process/CrGpuMain                    Scheduler::RunTask [gpu,toplevel.flow] {}
+     300.4 ms  GPU Process/CrGpuMain                    GpuChannel::ExecuteDeferredRequest [gpu] {}
+     300.4 ms  GPU Process/CrGpuMain                    SharedImageStub::OnDestroySharedImage [gpu] {}
+     300.2 ms  GPU Process/CrGpuMain                    GLContextEGL::MakeCurrent [gpu] {"context":"0x4","surface":"0x396c00024780"}
+     300.2 ms  GPU Process/CrGpuMain                    ContextVk::flushAndSubmitCommands [gpu.angle] {}
+     299.3 ms  GPU Process/CrGpuMain                    Renderer::flushRenderPassCommands [gpu.angle] {}
+     299.3 ms  GPU Process/CrGpuMain                    RenderPassCommandBufferHelper::flushToPrimary [gpu.angle] {}
+     298.3 ms  GPU Process/CrGpuMain                    SecondaryCommandBuffer::executeCommands [gpu.angle] {}
+       3.4 ms  Renderer/CrRendererMain                  CommandBufferHelper::Flush [gpu] {}
+       2.9 ms  Renderer/CrRendererMain                  CommandBufferProxyImpl::Flush [gpu] {"put_offset":4084}
+       1.8 ms  GPU Process/CrGpuMain                    ThreadControllerImpl::RunTask [toplevel] {"src_file":"gpu/command_buffer/service/scheduler.cc","src_func":"TryScheduleSequence","src_line":412}
+
+written /home/user/jrs/bench/results/swarm/stall-trace-shared-static-three.json

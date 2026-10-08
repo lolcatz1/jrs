@@ -42,6 +42,7 @@ class WebGLState {
 		this.currentViewport = new Vector4(-1, -1, -1, -1);
 		this.currentScissor = new Vector4(-1, -1, -1, -1);
 		this.currentScissorTest = null;
+		this.currentMaterialWord = -1; // packed state of the last "simple" material applied by setMaterial; -1 = unknown
 		this.currentTextureSlot = null;
 		this.currentBoundTextures = []; // slot -> {type, texture}
 		this.currentFramebuffer = null;
@@ -163,6 +164,17 @@ class WebGLState {
 
 	setMaterial(material, frontFaceCW, side = material.side) {
 		const gl = this.gl;
+		// Fast path: materials without custom blend factors, polygon offset or stencil are fully described by one
+		// packed word. If it matches what the last setMaterial applied (and no other setter ran since), every
+		// call below would be dropped by its own cache, so skip them all.
+		let word = -1;
+		const blending = material.blending, depthFunc = material.depthFunc;
+		if (blending !== CustomBlending && material.polygonOffset !== true && material.stencilWrite !== true && depthFunc >= 0 && depthFunc < 8 && blending >= 0 && blending < 6) {
+			const effBlending = (blending === NormalBlending && material.transparent === false) ? NoBlending : blending;
+			word = (side & 3) | (frontFaceCW ? 4 : 0) | (effBlending << 3) | (material.premultipliedAlpha ? 64 : 0) | (depthFunc << 7) |
+				(material.depthTest ? 1024 : 0) | (material.depthWrite ? 2048 : 0) | (material.colorWrite ? 4096 : 0) | (material.alphaToCoverage === true ? 8192 : 0);
+			if (word === this.currentMaterialWord) return;
+		}
 		side === DoubleSide ? this.disable(gl.CULL_FACE) : this.enable(gl.CULL_FACE);
 		let flipSided = (side === BackSide);
 		if (frontFaceCW) flipSided = !flipSided;
@@ -184,6 +196,7 @@ class WebGLState {
 			this.setStencilFunc(material.stencilFunc, material.stencilRef, material.stencilFuncMask);
 			this.setStencilOp(material.stencilFail, material.stencilZFail, material.stencilZPass);
 		}
+		this.currentMaterialWord = word;
 	}
 	/** Shadow pass state: three.js renders casters with its own MeshDepthMaterial, so the caster's depth, blend,
 	 *  stencil and polygon-offset settings do not apply; only the (flipped) side does. */
@@ -208,6 +221,7 @@ class WebGLState {
 		this.currentStencilTest = stencilTest;
 	}
 	setStencilMask(mask) {
+		this.currentMaterialWord = -1;
 		if (this.currentStencilMask !== mask) { this.gl.stencilMask(mask); this.currentStencilMask = mask; }
 	}
 	setStencilFunc(func, ref, mask) {
@@ -224,6 +238,7 @@ class WebGLState {
 	}
 
 	setFlipSided(flipSided) {
+		this.currentMaterialWord = -1;
 		if (this.currentFlipSided !== flipSided) {
 			const gl = this.gl;
 			if (flipSided) gl.frontFace(gl.CW); else gl.frontFace(gl.CCW);
@@ -260,11 +275,13 @@ class WebGLState {
 		}
 	}
 	setDepthTest(depthTest) {
+		this.currentMaterialWord = -1;
 		if (this.currentDepthTest === depthTest) return;
 		if (depthTest) this.enable(this.gl.DEPTH_TEST); else this.disable(this.gl.DEPTH_TEST);
 		this.currentDepthTest = depthTest;
 	}
 	setDepthMask(depthMask) {
+		this.currentMaterialWord = -1;
 		if (this.currentDepthMask !== depthMask) { this.gl.depthMask(depthMask); this.currentDepthMask = depthMask; }
 	}
 	setDepthFunc(depthFunc) {
@@ -284,6 +301,7 @@ class WebGLState {
 		this.currentDepthFunc = depthFunc;
 	}
 	setColorMask(colorMask) {
+		this.currentMaterialWord = -1;
 		if (this.currentColorMask !== colorMask) { this.gl.colorMask(colorMask, colorMask, colorMask, colorMask); this.currentColorMask = colorMask; }
 	}
 	setClearColor(r, g, b, a) {
@@ -342,6 +360,7 @@ class WebGLState {
 		gl.activeTexture(gl.TEXTURE0); gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.useProgram(null); gl.lineWidth(1);
 		gl.bindVertexArray(null);
 		this.enabledCapabilities = {};
+		this.currentMaterialWord = -1;
 		this.currentTextureSlot = null; this.currentBoundTextures = [];
 		this.currentProgram = null; this.currentVAO = null; this.currentArrayBuffer = null; this.currentUniformBuffer = null;
 		this.currentUniformBindings = []; this.currentFramebuffer = null;

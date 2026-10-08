@@ -1,6 +1,5 @@
 import { Vector3 } from '../math/Vector3.js';
 import { Vector2 } from '../math/Vector2.js';
-import { Sphere } from '../math/Sphere.js';
 import { Ray } from '../math/Ray.js';
 import { Matrix4 } from '../math/Matrix4.js';
 import { Object3D } from '../core/Object3D.js';
@@ -8,10 +7,10 @@ import { Triangle } from '../math/Triangle.js';
 import { BackSide, FrontSide } from '../constants.js';
 import { MeshBasicMaterial } from '../materials/MeshBasicMaterial.js';
 import { BufferGeometry } from '../core/BufferGeometry.js';
+import { WORLD_OFFSET } from '../core/TransformSlab.js';
+import { rayMissesWorldSphere } from '../core/RaycastUtils.js';
 
-const _inverseMatrix = /*@__PURE__*/ new Matrix4();
 const _ray = /*@__PURE__*/ new Ray();
-const _sphere = /*@__PURE__*/ new Sphere();
 const _sphereHitAt = /*@__PURE__*/ new Vector3();
 
 const _vA = /*@__PURE__*/ new Vector3();
@@ -38,6 +37,7 @@ class Mesh extends Object3D {
 		this.material = material;
 		this.morphTargetInfluences = undefined;
 		this.morphTargetDictionary = undefined;
+		this._rcSnap = null; this._rcInverse = null; // raycast: world matrix snapshot + its inverse
 		this.updateMorphTargets();
 	}
 	copy(source, recursive) {
@@ -89,15 +89,24 @@ class Mesh extends Object3D {
 	raycast(raycaster, intersects) {
 		const geometry = this.geometry;
 		const material = this.material;
-		const matrixWorld = this.matrixWorld;
 		if (material === undefined) return;
-		if (geometry.boundingSphere === null) geometry.computeBoundingSphere();
-		_sphere.copy(geometry.boundingSphere);
-		_sphere.applyMatrix4(matrixWorld);
-		_ray.copy(raycaster.ray);
-		if (_ray.intersectsSphere(_sphere) === false) return;
-		_inverseMatrix.copy(matrixWorld).invert();
-		_ray.copy(raycaster.ray).applyMatrix4(_inverseMatrix);
+		let boundingSphere = geometry.boundingSphere;
+		if (boundingSphere === null) { geometry.computeBoundingSphere(); boundingSphere = geometry.boundingSphere; }
+		// world-space sphere rejection: scalar math straight from the transform slab, no objects touched
+		const m = this._slabData, mo = this._slabOffset + WORLD_OFFSET;
+		if (rayMissesWorldSphere(raycaster.ray, raycaster.near, raycaster.far, m, mo, boundingSphere, 0, true)) return;
+		// inverse world matrix, recomputed only when the 16 world-matrix floats actually changed
+		let snap = this._rcSnap, inverse = this._rcInverse;
+		let changed = false;
+		if (snap === null) { snap = this._rcSnap = new Float32Array(16); inverse = this._rcInverse = new Matrix4(); changed = true; }
+		else {
+			for (let k = 0; k < 16; k++) if (snap[k] !== m[mo + k] || snap[k] !== snap[k]) { changed = true; break; }
+		}
+		if (changed) {
+			for (let k = 0; k < 16; k++) snap[k] = m[mo + k];
+			inverse.copy(this.matrixWorld).invert();
+		}
+		_ray.copy(raycaster.ray).applyMatrix4(inverse);
 		if (geometry.boundingBox !== null) {
 			if (_ray.intersectsBox(geometry.boundingBox) === false) return;
 		}
@@ -116,70 +125,105 @@ class Mesh extends Object3D {
 		if (position === undefined) return;
 
 		const useMorph = this.morphTargetInfluences !== undefined && geometry.morphAttributes.position !== undefined;
-		// Lazily build the BVH for anything larger than a handful of triangles.
-		const triCount = index !== null ? index.count / 3 : position.count / 3;
-		if (geometry.boundsTree === null && triCount > 64 && useMorph === false) geometry.computeBoundsTree();
-		const bvh = useMorph ? null : geometry.boundsTree;
+		// `fast`: positions can be read straight from the typed array and rejected with scalar math
+		const fast = useMorph === false && position.isInterleavedBufferAttribute !== true && position.normalized !== true;
+		const multi = Array.isArray(material);
+		const totalCount = index !== null ? index.count : position.count;
+		const triCount = totalCount / 3;
+		const start = drawRange.start, end = Math.min(totalCount, drawRange.start + drawRange.count);
+		const idx = index !== null ? index.array : null;
 
-		const start = drawRange.start, end = Math.min(index !== null ? index.count : position.count, drawRange.start + drawRange.count);
+		// Lazily build / refit the BVH for anything larger than a handful of triangles.
+		let bvh = null;
+		if (fast) {
+			bvh = geometry.boundsTree;
+			if (bvh !== null && bvh.validate(geometry) === false) bvh = geometry.boundsTree = null;
+			if (bvh === null && triCount > 64) bvh = geometry.computeBoundsTree();
+			if (bvh !== null) {
+				// the BVH addresses triangles on the 3*t grid; odd draw-range / group offsets use the plain loop
+				let aligned = start % 3 === 0;
+				if (aligned && multi) for (let g = 0; g < groups.length; g++) if (Math.max(groups[g].start, start) % 3 !== 0) { aligned = false; break; }
+				if (!aligned) bvh = null;
+			}
+		}
 
 		if (bvh !== null) {
 			const o = rayLocalSpace.origin, d = rayLocalSpace.direction;
-			// distance bound in local space: raycaster.far is in world units; use Infinity (world test filters later)
-			bvh.raycast(o.x, o.y, o.z, d.x, d.y, d.z, Infinity, (t) => {
-				const i = t * 3;
-				if (i < start || i + 2 >= end) return;
-				let a, b, c;
-				if (index !== null) { a = index.getX(i); b = index.getX(i + 1); c = index.getX(i + 2); }
-				else { a = i; b = i + 1; c = i + 2; }
-				let materialIndex = 0;
-				if (Array.isArray(material)) {
-					for (let g = 0; g < groups.length; g++) { const gr = groups[g]; if (i >= gr.start && i < gr.start + gr.count) { materialIndex = gr.materialIndex; break; } }
+			// distance bound in local space: raycaster.far is in world units; use Infinity (the world distance test filters later)
+			const n = bvh.collect(o.x, o.y, o.z, d.x, d.y, d.z, Infinity);
+			if (n === 0) return;
+			// three.js tests triangles in index order (or group by group); keep that order for stable ties
+			const tris = n > 24 ? bvh._hits.subarray(0, n) : bvh._hits;
+			if (n > 24) tris.sort();
+			else for (let i = 1; i < n; i++) { const v = tris[i]; let j = i - 1; while (j >= 0 && tris[j] > v) { tris[j + 1] = tris[j]; j--; } tris[j + 1] = v; }
+			const pos = position.array, stride = position.itemSize;
+			if (multi) {
+				for (let g = 0, gl = groups.length; g < gl; g++) {
+					const group = groups[g];
+					const gs = Math.max(group.start, start), ge = Math.min(totalCount, Math.min(group.start + group.count, start + drawRange.count));
+					const mat = material[group.materialIndex];
+					for (let k = 0; k < n; k++) {
+						const t = tris[k], i = t * 3;
+						if (i < gs || i >= ge) continue;
+						testTriangle(this, mat, raycaster, rayLocalSpace, uv, uv1, normal, pos, stride, idx, i, t, group.materialIndex, intersects, true);
+					}
 				}
-				const mat = Array.isArray(material) ? material[materialIndex] : material;
-				if (mat === undefined) return;
-				const intersection = checkGeometryIntersection(this, mat, raycaster, rayLocalSpace, uv, uv1, normal, a, b, c, materialIndex);
-				if (intersection) { intersection.faceIndex = t; intersects.push(intersection); }
-			});
+			} else {
+				for (let k = 0; k < n; k++) {
+					const t = tris[k], i = t * 3;
+					if (i < start || i >= end) continue;
+					testTriangle(this, material, raycaster, rayLocalSpace, uv, uv1, normal, pos, stride, idx, i, t, 0, intersects, true);
+				}
+			}
 			return;
 		}
 
-		if (index !== null) {
-			if (Array.isArray(material)) {
-				for (let i = 0, il = groups.length; i < il; i++) {
-					const group = groups[i];
-					const gs = Math.max(group.start, drawRange.start), ge = Math.min(index.count, Math.min((group.start + group.count), (drawRange.start + drawRange.count)));
-					for (let j = gs, jl = ge; j < jl; j += 3) {
-						const a = index.getX(j), b = index.getX(j + 1), c = index.getX(j + 2);
-						const intersection = checkGeometryIntersection(this, material[group.materialIndex], raycaster, rayLocalSpace, uv, uv1, normal, a, b, c, group.materialIndex);
-						if (intersection) { intersection.faceIndex = Math.floor(j / 3); intersects.push(intersection); }
-					}
-				}
-			} else {
-				for (let i = start, il = end; i < il; i += 3) {
-					const a = index.getX(i), b = index.getX(i + 1), c = index.getX(i + 2);
-					const intersection = checkGeometryIntersection(this, material, raycaster, rayLocalSpace, uv, uv1, normal, a, b, c);
-					if (intersection) { intersection.faceIndex = Math.floor(i / 3); intersects.push(intersection); }
-				}
+		const pos = fast ? position.array : null, stride = position.itemSize;
+		if (multi) {
+			for (let g = 0, gl = groups.length; g < gl; g++) {
+				const group = groups[g];
+				const gs = Math.max(group.start, start), ge = Math.min(totalCount, Math.min((group.start + group.count), (start + drawRange.count)));
+				const mat = material[group.materialIndex];
+				for (let j = gs; j < ge; j += 3) testTriangle(this, mat, raycaster, rayLocalSpace, uv, uv1, normal, pos, stride, idx, j, Math.floor(j / 3), group.materialIndex, intersects, fast);
 			}
 		} else {
-			if (Array.isArray(material)) {
-				for (let i = 0, il = groups.length; i < il; i++) {
-					const group = groups[i];
-					const gs = Math.max(group.start, drawRange.start), ge = Math.min(position.count, Math.min((group.start + group.count), (drawRange.start + drawRange.count)));
-					for (let j = gs, jl = ge; j < jl; j += 3) {
-						const intersection = checkGeometryIntersection(this, material[group.materialIndex], raycaster, rayLocalSpace, uv, uv1, normal, j, j + 1, j + 2, group.materialIndex);
-						if (intersection) { intersection.faceIndex = Math.floor(j / 3); intersects.push(intersection); }
-					}
-				}
-			} else {
-				for (let i = start, il = end; i < il; i += 3) {
-					const intersection = checkGeometryIntersection(this, material, raycaster, rayLocalSpace, uv, uv1, normal, i, i + 1, i + 2);
-					if (intersection) { intersection.faceIndex = Math.floor(i / 3); intersects.push(intersection); }
-				}
-			}
+			for (let j = start; j < end; j += 3) testTriangle(this, material, raycaster, rayLocalSpace, uv, uv1, normal, pos, stride, idx, j, Math.floor(j / 3), 0, intersects, fast);
 		}
 	}
+}
+
+/**
+ * Tests the triangle starting at index/vertex slot `i`. With `fast`, a scalar copy of
+ * Ray.intersectTriangle (same operations in the same order, hence the same accept / reject
+ * decision) rejects misses without touching a Vector3; only real hits take the full path
+ * that builds the intersection record.
+ */
+function testTriangle(object, material, raycaster, ray, uv, uv1, normal, pos, stride, idx, i, faceIndex, materialIndex, intersects, fast) {
+	if (material === undefined) return;
+	let a, b, c;
+	if (idx !== null) { a = idx[i]; b = idx[i + 1]; c = idx[i + 2]; } else { a = i; b = i + 1; c = i + 2; }
+	if (fast) {
+		const side = material.side;
+		let ia = a * stride, ib = b * stride, ic = c * stride, cull;
+		if (side === BackSide) { const t = ia; ia = ic; ic = t; cull = true; } else cull = side === FrontSide;
+		const ax = pos[ia], ay = pos[ia + 1], az = pos[ia + 2];
+		const e1x = pos[ib] - ax, e1y = pos[ib + 1] - ay, e1z = pos[ib + 2] - az;
+		const e2x = pos[ic] - ax, e2y = pos[ic + 1] - ay, e2z = pos[ic + 2] - az;
+		const nx = e1y * e2z - e1z * e2y, ny = e1z * e2x - e1x * e2z, nz = e1x * e2y - e1y * e2x;
+		const o = ray.origin, d = ray.direction, dx = d.x, dy = d.y, dz = d.z;
+		let DdN = dx * nx + dy * ny + dz * nz, sign;
+		if (DdN > 0) { if (cull) return; sign = 1; } else if (DdN < 0) { sign = -1; DdN = -DdN; } else return;
+		const qx = o.x - ax, qy = o.y - ay, qz = o.z - az;
+		const DdQxE2 = sign * (dx * (qy * e2z - qz * e2y) + dy * (qz * e2x - qx * e2z) + dz * (qx * e2y - qy * e2x));
+		if (DdQxE2 < 0) return;
+		const DdE1xQ = sign * (dx * (e1y * qz - e1z * qy) + dy * (e1z * qx - e1x * qz) + dz * (e1x * qy - e1y * qx));
+		if (DdE1xQ < 0) return;
+		if (DdQxE2 + DdE1xQ > DdN) return;
+		const QdN = -sign * (qx * nx + qy * ny + qz * nz);
+		if (QdN < 0) return;
+	}
+	const intersection = checkGeometryIntersection(object, material, raycaster, ray, uv, uv1, normal, a, b, c, materialIndex);
+	if (intersection) { intersection.faceIndex = faceIndex; intersects.push(intersection); }
 }
 
 function checkIntersection(object, material, raycaster, ray, pA, pB, pC, point) {
