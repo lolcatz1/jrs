@@ -13329,7 +13329,9 @@ mat3 fetchObjectNormalMatrix() {
 	return mat3( texelFetch( objectMatrices, objectTexel + ivec2( 4, 0 ), 0 ).xyz, texelFetch( objectMatrices, objectTexel + ivec2( 5, 0 ), 0 ).xyz, texelFetch( objectMatrices, objectTexel + ivec2( 6, 0 ), 0 ).xyz );
 }
 #endif
+#ifndef SHADOW_LEAN
 out vec3 vWorldPosition;
+#endif
 #ifdef USE_NORMAL
 out vec3 vNormal;
 #endif
@@ -13379,7 +13381,9 @@ void main() {
 		vec4 worldPosition = model * vec4( position, 1.0 );
 		vec4 mvPosition = viewMatrix * worldPosition;
 	#endif
+	#ifndef SHADOW_LEAN
 	vWorldPosition = worldPosition.xyz;
+	#endif
 	#ifdef USE_NORMAL
 		#if defined( USE_OBJECT_TEXTURE )
 		vNormal = normalize( fetchObjectNormalMatrix() * normal );
@@ -13907,6 +13911,7 @@ function buildBuiltinShader(p) {
       d("IS_SPRITE");
       break;
   }
+  if (p.leanShadow) d("SHADOW_LEAN");
   if (p.map) d("USE_MAP");
   if (p.alphaMap) d("USE_ALPHAMAP");
   if (p.emissiveMap) d("USE_EMISSIVEMAP");
@@ -13938,6 +13943,9 @@ function buildBuiltinShader(p) {
   const prefix = "#version 300 es\n" + defines.join("\n") + "\n";
   const vsExtra = (p.multiDraw ? "#extension GL_ANGLE_multi_draw : require\n" : "") + (p.materialType === MATERIAL_SPRITE ? spriteUniform : "");
   const vs = prefix + vsExtra + vertexShader;
+  if (p.leanShadow) {
+    return { vertexShader: vs, fragmentShader: "#version 300 es\nprecision mediump float;\nlayout(location = 0) out vec4 fragColor;\nvoid main() { fragColor = vec4( 0.0 ); }\n" };
+  }
   let fs = fragmentShader;
   const helpers = shadowFactorFunctions(p.numDirShadows | 0, p.numSpotShadows | 0);
   if (helpers !== "") fs = fs.replace("#ifdef USE_NORMALMAP\nvec3 perturbNormal2Arb", helpers + "#ifdef USE_NORMALMAP\nvec3 perturbNormal2Arb");
@@ -14316,10 +14324,11 @@ var WebGLPrograms = class {
     const isLit = materialType === MATERIAL_LAMBERT || materialType === MATERIAL_PHONG || materialType === MATERIAL_STANDARD;
     const hasUv = attributes.uv !== void 0;
     const hasUv1 = attributes.uv1 !== void 0;
-    const vertexColors = material.vertexColors === true && attributes.color !== void 0;
+    const leanShadow = variant.shadowPass === true && !(material.alphaTest > 0);
+    const vertexColors = !leanShadow && material.vertexColors === true && attributes.color !== void 0;
     const fog = scene.fog !== null && material.fog === true && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH;
-    const map = !!material.map;
-    const alphaMap = !!material.alphaMap;
+    const map = !leanShadow && !!material.map;
+    const alphaMap = !leanShadow && !!material.alphaMap;
     const emissiveMap = isLit && !!material.emissiveMap;
     const normalMap = isLit && !!material.normalMap;
     const roughnessMap = materialType === MATERIAL_STANDARD && !!material.roughnessMap;
@@ -14353,7 +14362,8 @@ var WebGLPrograms = class {
       objectTexture: variant.objectTexture === true || variant.multiDraw === true,
       multiDraw: variant.multiDraw === true,
       flatShading: isLit && material.flatShading === true,
-      doubleSided: material.side === DoubleSide,
+      doubleSided: !leanShadow && material.side === DoubleSide,
+      leanShadow,
       fog,
       fogExp2: fog && scene.fog.isFogExp2 === true,
       alphaTest: material.alphaTest > 0,
@@ -14396,6 +14406,7 @@ var WebGLPrograms = class {
     key = key * 8 + numSpotShadows;
     key = key * 2 + (p.multiDraw ? 1 : 0);
     key = key * 2 + (p.objectTexture ? 1 : 0);
+    key = key * 2 + (leanShadow ? 1 : 0);
     p.key = key;
     return p;
   }
