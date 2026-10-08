@@ -9,7 +9,7 @@ export const BLOCK_LIGHTS = 1;
 export const BLOCK_MATERIAL = 2;
 
 let _programId = 0;
-const FIXED_ATTRIBUTES = { position: 0, normal: 1, uv: 2, color: 3, uv1: 4, instanceColor: 5, instanceMatrix: 8 };
+const FIXED_ATTRIBUTES = { position: 0, normal: 1, uv: 2, color: 3, uv1: 4, instanceColor: 5, skinIndex: 6, skinWeight: 7, instanceMatrix: 8 };
 
 /**
  * A compiled program plus everything the renderer needs to drive it without
@@ -33,6 +33,8 @@ class WebGLProgram {
 		gl.bindAttribLocation(program, 3, 'color');
 		gl.bindAttribLocation(program, 4, 'uv1');
 		gl.bindAttribLocation(program, 5, 'instanceColor');
+		gl.bindAttribLocation(program, 6, 'skinIndex');
+		gl.bindAttribLocation(program, 7, 'skinWeight');
 		gl.bindAttribLocation(program, 8, 'instanceMatrix');
 		gl.linkProgram(program);
 		if (gl.getProgramParameter(program, gl.LINK_STATUS) === false) {
@@ -64,6 +66,14 @@ class WebGLProgram {
 		this._frameStamp = -1; this._frameRid = 0;
 		this.spriteCenterLocation = this.uniforms.uSpriteCenter ? this.uniforms.uSpriteCenter.location : null;
 		this.drawBaseUniform = this.uniforms.drawBase || null;
+		// skinning / morph target uniforms (built-in and custom programs alike)
+		this.bindMatrixUniform = this.uniforms.bindMatrix || null;
+		this.bindMatrixInverseUniform = this.uniforms.bindMatrixInverse || null;
+		this.boneTextureUniform = this.uniforms.boneTexture || null;
+		this.morphBaseInfluenceUniform = this.uniforms.morphTargetBaseInfluence || null;
+		this.morphInfluencesUniform = this.uniforms.morphTargetInfluences || null;
+		this.morphTextureUniform = this.uniforms.morphTargetsTexture || null;
+		this.morphTextureSizeUniform = this.uniforms.morphTargetsTextureSize || null;
 
 		// uniform blocks
 		const bind = (name, index) => {
@@ -73,7 +83,9 @@ class WebGLProgram {
 		};
 		this.hasFrameBlock = bind('Frame', BLOCK_FRAME);
 		this.hasLightsBlock = bind('Lights', BLOCK_LIGHTS);
-		this.hasMaterialBlock = bind('Material', BLOCK_MATERIAL);
+		this.hasMaterialBlock = bind('Material', BLOCK_MATERIAL) || bind('Materials', BLOCK_MATERIAL);
+		/** true when the program reads its material from a window of the material buffer indexed per instance (see ShaderLib MATERIAL_BLOCK). */
+		this.materialArray = parameters.materialArray === true;
 
 		// attributes; names outside the fixed table (custom ShaderMaterial attributes) get linker-assigned locations
 		this.attributes = {};
@@ -187,6 +199,7 @@ class WebGLPrograms {
 		this.gl = gl;
 		this.renderer = renderer;
 		this.cache = new Map();
+		this._baseKeyIds = new Map();
 		this.programs = [];
 	}
 
@@ -222,6 +235,15 @@ class WebGLPrograms {
 		const toneMapping = (material.toneMapped && renderer.toneMapping !== NoToneMapping && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH && materialType !== MATERIAL_NORMAL) ? renderer.toneMapping : NoToneMapping;
 		const currentRenderTarget = renderer.getRenderTarget();
 		const sRGBOutput = (currentRenderTarget === null ? renderer.outputColorSpace : currentRenderTarget.texture.colorSpace) === SRGBColorSpace && materialType !== MATERIAL_SHADOW_DEPTH && materialType !== MATERIAL_DEPTH && materialType !== MATERIAL_NORMAL;
+		// skinning and morph targets are object / geometry features (same rule as three.js: the program follows the object)
+		const skinning = object.isSkinnedMesh === true;
+		const morphAttributes = geometry.morphAttributes;
+		const morphAttribute = morphAttributes.position || morphAttributes.normal || morphAttributes.color;
+		const morphTargetsCount = morphAttribute !== undefined ? Math.min(morphAttribute.length, 255) : 0;
+		let morphTextureStride = 0;
+		if (morphAttributes.position !== undefined) morphTextureStride = 1;
+		if (morphAttributes.normal !== undefined) morphTextureStride = 2;
+		if (morphAttributes.color !== undefined) morphTextureStride = 3;
 
 		const p = {
 			materialType,
@@ -233,6 +255,8 @@ class WebGLPrograms {
 			instancingColor: variant.instancing && variant.instancingColor,
 			objectTexture: variant.objectTexture === true || variant.multiDraw === true,
 			multiDraw: variant.multiDraw === true,
+			materialArray: variant.materialArray === true && (variant.objectTexture === true || variant.multiDraw === true),
+			materialArraySize: renderer._materialWindow, materialPad: renderer._materialPad,
 			flatShading: isLit && material.flatShading === true,
 			doubleSided: !leanShadow && material.side === DoubleSide,
 			leanShadow,
@@ -246,6 +270,11 @@ class WebGLPrograms {
 			toneMapping,
 			sRGBOutput,
 			numDirShadows, numSpotShadows, numPointShadows, pointShadowBasic,
+			skinning,
+			morphTargets: morphAttributes.position !== undefined,
+			morphNormals: morphAttributes.normal !== undefined,
+			morphColors: morphAttributes.color !== undefined,
+			morphTargetsCount, morphTextureStride,
 		};
 		let key = materialType;
 		key = key * 2 + (map ? 1 : 0); key = key * 2 + (alphaMap ? 1 : 0); key = key * 2 + (emissiveMap ? 1 : 0); key = key * 2 + (normalMap ? 1 : 0);
@@ -255,7 +284,15 @@ class WebGLPrograms {
 		key = key * 2 + (fog ? 1 : 0); key = key * 2 + (p.alphaTest ? 1 : 0); key = key * 2 + (p.sizeAttenuation ? 1 : 0); key = key * 2 + (p.premultipliedAlpha ? 1 : 0);
 		key = key * 2 + (p.dithering ? 1 : 0); key = key * 2 + (hasUv1 ? 1 : 0); key = key * 8 + toneMapping; key = key * 2 + (sRGBOutput ? 1 : 0);
 		key = key * 8 + numDirShadows; key = key * 8 + numSpotShadows; key = key * 2 + (p.multiDraw ? 1 : 0); key = key * 2 + (p.objectTexture ? 1 : 0); key = key * 2 + (leanShadow ? 1 : 0);
+		// With every feature the product of the fields above exceeds 2^53 (precision loss would merge programs that differ
+		// only in their low bits), so the base part is interned to a small id and the remaining fields are packed under it.
+		let baseId = this._baseKeyIds.get(key);
+		if (baseId === undefined) { baseId = this._baseKeyIds.size; this._baseKeyIds.set(key, baseId); }
+		key = baseId;
 		key = key * 8 + numPointShadows; key = key * 2 + (pointShadowBasic ? 1 : 0);
+		key = key * 2 + (p.materialArray ? 1 : 0);
+		key = key * 2 + (skinning ? 1 : 0); key = key * 2 + (p.morphTargets ? 1 : 0); key = key * 2 + (p.morphNormals ? 1 : 0); key = key * 2 + (p.morphColors ? 1 : 0);
+		key = key * 4 + morphTextureStride; key = key * 256 + morphTargetsCount;
 		p.key = key;
 		return p;
 	}

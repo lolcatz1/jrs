@@ -28,7 +28,99 @@ function baseScene(T, camZ = 5) {
 
 export const SIZE = 256;
 
-/** Returns [{ name, run(T, renderer) -> { pass, detail } }] */
+/** Procedural skinned cylinder: 2 bones along Y (root at the bottom, child in the middle), weights blend across the middle. */
+export function buildSkinnedCylinder(T, bend, Ctor) {
+	const geometry = new T.CylinderGeometry(0.5, 0.5, 4, 24, 24);
+	const position = geometry.attributes.position, count = position.count;
+	const skinIndex = new Uint16Array(count * 4), skinWeight = new Float32Array(count * 4);
+	for (let i = 0; i < count; i++) {
+		const y = position.getY(i);
+		const w1 = Math.min(1, Math.max(0, (y + 0.5) / 1.0));
+		skinIndex[i * 4] = 0; skinIndex[i * 4 + 1] = 1;
+		skinWeight[i * 4] = 1 - w1; skinWeight[i * 4 + 1] = w1;
+	}
+	geometry.setAttribute('skinIndex', new T.BufferAttribute(skinIndex, 4));
+	geometry.setAttribute('skinWeight', new T.BufferAttribute(skinWeight, 4));
+	const material = new T.MeshLambertMaterial({ color: 0x88bbff });
+	const mesh = new (Ctor || T.SkinnedMesh)(geometry, material);
+	const root = new T.Bone(); root.name = 'root'; root.position.y = -2;
+	const child = new T.Bone(); child.name = 'child'; child.position.y = 2;
+	root.add(child);
+	mesh.add(root);
+	if (mesh.isSkinnedMesh) { mesh.bind(new T.Skeleton([root, child])); }
+	child.rotation.z = bend;
+	return { mesh, root, child, geometry, material };
+}
+/** Procedural morphing boxes: absolute position+normal targets, relative position targets, colour targets. */
+export function buildMorphBoxes(T, influences) {
+	const group = new T.Group();
+	const base = new T.BoxGeometry(1, 1, 1, 3, 3, 3);
+	const n = base.attributes.position.count;
+	const stretched = new Float32Array(n * 3), twisted = new Float32Array(n * 3), normalsA = new Float32Array(n * 3);
+	for (let i = 0; i < n; i++) {
+		const x = base.attributes.position.getX(i), y = base.attributes.position.getY(i), z = base.attributes.position.getZ(i);
+		stretched[i * 3] = x * 1.6; stretched[i * 3 + 1] = y * 0.6; stretched[i * 3 + 2] = z * 1.6;
+		const a = y * 1.2, c = Math.cos(a), s = Math.sin(a);
+		twisted[i * 3] = c * x - s * z; twisted[i * 3 + 1] = y + 0.3 * Math.sin(x * 3); twisted[i * 3 + 2] = s * x + c * z;
+		const nx = base.attributes.normal.getX(i), ny = base.attributes.normal.getY(i), nz = base.attributes.normal.getZ(i);
+		normalsA[i * 3] = nx * 0.6; normalsA[i * 3 + 1] = ny * 1.6; normalsA[i * 3 + 2] = nz * 0.6;
+	}
+	// A: absolute targets (position + normal), lit
+	const gA = base.clone();
+	gA.morphAttributes.position = [new T.Float32BufferAttribute(stretched, 3), new T.Float32BufferAttribute(twisted, 3)];
+	gA.morphAttributes.normal = [new T.Float32BufferAttribute(normalsA, 3), new T.Float32BufferAttribute(base.attributes.normal.array.slice(), 3)];
+	const mA = new T.Mesh(gA, new T.MeshLambertMaterial({ color: 0xffcc66 }));
+	mA.position.x = -1.3; mA.rotation.set(0.5, 0.6, 0);
+	mA.morphTargetInfluences[0] = influences[0]; mA.morphTargetInfluences[1] = influences[1];
+	// B: relative position targets
+	const gB = base.clone();
+	const relA = new Float32Array(n * 3), relB = new Float32Array(n * 3);
+	for (let i = 0; i < n * 3; i++) { relA[i] = stretched[i] - base.attributes.position.array[i]; relB[i] = twisted[i] - base.attributes.position.array[i]; }
+	gB.morphAttributes.position = [new T.Float32BufferAttribute(relA, 3), new T.Float32BufferAttribute(relB, 3)];
+	gB.morphTargetsRelative = true;
+	const mB = new T.Mesh(gB, new T.MeshLambertMaterial({ color: 0x66ddaa }));
+	mB.position.x = 1.3; mB.rotation.set(0.5, 0.6, 0);
+	mB.morphTargetInfluences[0] = influences[0]; mB.morphTargetInfluences[1] = influences[1];
+	// C: colour targets with RGBA vertex colours (unlit). RGBA because three.js r186's morphcolor_vertex chunk
+	// does not compile with RGB vertex colours (vec3 added to its vec4 vColor); jrs renders that case too.
+	const gC = base.clone();
+	const col = new Float32Array(n * 4), colA = new Float32Array(n * 4), colB = new Float32Array(n * 4);
+	for (let i = 0; i < n; i++) { col[i * 4] = 1; col[i * 4 + 1] = 1; col[i * 4 + 2] = 1; col[i * 4 + 3] = 1; colA[i * 4] = 1; colA[i * 4 + 3] = 1; colB[i * 4 + 2] = 1; colB[i * 4 + 3] = 1; }
+	gC.setAttribute('color', new T.Float32BufferAttribute(col, 4));
+	gC.morphAttributes.position = [new T.Float32BufferAttribute(stretched, 3), new T.Float32BufferAttribute(twisted, 3)];
+	gC.morphAttributes.color = [new T.Float32BufferAttribute(colA, 4), new T.Float32BufferAttribute(colB, 4)];
+	const mC = new T.Mesh(gC, new T.MeshBasicMaterial({ vertexColors: true }));
+	mC.position.y = -1.4; mC.rotation.set(0.5, 0.6, 0);
+	mC.morphTargetInfluences[0] = influences[0]; mC.morphTargetInfluences[1] = influences[1];
+	group.add(mA, mB, mC);
+	return { group, mA, mB, mC };
+}
+function lightRig(T, scene) {
+	const d = new T.DirectionalLight(0xffffff, 2.5); d.position.set(2, 3, 4); scene.add(d);
+	scene.add(new T.AmbientLight(0xffffff, 0.4));
+}
+/** Pixel difference statistics between two RGBA images. */
+function diffImages(a, b) {
+	let maxd = 0, bad = 0, sum = 0;
+	for (let i = 0; i < a.length; i += 4) {
+		const d = Math.max(Math.abs(a[i] - b[i]), Math.abs(a[i + 1] - b[i + 1]), Math.abs(a[i + 2] - b[i + 2]));
+		sum += Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]);
+		if (d > maxd) maxd = d; if (d > 16) bad++;
+	}
+	return { maxDiff: maxd, badFraction: bad / (a.length / 4), meanAbsDiff: sum / (a.length * 3 / 4) };
+}
+/** Renders `build(T)` -> { scene, camera } with the three.js reference renderer (when the page provides one) and compares. */
+function compareWithReference(ref, build, jrsPixels) {
+	if (!ref || !ref.THREE || !ref.renderer) return null;
+	const { scene, camera } = build(ref.THREE);
+	ref.renderer.render(scene, camera);
+	const px = readAll(ref.renderer);
+	return diffImages(jrsPixels, px);
+}
+const refOk = (d) => d === null || (d.meanAbsDiff < 0.5 && d.badFraction < 0.002);
+const refDetail = (d) => d === null ? 'three.js reference not available on this page' : `vs three.js: mean ${d.meanAbsDiff.toFixed(3)}, max ${d.maxDiff}, ${(100 * d.badFraction).toFixed(3)}% of pixels differ by >16`;
+
+/** Returns [{ name, run(T, renderer, ref) -> { pass, detail } }]; `ref` = { THREE, renderer } renders the same scene with three.js for pixel comparison. */
 export function conformanceTests() {
 	return [
 		{
@@ -136,6 +228,38 @@ export function conformanceTests() {
 				for (let i = 0; i < a.length; i++) { const dd = Math.abs(a[i] - b[i]); if (dd > maxd) maxd = dd; if (dd > 16) bad++; }
 				const glErr = renderer.getContext().getError();
 				return { pass: callsA <= 8 && callsB === 300 && bad / a.length < 0.002 && glErr === 0, detail: `draw calls ${callsB} -> ${callsA} (5 geometries, 2 materials, indexed and non-indexed); max pixel diff ${maxd}, ${(100 * bad / a.length).toFixed(3)}% of pixels differ by >16` };
+			}
+		},
+		{
+			name: 'Batches spanning materials render identically to individual draws', run(T, renderer) {
+				const { scene, camera } = baseScene(T);
+				const d = new T.DirectionalLight(0xffffff, 2); d.position.set(1, 2, 3); scene.add(d);
+				const p = new T.PointLight(0xffffff, 20, 0, 2); p.position.set(-2, 1, 3); scene.add(p);
+				scene.add(new T.AmbientLight(0xffffff, 0.3));
+				const geos = [new T.BoxGeometry(0.15, 0.15, 0.15), new T.SphereGeometry(0.1, 8, 6), new T.ConeGeometry(0.08, 0.2, 7)];
+				const data = new Uint8Array([255, 255, 255, 255, 128, 128, 128, 255, 128, 128, 128, 255, 255, 255, 255, 255]);
+				const tex = new T.DataTexture(data, 2, 2, T.RGBAFormat, T.UnsignedByteType); tex.needsUpdate = true;
+				// 40 materials of one program: different colours, shininess, emissive, uv transforms; a few textured (same texture) or double-sided
+				const mats = [];
+				for (let i = 0; i < 40; i++) {
+					const m = new T.MeshPhongMaterial({ color: new T.Color().setHSL(i / 40, 0.8, 0.5), shininess: 5 + i * 4, emissive: new T.Color(i % 5 === 0 ? 0x200010 : 0) });
+					if (i % 9 === 0) { m.map = tex; m.map.offset.set(0.25 * i, 0); }
+					if (i % 11 === 0) m.side = T.DoubleSide;
+					mats.push(m);
+				}
+				for (let i = 0; i < 300; i++) { const m = new T.Mesh(geos[i % 3], mats[(i * 7) % 40]); m.position.set((i % 20 - 10) * 0.2, (Math.floor(i / 20) - 7.5) * 0.2, 0); m.rotation.set(i, i * 0.3, 0); m.scale.setScalar(1 + (i % 3) * 0.2); scene.add(m); }
+				renderer.autoBatch = true; renderer.autoBatchMaterials = true; renderer.render(scene, camera);
+				const a = readAll(renderer), callsA = renderer.info.render.calls;
+				renderer.autoBatchMaterials = false; renderer.render(scene, camera);
+				const callsM = renderer.info.render.calls;
+				renderer.autoBatch = false; renderer.render(scene, camera);
+				const b = readAll(renderer), callsB = renderer.info.render.calls;
+				renderer.autoBatch = true; renderer.autoBatchMaterials = true;
+				let maxd = 0;
+				for (let i = 0; i < a.length; i++) { const dd = Math.abs(a[i] - b[i]); if (dd > maxd) maxd = dd; }
+				const glErr = renderer.getContext().getError();
+				const supported = renderer._materialArrayOk === true;
+				return { pass: (!supported || callsA <= 12) && callsM > callsA && callsB === 300 && maxd === 0 && glErr === 0, detail: `draw calls ${callsB} -> ${callsM} (per material) -> ${callsA} (material-index batching${supported ? '' : ', not supported on this device'}); max pixel diff ${maxd}` };
 			}
 		},
 		{
@@ -485,6 +609,149 @@ export function conformanceTests() {
 				const pa = readPixel(renderer, 128 - 44, 128), pb = readPixel(renderer, 128 + 44, 128), pc = readPixel(renderer, 128, 128 - 66);
 				const switches = renderer.info.render.programSwitches;
 				return { pass: added === 2 && near(pa, [255, 0, 0], 2) && near(pb, [0, 0, 255], 2) && near(pc, [0, 255, 0], 2) && switches === 2, detail: `programs created ${added} (expected 2: same source -> shared, different defines -> own), colours ${fmt(pa)} ${fmt(pb)} ${fmt(pc)}, program switches per frame ${switches} (expected 2)` };
+			}
+		},
+		{
+			name: 'SkinnedMesh: cylinder bent by two bones (matches three.js)', run(T, renderer, ref) {
+				const build = (L, bend = 0.9) => {
+					const { scene, camera } = baseScene(L, 7);
+					lightRig(L, scene);
+					const { mesh } = buildSkinnedCylinder(L, bend);
+					mesh.rotation.y = 0.4;
+					scene.add(mesh);
+					return { scene, camera, mesh };
+				};
+				// bind pose must equal the unskinned geometry drawn as a plain Mesh
+				const plain = build(T, 0);
+				renderer.render(plain.scene, plain.camera);
+				const skinnedRest = readAll(renderer);
+				const { scene: s2, camera: c2 } = baseScene(T, 7); lightRig(T, s2);
+				const ref2 = buildSkinnedCylinder(T, 0, T.Mesh); ref2.mesh.rotation.y = 0.4; s2.add(ref2.mesh);
+				renderer.render(s2, c2);
+				const plainRest = readAll(renderer);
+				const rest = diffImages(skinnedRest, plainRest);
+				// bent pose: the top half moves sideways
+				const bent = build(T);
+				renderer.render(bent.scene, bent.camera);
+				const bentPx = readAll(renderer);
+				const moved = diffImages(skinnedRest, bentPx);
+				const calls = renderer.info.render.calls;
+				const d = compareWithReference(ref, (L) => build(L), bentPx);
+				// bounding sphere / raycast follow the bones
+				bent.mesh.updateMatrixWorld(true);
+				bent.mesh.computeBoundingSphere();
+				const rc = new T.Raycaster(); rc.setFromCamera(new T.Vector2(-0.35, 0.3), bent.camera);
+				const hits = rc.intersectObject(bent.mesh);
+				return { pass: rest.maxDiff <= 2 && moved.badFraction > 0.01 && calls === 1 && refOk(d) && hits.length > 0,
+					detail: `bind pose vs plain mesh max diff ${rest.maxDiff}; bent pose changes ${(100 * moved.badFraction).toFixed(1)}% of pixels; ${refDetail(d)}; draw calls ${calls}; raycast on bent part ${hits.length} hit(s)` };
+			}
+		},
+		{
+			name: 'Morph targets: position / normal / colour, absolute and relative (matches three.js)', run(T, renderer, ref) {
+				const build = (L, influences) => {
+					const { scene, camera } = baseScene(L, 5);
+					lightRig(L, scene);
+					const { group, mA, mB, mC } = buildMorphBoxes(L, influences);
+					scene.add(group);
+					return { scene, camera, mA, mB, mC };
+				};
+				const a = build(T, [0.7, 0.4]);
+				renderer.render(a.scene, a.camera);
+				const px = readAll(renderer);
+				const calls = renderer.info.render.calls;
+				const d = compareWithReference(ref, (L) => build(L, [0.7, 0.4]), px);
+				// influence changes take effect without any needsUpdate
+				a.mA.morphTargetInfluences[0] = 0; a.mA.morphTargetInfluences[1] = 1; a.mB.morphTargetInfluences[0] = 1; a.mB.morphTargetInfluences[1] = 0; a.mC.morphTargetInfluences[1] = 1;
+				renderer.render(a.scene, a.camera);
+				const px2 = readAll(renderer);
+				const changed = diffImages(px, px2);
+				const d2 = compareWithReference(ref, (L) => { const r = build(L, [0, 1]); r.mB.morphTargetInfluences[0] = 1; r.mB.morphTargetInfluences[1] = 0; r.mC.morphTargetInfluences[0] = 0.7; r.mC.morphTargetInfluences[1] = 1; return r; }, px2);
+				// zero influences equal the base geometry
+				const z = build(T, [0, 0]);
+				renderer.render(z.scene, z.camera);
+				const pz = readAll(renderer);
+				const { scene: sb, camera: cb } = baseScene(T, 5); lightRig(T, sb);
+				const plainBoxes = buildMorphBoxes(T, [0, 0]);
+				for (const m of [plainBoxes.mA, plainBoxes.mB, plainBoxes.mC]) { m.geometry.morphAttributes = {}; m.morphTargetInfluences = undefined; m.morphTargetDictionary = undefined; }
+				sb.add(plainBoxes.group);
+				renderer.render(sb, cb);
+				const base = diffImages(pz, readAll(renderer));
+				const dict = a.mA.morphTargetDictionary && a.mA.morphTargetDictionary['0'] === 0 && a.mA.morphTargetDictionary['1'] === 1;
+				return { pass: calls === 3 && refOk(d) && refOk(d2) && changed.badFraction > 0.005 && base.maxDiff <= 2 && dict,
+					detail: `${refDetail(d)}; after influence change ${refDetail(d2)}; influence change moved ${(100 * changed.badFraction).toFixed(1)}% of pixels; zero influences vs base geometry max diff ${base.maxDiff}; draw calls ${calls}` };
+			}
+		},
+		{
+			name: 'Skinned mesh animated by AnimationMixer (matches three.js)', run(T, renderer, ref) {
+				const build = (L) => {
+					const { scene, camera } = baseScene(L, 7);
+					lightRig(L, scene);
+					const { mesh } = buildSkinnedCylinder(L, 0);
+					scene.add(mesh);
+					const clip = new L.AnimationClip('bend', 2, [
+						new L.QuaternionKeyframeTrack('child.quaternion', [0, 1, 2], [0, 0, 0, 1, 0, 0, Math.sin(0.5), Math.cos(0.5), 0, 0, -Math.sin(0.3), Math.cos(0.3)]),
+						new L.VectorKeyframeTrack('root.position', [0, 2], [0, -2, 0, 0.5, -2, 0]),
+						new L.NumberKeyframeTrack('.rotation[y]', [0, 2], [0, 1.2]),
+					]);
+					const mixer = new L.AnimationMixer(mesh);
+					mixer.clipAction(clip).play();
+					mixer.update(0.7); mixer.update(0.45);
+					return { scene, camera, mesh };
+				};
+				const a = build(T);
+				renderer.render(a.scene, a.camera);
+				const px = readAll(renderer);
+				const d = compareWithReference(ref, build, px);
+				return { pass: refOk(d) && Math.abs(a.mesh.rotation.y - 1.2 * 1.15 / 2) < 1e-6, detail: `${refDetail(d)}; mesh.rotation.y ${a.mesh.rotation.y.toFixed(4)} expected ${(1.2 * 1.15 / 2).toFixed(4)}` };
+			}
+		},
+		{
+			name: 'Skinned mesh casting and receiving a directional shadow (matches three.js)', run(T, renderer, ref) {
+				const build = (L, r) => {
+					const { scene, camera } = baseScene(L, 7);
+					r.shadowMap.enabled = true;
+					const floor = new L.Mesh(new L.PlaneGeometry(10, 10), new L.MeshLambertMaterial({ color: 0xffffff }));
+					floor.rotation.x = -Math.PI / 2; floor.position.y = -2.2; floor.receiveShadow = true; scene.add(floor);
+					const { mesh } = buildSkinnedCylinder(L, 1.1);
+					mesh.castShadow = true; mesh.receiveShadow = true; mesh.rotation.y = 0.3; scene.add(mesh);
+					const sun = new L.DirectionalLight(0xffffff, 3); sun.position.set(3, 6, 1); sun.castShadow = true; sun.shadow.mapSize.set(512, 512); scene.add(sun);
+					scene.add(new L.AmbientLight(0xffffff, 0.3));
+					camera.position.set(0, 4, 7); camera.lookAt(0, -0.5, 0); camera.updateMatrixWorld();
+					return { scene, camera };
+				};
+				const a = build(T, renderer);
+				renderer.render(a.scene, a.camera);
+				const px = readAll(renderer);
+				renderer.shadowMap.enabled = false;
+				const d = ref ? compareWithReference({ THREE: ref.THREE, renderer: ref.renderer }, (L) => build(L, ref.renderer), px) : null;
+				if (ref) ref.renderer.shadowMap.enabled = false;
+				// the bent top casts a shadow onto the floor to the left of the base
+				const shadowed = readPixel(renderer, 80, 160), lit = readPixel(renderer, 220, 200);
+				return { pass: (d === null || (d.meanAbsDiff < 0.6 && d.badFraction < 0.004)) && lum(shadowed) < lum(lit) * 0.7, detail: `${refDetail(d)}; floor in shadow ${fmt(shadowed)} vs lit ${fmt(lit)}` };
+			}
+		},
+		{
+			name: 'ShaderMaterial with skinning and morph target chunks (matches three.js)', run(T, renderer, ref) {
+				const build = (L) => {
+					const { scene, camera } = baseScene(L, 7);
+					const mat = new L.ShaderMaterial({
+						uniforms: { tint: { value: new L.Color(0xffaa33) } },
+						vertexShader: '#include <common>\n#include <skinning_pars_vertex>\n#include <morphtarget_pars_vertex>\nvarying vec3 vN;\nvoid main(){\n#include <beginnormal_vertex>\n#include <morphnormal_vertex>\n#include <skinbase_vertex>\n#include <skinnormal_vertex>\n#include <begin_vertex>\n#include <morphtarget_vertex>\n#include <skinning_vertex>\n#include <project_vertex>\nvN = normalize( normalMatrix * objectNormal );\n}',
+						fragmentShader: 'uniform vec3 tint; varying vec3 vN; void main(){ gl_FragColor = vec4( tint * ( 0.4 + 0.6 * max( vN.z, 0.0 ) ), 1.0 ); }',
+					});
+					const { mesh } = buildSkinnedCylinder(L, 0.8);
+					mesh.material = mat; mesh.rotation.y = 0.5; mesh.position.x = -1.2; scene.add(mesh);
+					const { group, mA } = buildMorphBoxes(L, [0.5, 0.5]);
+					mA.material = mat; mA.position.set(1.8, 1, 0); scene.add(mA);
+					return { scene, camera };
+				};
+				const a = build(T);
+				renderer.render(a.scene, a.camera);
+				const px = readAll(renderer);
+				const err = renderer.getContext().getError();
+				const d = compareWithReference(ref, build, px);
+				const c = readPixel(renderer, 60, 128);
+				return { pass: err === 0 && refOk(d) && c[0] > 100 && c[2] < 60, detail: `${refDetail(d)}; sample ${fmt(c)} (orange), GL error ${err}` };
 			}
 		},
 		{

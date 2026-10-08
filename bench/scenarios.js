@@ -156,6 +156,11 @@ export const scenarios = {
 		n: 211,
 		build(T, n) { return buildShaderClient(T, n, { scale: 211 / 1313, staticFrame: true }); }
 	},
+	// 200 skinned characters (20-bone chains, 4 weights per vertex) each driven by its own AnimationMixer.
+	'skinned-crowd': {
+		n: 200,
+		build(T, n) { return buildSkinnedCrowd(T, n); }
+	},
 	// Shadows: 2000 casters/receivers under a shadow-casting directional light.
 	'shadows': {
 		n: 2000,
@@ -194,6 +199,67 @@ export const scenarios = {
 		}
 	},
 };
+
+function buildSkinnedCrowd(T, n) {
+	const scene = new T.Scene();
+	scene.background = new T.Color(0x202830);
+	const camera = new T.PerspectiveCamera(60, 4 / 3, 0.1, 500);
+	camera.position.set(0, 14, 34); camera.lookAt(0, 2, 0);
+	scene.add(new T.AmbientLight(0xffffff, 0.5));
+	const sun = new T.DirectionalLight(0xffffff, 2); sun.position.set(1, 2, 3); scene.add(sun);
+	const bones = 20, height = 6;
+	// one shared geometry: a tapered tube, every vertex weighted over 4 consecutive bones of a chain along Y
+	const geometry = new T.CylinderGeometry(0.35, 0.5, height, 10, bones * 2);
+	const position = geometry.attributes.position, count = position.count;
+	const skinIndex = new Uint16Array(count * 4), skinWeight = new Float32Array(count * 4);
+	for (let i = 0; i < count; i++) {
+		const t = (position.getY(i) + height / 2) / height * (bones - 1); // 0 .. bones-1
+		const b = Math.floor(t), f = t - b;
+		// quadratic B-spline blend over bones b-1, b, b+1 (weights sum to 1); the 4th weight is 0
+		const w = [0.5 * (1 - f) * (1 - f), 0.5 + f - f * f, 0.5 * f * f, 0];
+		const idx = [Math.max(0, b - 1), b, Math.min(bones - 1, b + 1), 0];
+		for (let k = 0; k < 4; k++) { skinIndex[i * 4 + k] = idx[k]; skinWeight[i * 4 + k] = w[k]; }
+	}
+	geometry.setAttribute('skinIndex', new T.BufferAttribute(skinIndex, 4));
+	geometry.setAttribute('skinWeight', new T.BufferAttribute(skinWeight, 4));
+	const materials = [];
+	for (let i = 0; i < 8; i++) materials.push(new T.MeshLambertMaterial({ color: new T.Color().setHSL(i / 8, 0.5, 0.55) }));
+	// one clip, shared: every bone sways with its own phase
+	const tracks = [];
+	for (let b = 0; b < bones; b++) {
+		const times = [0, 0.5, 1, 1.5, 2], values = [];
+		for (let k = 0; k < times.length; k++) {
+			const a = 0.12 * Math.sin(k * Math.PI / 2 + b * 0.4), c = 0.08 * Math.cos(k * Math.PI / 2 + b * 0.7);
+			const q = new T.Quaternion().setFromEuler(new T.Euler(a, 0, c));
+			values.push(q.x, q.y, q.z, q.w);
+		}
+		tracks.push(new T.QuaternionKeyframeTrack('bone' + b + '.quaternion', times, values));
+	}
+	const clip = new T.AnimationClip('sway', 2, tracks);
+	const mixers = [];
+	const side = Math.ceil(Math.sqrt(n));
+	for (let i = 0; i < n; i++) {
+		const mesh = new T.SkinnedMesh(geometry, materials[i % materials.length]);
+		const chain = [];
+		let parent = mesh;
+		for (let b = 0; b < bones; b++) {
+			const bone = new T.Bone(); bone.name = 'bone' + b;
+			bone.position.y = b === 0 ? -height / 2 : height / (bones - 1);
+			parent.add(bone); chain.push(bone); parent = bone;
+		}
+		mesh.position.set(((i % side) - side / 2) * 2.2, height / 2 - 1, (Math.floor(i / side) - side / 2) * 2.2);
+		mesh.rotation.y = i * 0.37;
+		mesh.updateMatrixWorld(true);
+		mesh.bind(new T.Skeleton(chain));
+		scene.add(mesh);
+		const mixer = new T.AnimationMixer(mesh);
+		const action = mixer.clipAction(clip);
+		action.time = (i * 0.173) % 2;
+		action.play();
+		mixers.push(mixer);
+	}
+	return { scene, camera, update: (f) => { for (let i = 0; i < mixers.length; i++) mixers[i].update(1 / 60); } };
+}
 
 function buildShadows(T, n, animated, point = false) {
 	{
