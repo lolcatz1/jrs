@@ -108,7 +108,13 @@ class WebGLRenderer {
 		this._renderCallDepth = 0;
 		this._frameId = 0;
 		this._envVersion = 0;
-		this._lastEnvKey = '';
+		// env version = lights epoch * 65536 + interned id of the (tone mapping, colour space, shadows, fog)
+		// state, so switching between render targets and the screen revisits the same version instead
+		// of minting a new one, and no string key is built per frame
+		this._lightsEpoch = 0;
+		this._envKeyId = -1;
+		this._envKeyIds = new Map();
+		this._colorSpaceIds = new Map([['srgb-linear', 0], ['srgb', 1]]);
 		this._lastLightsVersion = -1;
 		this._samplerStamp = 0;
 		this._programCounter = 0;
@@ -188,10 +194,9 @@ class WebGLRenderer {
 		this._onMaterialDispose = this._onMaterialDispose.bind(this);
 
 		// render-order ranking (renderOrder -> 0..63), rebuilt per frame
-		this._renderOrders = new Map();
 		this._renderOrderList = [];
 		this._lastNotedRenderOrder = NaN;
-		this._rankOfRenderOrder = (ro) => { if (this._renderOrderList.length <= 1) return 0; const r = this._renderOrders.get(ro); return r === undefined ? 63 : r; };
+		this._rankOfRenderOrder = (ro) => this._rankOf(ro);
 
 		// draw commands
 		this._cmdCapacity = 1024;
@@ -380,7 +385,7 @@ class WebGLRenderer {
 		this._renderOrderReset();
 		this._projectObject(scene, camera, 0, this.sortObjects, list);
 		this.lights.end(this.shadowMap.enabled);
-		if (this.lights.version !== this._lastLightsVersion) { this._lastLightsVersion = this.lights.version; this._envVersion++; }
+		if (this.lights.version !== this._lastLightsVersion) { this._lastLightsVersion = this.lights.version; this._lightsEpoch++; this._envVersion = this._lightsEpoch * 65536 + this._envKeyId; }
 		this._resolvePrograms(list, scene);
 
 		if (this.info.autoReset === true && this._renderCallDepth === 1) { this.info.reset(); this._traceDraws = 0; }
@@ -440,17 +445,28 @@ class WebGLRenderer {
 		if (this._renderCallDepth === 0) this.info.render.frame++;
 	}
 
-	_renderOrderReset() { this._renderOrders.clear(); this._renderOrderList.length = 0; this._lastNotedRenderOrder = NaN; }
+	_renderOrderReset() { this._renderOrderList.length = 0; this._lastNotedRenderOrder = NaN; }
+	/** Index of `ro` in the sorted distinct-renderOrder list, or the insertion point (binary search). */
+	_renderOrderIndex(ro) {
+		const l = this._renderOrderList;
+		let lo = 0, hi = l.length;
+		while (lo < hi) { const mid = (lo + hi) >> 1; if (l[mid] < ro) lo = mid + 1; else hi = mid; }
+		return lo;
+	}
 	_noteRenderOrder(ro) {
 		if (ro === this._lastNotedRenderOrder) return;
 		this._lastNotedRenderOrder = ro;
-		if (!this._renderOrders.has(ro)) {
-			const l = this._renderOrderList;
-			l.push(ro);
-			l.sort((a, b) => a - b);
-			this._renderOrders.clear();
-			for (let i = 0; i < l.length; i++) this._renderOrders.set(l[i], Math.min(i, 63));
-		}
+		const l = this._renderOrderList, at = this._renderOrderIndex(ro);
+		if (at < l.length && l[at] === ro) return;
+		l.push(ro); // sorted insertion by hand: no comparator closure, no splice result array
+		for (let i = l.length - 1; i > at; i--) l[i] = l[i - 1];
+		l[at] = ro;
+	}
+	_rankOf(ro) {
+		const l = this._renderOrderList;
+		if (l.length <= 1) return 0;
+		const at = this._renderOrderIndex(ro);
+		return at < l.length && l[at] === ro ? (at < 63 ? at : 63) : 63;
 	}
 
 	/** Detects changes in frame-wide shader-affecting state and bumps the env version. */
@@ -458,8 +474,12 @@ class WebGLRenderer {
 		const target = this._currentRenderTarget;
 		const cs = target === null ? this._outputColorSpace : target.texture.colorSpace;
 		const fog = scene.fog === null ? 0 : (scene.fog.isFogExp2 ? 2 : 1);
-		const key = this.toneMapping + '|' + cs + '|' + (this.shadowMap.enabled ? 1 : 0) + '|' + fog;
-		if (key !== this._lastEnvKey) { this._lastEnvKey = key; this._envVersion++; }
+		let csId = this._colorSpaceIds.get(cs);
+		if (csId === undefined) { csId = this._colorSpaceIds.size; this._colorSpaceIds.set(cs, csId); }
+		const key = ((this.toneMapping * 64 + csId) * 2 + (this.shadowMap.enabled ? 1 : 0)) * 3 + fog;
+		let id = this._envKeyIds.get(key);
+		if (id === undefined) { id = this._envKeyIds.size % 65536; this._envKeyIds.set(key, id); }
+		if (id !== this._envKeyId) { this._envKeyId = id; this._envVersion = this._lightsEpoch * 65536 + id; }
 	}
 
 	_uploadFrameBlock(camera, scene) {
@@ -532,8 +552,8 @@ class WebGLRenderer {
 					const material = object.material;
 					if (material.visible) {
 						const we = object.matrixWorld.elements, ve = camera.matrixWorldInverse.elements;
-						const z = -(ve[2] * we[12] + ve[6] * we[13] + ve[10] * we[14] + ve[14]);
-						this._pushItem(list, object, object.geometry, material, null, z, false);
+						list.zScratch[0] = -(ve[2] * we[12] + ve[6] * we[13] + ve[10] * we[14] + ve[14]);
+						this._pushItem(list, object, object.geometry, material, null, false);
 					}
 				}
 			} else if (object.isMesh || object.isLine || object.isPoints) {
@@ -549,15 +569,16 @@ class WebGLRenderer {
 						else { cx = s[o + 28]; cy = s[o + 29]; cz = s[o + 30]; }
 						z = -(ve[2] * cx + ve[6] * cy + ve[10] * cz + ve[14]);
 					}
+					list.zScratch[0] = z;
 					if (Array.isArray(material)) {
 						const groups = geometry.groups;
 						for (let i = 0, l = groups.length; i < l; i++) {
 							const group = groups[i];
 							const groupMaterial = material[group.materialIndex];
-							if (groupMaterial && groupMaterial.visible) this._pushItem(list, object, geometry, groupMaterial, group, z, false);
+							if (groupMaterial && groupMaterial.visible) this._pushItem(list, object, geometry, groupMaterial, group, false);
 						}
 					} else if (material.visible) {
-						this._pushItem(list, object, geometry, material, null, z, false);
+						this._pushItem(list, object, geometry, material, null, false);
 					}
 				}
 			}
@@ -566,7 +587,7 @@ class WebGLRenderer {
 		for (let i = 0, l = children.length; i < l; i++) this._projectObject(children[i], camera, groupOrder, sortObjects, list);
 	}
 
-	_pushItem(list, object, geometry, material, group, z, shadowPass) {
+	_pushItem(list, object, geometry, material, group, shadowPass) {
 		if (shadowPass === false) {
 			const override = this._currentScene !== null ? this._currentScene.overrideMaterial : null;
 			if (override !== null && override !== undefined && material.allowOverride === true) material = override;
@@ -577,7 +598,7 @@ class WebGLRenderer {
 		const frame = this._frameId;
 		if (material._frameStamp !== frame) { material._frameStamp = frame; material._frameRid = this._materialCounter++; }
 		if (geometry._frameStamp !== frame) { geometry._frameStamp = frame; geometry._frameRid = this._geometryCounter++; }
-		list.push(object, geometry, material, group, z, material._frameRid, geometry._frameRid, variant);
+		list.push(object, geometry, material, group, material._frameRid, geometry._frameRid, variant);
 	}
 
 	/** Resolve the program of every item in the list. Runs after the frame's lights are collected. */
@@ -626,7 +647,7 @@ class WebGLRenderer {
 		material.removeEventListener('dispose', this._onMaterialDispose);
 		const props = this._materialProperties.get(material);
 		if (props !== undefined) {
-			for (let i = 0; i < props.programs.length; i++) { const e = props.programs[i]; if (e) this.programs.releaseProgram(e.program); }
+			for (let i = 0; i < props.programs.length; i++) { const e = props.programs[i]; if (e) { this.programs.releaseProgram(e.program); if (e.altProgram !== null) this.programs.releaseProgram(e.altProgram); } }
 			if (props.blockSlot >= 0) this._materialFreeSlots.push(props.blockSlot);
 		}
 		this._materialProperties.delete(material);
@@ -641,7 +662,16 @@ class WebGLRenderer {
 	}
 	_getProgramSlow(props, material, object, scene, variant) {
 		let entry = props.programs[variant];
-		if (entry !== undefined && entry.materialVersion === material.version && entry.envVersion === this._envVersion) return entry.program;
+		if (entry !== undefined) {
+			if (entry.materialVersion === material.version && entry.envVersion === this._envVersion) return entry.program;
+			// the previous environment (typically the other of render target / screen) is kept as a second slot
+			if (entry.altProgram !== null && entry.altMaterialVersion === material.version && entry.altEnvVersion === this._envVersion) {
+				const p = entry.program, mv = entry.materialVersion, ev = entry.envVersion;
+				entry.program = entry.altProgram; entry.materialVersion = entry.altMaterialVersion; entry.envVersion = entry.altEnvVersion;
+				entry.altProgram = p; entry.altMaterialVersion = mv; entry.altEnvVersion = ev;
+				return entry.program;
+			}
+		}
 		const vflags = {
 			instancing: (variant & V_INSTANCING) !== 0, instancingColor: (variant & V_INSTANCING_COLOR) !== 0,
 			receiveShadow: (variant & V_RECEIVE_SHADOW) !== 0, shadowPass: (variant & V_SHADOW_PASS) !== 0,
@@ -653,8 +683,14 @@ class WebGLRenderer {
 			return entry.program;
 		}
 		const program = this.programs.acquireProgram(parameters, material);
-		if (entry !== undefined) this.programs.releaseProgram(entry.program);
-		entry = { program, materialVersion: material.version, envVersion: this._envVersion };
+		if (entry !== undefined) {
+			// current program becomes the alternate; the one it displaces is released
+			if (entry.altProgram !== null) this.programs.releaseProgram(entry.altProgram);
+			entry.altProgram = entry.program; entry.altMaterialVersion = entry.materialVersion; entry.altEnvVersion = entry.envVersion;
+			entry.program = program; entry.materialVersion = material.version; entry.envVersion = this._envVersion;
+		} else {
+			entry = { program, materialVersion: material.version, envVersion: this._envVersion, altProgram: null, altMaterialVersion: -1, altEnvVersion: -1 };
+		}
 		props.programs[variant] = entry;
 		material._programDirty = false;
 		return program;
